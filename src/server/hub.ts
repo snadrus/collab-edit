@@ -7,6 +7,7 @@ import { assignColor } from "../shared/palette.ts";
 import { type PageSpec, normalizePage } from "../shared/page.ts";
 import { type Reply, type Thread, sanitizeThread, validId } from "../shared/threads.ts";
 import { type SuggestionMeta, sanitizeSuggestion } from "../shared/suggest.ts";
+import { type Role } from "../shared/access.ts";
 import { Store, type LoadedDoc } from "./store.ts";
 
 export function colorFor(used: Iterable<string>, sid: string): string {
@@ -20,6 +21,7 @@ interface Conn {
   color: string;
   anchor: number;
   head: number;
+  role: Role;
 }
 
 interface Room {
@@ -36,6 +38,12 @@ interface Room {
 
 function send(ws: WebSocket, msg: unknown): void {
   if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg));
+}
+
+function permits(role: Role, t: string): boolean {
+  if (role === "edit") return true;
+  if (role === "view") return t === "sel" || t === "name" || t === "history" || t === "preview";
+  return t !== "title" && t !== "page" && t !== "namever";
 }
 
 export class Hub {
@@ -106,10 +114,10 @@ export class Hub {
     }));
   }
 
-  connect(room: Room, ws: WebSocket, sid: string, name: string, since: number | null, resume: boolean): Conn {
+  connect(room: Room, ws: WebSocket, sid: string, name: string, since: number | null, resume: boolean, role: Role = "edit"): Conn {
     const same = [...room.conns].find((c) => c.sid === sid);
     const color = same ? same.color : colorFor([...room.conns].map((c) => c.color), sid);
-    const conn: Conn = { ws, sid, name: name.slice(0, 40) || "Guest", color, anchor: 0, head: 0 };
+    const conn: Conn = { ws, sid, name: name.slice(0, 40) || "Guest", color, anchor: 0, head: 0, role };
     room.conns.add(conn);
     this.pushInit(room, conn, since, resume);
     this.broadcast(room, { t: "join", sid: conn.sid, name: conn.name, color: conn.color }, conn);
@@ -135,6 +143,8 @@ export class Hub {
       threads: [...room.threads.values()],
       suggestions: [...room.suggestions.values()],
       page: room.page,
+      role: conn.role,
+      trashed: this.store.trashedAt(room.id) > 0,
       resume: resume && since != null && catchup.length === room.server.rev - since,
       catchup,
     });
@@ -167,6 +177,7 @@ export class Hub {
 
   handle(room: Room, conn: Conn, msg: Record<string, unknown>): void {
     const t = msg.t;
+    if (typeof t !== "string" || !permits(conn.role, t)) return;
     if (t === "op") this.onOp(room, conn, msg);
     else if (t === "sel") this.onSel(room, conn, msg);
     else if (t === "title") this.onTitle(room, conn, msg);

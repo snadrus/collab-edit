@@ -1,6 +1,8 @@
 import { type Doc, type Heading, chipLabel, dropOptions, paragraphStyle, voteMap } from "../shared/doc.ts";
 import { CELL, EMBED, ROW, isBreak } from "../shared/delta.ts";
+import { type EqNode, parseEquation } from "../shared/equation.ts";
 import { COLLAB_PALETTE, hexAlpha } from "../shared/palette.ts";
+import { textColumns } from "../shared/section.ts";
 
 import { type PageSpec, normalizePage, DEFAULT_PAGE, fillPage } from "../shared/page.ts";
 
@@ -22,10 +24,17 @@ let differentFirst = false;
 export const PAGE_GAP = 20;
 export const RULER_H = 28;
 
-let imageDraft: { index: number; w: number; h: number } | null = null;
+let imageDraft: { index: number; w: number; h: number; rot: number } | null = null;
 
-export function setImageDraft(next: { index: number; w: number; h: number } | null): void {
-  imageDraft = next;
+export function setImageDraft(next: { index: number; w: number; h: number; rot?: number } | null): void {
+  imageDraft = next ? { index: next.index, w: next.w, h: next.h, rot: next.rot || 0 } : null;
+}
+
+export function rotatedSize(w: number, h: number, rot: number): { w: number; h: number } {
+  const rad = (((rot % 360) + 360) % 360) * (Math.PI / 180);
+  const c = Math.abs(Math.cos(rad));
+  const s = Math.abs(Math.sin(rad));
+  return { w: w * c + h * s, h: w * s + h * c };
 }
 
 export function pageSize(): { w: number; h: number } {
@@ -105,6 +114,14 @@ export interface LineBox {
   markerX: number;
   rule?: boolean;
   table?: { cols: number; cells: CellBox[] };
+  section?: "cont" | "next" | "page";
+}
+
+export interface Gutter {
+  page: number;
+  x: number;
+  y0: number;
+  y1: number;
 }
 
 export interface Footnote {
@@ -118,6 +135,7 @@ export interface Layout {
   lines: LineBox[];
   pages: number;
   notes: Footnote[];
+  gutters: Gutter[];
 }
 
 function ptPx(pt: number): number {
@@ -186,18 +204,32 @@ function loadImage(src: string): HTMLImageElement {
   return img;
 }
 
-function imagePixels(st: Doc["styles"][number] | undefined, index: number): { w: number; h: number } {
-  if (imageDraft && imageDraft.index === index) return { w: imageDraft.w, h: imageDraft.h };
-  return { w: st?.iw || 240, h: st?.ih || 160 };
+function imageRaw(st: Doc["styles"][number] | undefined, index: number): { w: number; h: number; rot: number } {
+  if (imageDraft && imageDraft.index === index) return imageDraft;
+  return { w: st?.iw || 240, h: st?.ih || 160, rot: st?.rot || 0 };
+}
+
+function imageExtent(st: Doc["styles"][number] | undefined, index: number): { w: number; h: number; rot: number; rawW: number; rawH: number } {
+  const raw = imageRaw(st, index);
+  const w = Math.min(contentWidth(), Math.max(24, raw.w));
+  const h = Math.min(800, Math.max(24, raw.h));
+  const box = rotatedSize(w, h, raw.rot);
+  return { w: box.w, h: box.h, rot: raw.rot, rawW: w, rawH: h };
 }
 
 function embedWidth(ctx: CanvasRenderingContext2D, doc: Doc, index: number): number {
   const st = doc.styles[index] || {};
   if (st.embed === "fn") return 16;
-  if (st.embed === "img") return Math.min(contentWidth(), Math.max(48, imagePixels(st, index).w));
+  if (st.embed === "eq") return Math.min(contentWidth(), Math.max(28, parseEquation(st.label || "").w * 16 + 8));
+  if (st.embed === "img") return Math.min(contentWidth(), Math.max(24, imageExtent(st, index).w));
   ctx.font = `500 12px "Roboto", sans-serif`;
   if (st.embed === "vote") return Math.min(280, 46 + Object.keys(voteMap(st)).length * 18);
   return Math.min(280, ctx.measureText(chipLabel(st) || "Chip").width + 28);
+}
+
+function smallCapCss(css: string, size: number): string {
+  const next = Math.max(6, Math.round(size * 0.75));
+  return css.replace(`${size}px`, `${next}px`);
 }
 
 function measureRun(ctx: CanvasRenderingContext2D, doc: Doc, from: number, to: number): Measured[] {
@@ -221,7 +253,12 @@ function measureRun(ctx: CanvasRenderingContext2D, doc: Doc, from: number, to: n
     ctx.font = face.css;
     for (let k = pos; k < j; k++) {
       const glyph = doc.text[k];
-      const w = glyph === "\t" ? face.size * 2 : ctx.measureText(glyph).width || face.size * 0.5;
+      let w = glyph === "\t" ? face.size * 2 : ctx.measureText(glyph).width || face.size * 0.5;
+      if (doc.styles[k]?.sc && glyph >= "a" && glyph <= "z") {
+        ctx.font = smallCapCss(face.css, face.size);
+        w = ctx.measureText(glyph.toUpperCase()).width || w;
+        ctx.font = face.css;
+      }
       out.push({ i: k, ch: glyph, w });
     }
     pos = j;
@@ -234,7 +271,8 @@ function blockHeight(doc: Doc, from: number, to: number, base: number): number {
   for (let k = from; k < to; k++) {
     const st = doc.styles[k];
     if (!st) continue;
-    if (st.embed === "img") h = Math.max(h, Math.min(800, imagePixels(st, k).h) + 6);
+    if (st.embed === "img") h = Math.max(h, imageExtent(st, k).h + 6);
+    else if (st.embed === "eq") h = Math.max(h, (parseEquation(st.label || "").h + parseEquation(st.label || "").d) * 16 + 10);
     else if (st.embed) h = Math.max(h, 26);
   }
   return h;
@@ -245,8 +283,20 @@ export function stackOffset(page: number, y: number): number {
   return RULER_H + page * (PAGE_H + PAGE_GAP) + y;
 }
 
+function estimateHeight(doc: Doc, from: number): number {
+  let chars = 0;
+  for (let i = from; i < doc.text.length; i++) {
+    const ch = doc.text[i];
+    if (ch === "\f") break;
+    if (!isBreak(ch) && ch !== CELL && ch !== EMBED) chars++;
+    else if (ch === EMBED) chars += 8;
+  }
+  return Math.max(1, Math.ceil(chars / 42)) * 24;
+}
+
 export function layoutDoc(doc: Doc, ctx: CanvasRenderingContext2D): Layout {
   const lines: LineBox[] = [];
+  const gutters: Gutter[] = [];
   let page = 0;
   let y = MT;
   const n = doc.text.length;
@@ -254,6 +304,12 @@ export function layoutDoc(doc: Doc, ctx: CanvasRenderingContext2D): Layout {
   let numberRun = 0;
   let numberLv = -1;
   let guard = 0;
+  let colCount = 1;
+  let col = 0;
+  let colTop = MT;
+  let colLimit = PAGE_H - MB;
+  const colBottoms: number[] = [];
+  const COL_GAP = 18;
 
   const notesOf: number[][] = [];
   const noteList = (p: number) => {
@@ -265,16 +321,88 @@ export function layoutDoc(doc: Doc, ctx: CanvasRenderingContext2D): Layout {
     const count = (notesOf[p]?.length || 0) + extra;
     return count ? 12 + count * 18 : 0;
   };
-  const overflow = (h: number, extra: number) => !PAGELESS && y + h > PAGE_H - MB - reserveFor(page, extra) && y > MT;
   const fnOf = (glyphs: { i: number }[]) => glyphs.filter((g) => doc.styles[g.i]?.embed === "fn").map((g) => g.i);
   const takeNotes = (ids: number[]) => {
     if (ids.length) noteList(page).push(...ids);
+  };
+  const bandBottom = () => colBottoms.reduce((max, value) => Math.max(max, value), y);
+  const arm = (from: number) => {
+    const pageInner = PAGE_H - MT - MB;
+    if (colCount <= 1) {
+      colLimit = PAGELESS ? Number.POSITIVE_INFINITY : PAGE_H - MB;
+      return;
+    }
+    const want = Math.ceil(estimateHeight(doc, from) / colCount) + 8;
+    colLimit = colTop + Math.min(pageInner, Math.max(36, want));
+  };
+  const origin = (indent: number) => {
+    const gap = colCount > 1 ? COL_GAP : 0;
+    const band = (contentWidth() - gap * (colCount - 1)) / colCount;
+    return { x: ML + col * (band + gap) + indent, inner: Math.max(40, band - indent) };
+  };
+  const retarget = (next: number) => {
+    if (next === colCount) return;
+    if (col !== 0 || y > colTop + 1) {
+      y = bandBottom();
+      col = 0;
+      colTop = y;
+      colBottoms.length = 0;
+    }
+    colCount = next;
+    arm(i);
+  };
+  const noteGutter = (y0: number, h: number) => {
+    if (colCount < 2) return;
+    const gap = COL_GAP;
+    const band = (contentWidth() - gap * (colCount - 1)) / colCount;
+    for (let c = 1; c < colCount; c++) gutters.push({ page, x: ML + c * (band + gap) - gap / 2, y0, y1: y0 + h });
   };
 
   const newPage = () => {
     if (PAGELESS) return;
     page++;
     y = MT;
+  };
+  const overflow = (h: number, extra: number) => {
+    if (PAGELESS && colCount <= 1) return false;
+    const pageLimit = PAGELESS ? colTop + (PAGE_H - MT - MB) : PAGE_H - MB - reserveFor(page, extra);
+    const limit = Math.min(pageLimit, colLimit);
+    return y + h > limit && y > colTop + 0.5;
+  };
+  const bump = () => {
+    if (colCount <= 1) {
+      newPage();
+      col = 0;
+      colTop = y;
+      colBottoms.length = 0;
+      arm(i);
+      return;
+    }
+    colBottoms[col] = y;
+    col++;
+    if (col >= colCount) {
+      if (PAGELESS) y = bandBottom() + 8;
+      else newPage();
+      col = 0;
+      colTop = y;
+      colBottoms.length = 0;
+      arm(i);
+    } else y = colTop;
+  };
+  const breakSection = (sec?: string) => {
+    if (sec === "cont") {
+      y = bandBottom();
+      col = 0;
+      colTop = y;
+      colBottoms.length = 0;
+      return;
+    }
+    if (PAGELESS) y += sec ? 16 : 28;
+    else newPage();
+    col = 0;
+    colTop = y;
+    colBottoms.length = 0;
+    arm(i);
   };
 
   while (i < n && guard++ < n + 10) {
@@ -289,9 +417,16 @@ export function layoutDoc(doc: Doc, ctx: CanvasRenderingContext2D): Layout {
     const sample = fontString(doc, i < breakAt ? i : breakAt);
     const mul = para.lh && para.lh > 0 ? para.lh : 1.15;
     const lineH = blockHeight(doc, i, breakAt, Math.max(18, Math.round(sample.size * mul * 1.2)));
+    if (hardCh !== ROW) retarget(textColumns(para));
+    else if (col !== 0 || y > colTop + 1) {
+      y = bandBottom();
+      col = 0;
+      colTop = y;
+      colBottoms.length = 0;
+      arm(i);
+    }
     const indent = (para.ind || 0) * 36 + (para.list ? 26 : 0) + (para.lv || 0) * 18;
-    const inner = Math.max(40, contentWidth() - indent);
-    const x0 = ML + indent;
+    const inner = hardCh === ROW ? Math.max(40, contentWidth() - indent) : origin(indent).inner;
 
     let marker: string | undefined;
     if (para.list === "bullet") {
@@ -315,12 +450,15 @@ export function layoutDoc(doc: Doc, ctx: CanvasRenderingContext2D): Layout {
     }
 
     const afterPx = para.sa != null && para.sa > 0 ? ptPx(para.sa) : 0;
+    const sectionMark = (): LineBox["section"] =>
+      hardCh === "\f" ? (para.sec === "cont" || para.sec === "next" ? para.sec : "page") : undefined;
     const place = (glyphs: Glyph[], hard: boolean, endIndex: number, h: number, rule = false, table?: LineBox["table"]) => {
       const ids = fnOf(glyphs);
-      if (overflow(h, ids.length)) newPage();
+      if (overflow(h, ids.length)) bump();
+      const at = origin(indent);
       lines.push({
         page,
-        x: x0,
+        x: table ? ML : at.x,
         y,
         h,
         baseline: y + Math.round(Math.min(h - 4, sample.size * 1.05)),
@@ -329,10 +467,12 @@ export function layoutDoc(doc: Doc, ctx: CanvasRenderingContext2D): Layout {
         hard,
         glyphs,
         marker: hard ? marker : undefined,
-        markerX: ML + (para.ind || 0) * 36 + (para.lv || 0) * 18,
+        markerX: (table ? ML : origin(0).x) + (para.ind || 0) * 36 + (para.lv || 0) * 18,
         rule,
         table,
+        section: hard ? sectionMark() : undefined,
       });
+      noteGutter(y, h);
       y += h;
       takeNotes(ids);
       if (hard && afterPx) y += afterPx;
@@ -340,10 +480,7 @@ export function layoutDoc(doc: Doc, ctx: CanvasRenderingContext2D): Layout {
 
     if (para.hr) {
       place([], true, breakAt + 1, 18, true);
-      if (hardCh === "\f") {
-        if (PAGELESS) y += 28;
-        else newPage();
-      }
+      if (hardCh === "\f") breakSection(para.sec);
       i = breakAt + 1;
       continue;
     }
@@ -386,19 +523,20 @@ export function layoutDoc(doc: Doc, ctx: CanvasRenderingContext2D): Layout {
 
     const pushLine = (slice: Measured[], hard: boolean, endIndex: number) => {
       const ids = fnOf(slice);
-      if (overflow(lineH, ids.length)) newPage();
+      if (overflow(lineH, ids.length)) bump();
+      const at = origin(indent);
       const width = slice.reduce((s, g) => s + g.w, 0);
       let offset = 0;
       const align = para.align || "left";
-      if (align === "center") offset = Math.max(0, (inner - width) / 2);
-      else if (align === "right") offset = Math.max(0, inner - width);
+      if (align === "center") offset = Math.max(0, (at.inner - width) / 2);
+      else if (align === "right") offset = Math.max(0, at.inner - width);
       let extra = 0;
       let gaps = 0;
       if (align === "justify" && !hard) {
         for (const g of slice) if (g.ch === " ") gaps++;
-        if (gaps > 0 && width < inner) extra = (inner - width) / gaps;
+        if (gaps > 0 && width < at.inner) extra = (at.inner - width) / gaps;
       }
-      let x = x0 + offset;
+      let x = at.x + offset;
       const placed: Glyph[] = [];
       for (const g of slice) {
         const w = g.w + (g.ch === " " ? extra : 0);
@@ -407,7 +545,7 @@ export function layoutDoc(doc: Doc, ctx: CanvasRenderingContext2D): Layout {
       }
       lines.push({
         page,
-        x: x0,
+        x: at.x,
         y,
         h: lineH,
         baseline: y + Math.round(sample.size * 1.05),
@@ -416,8 +554,10 @@ export function layoutDoc(doc: Doc, ctx: CanvasRenderingContext2D): Layout {
         hard,
         glyphs: placed,
         marker: hard ? marker : undefined,
-        markerX: ML + (para.ind || 0) * 36 + (para.lv || 0) * 18,
+        markerX: origin(0).x + (para.ind || 0) * 36 + (para.lv || 0) * 18,
+        section: hard ? sectionMark() : undefined,
       });
+      noteGutter(y, lineH);
       y += lineH;
       takeNotes(ids);
       if (hard && afterPx) y += afterPx;
@@ -447,10 +587,7 @@ export function layoutDoc(doc: Doc, ctx: CanvasRenderingContext2D): Layout {
       }
     }
 
-    if (hardCh === "\f") {
-        if (PAGELESS) y += 28;
-        else newPage();
-      }
+    if (hardCh === "\f") breakSection(para.sec);
     i = breakAt + 1;
     if (i >= n) break;
   }
@@ -484,7 +621,7 @@ export function layoutDoc(doc: Doc, ctx: CanvasRenderingContext2D): Layout {
     const block = notes.length ? 20 + notes.length * 18 : 0;
     FLOW_H = Math.max(480, Math.ceil(bottom + block + MB + 8));
   } else FLOW_H = PAGE_H;
-  return { lines, pages: PAGELESS ? 1 : page + 1, notes };
+  return { lines, pages: PAGELESS ? 1 : page + 1, notes, gutters };
 }
 
 export function markerHit(layout: Layout, page: number, x: number, y: number): number | null {
@@ -593,23 +730,92 @@ function drawChip(ctx: CanvasRenderingContext2D, doc: Doc, glyph: Glyph, line: L
 
 function drawImage(ctx: CanvasRenderingContext2D, doc: Doc, glyph: Glyph, line: LineBox): void {
   const st = doc.styles[glyph.i] || {};
-  const px = imagePixels(st, glyph.i);
-  const w = Math.min(glyph.w, px.w);
-  const h = Math.min(line.h - 4, px.h);
+  const ext = imageExtent(st, glyph.i);
+  const w = Math.min(glyph.w, ext.w);
+  const h = Math.min(line.h - 4, ext.h);
   const y = line.y + 2;
-  if (!st.src) return;
+  const scale = Math.min(w / Math.max(1, ext.w), h / Math.max(1, ext.h));
+  ctx.save();
+  ctx.translate(glyph.x + w / 2, y + h / 2);
+  ctx.rotate((ext.rot * Math.PI) / 180);
+  const dw = ext.rawW * scale;
+  const dh = ext.rawH * scale;
+  if (!st.src) {
+    ctx.restore();
+    return;
+  }
   const img = loadImage(st.src);
-  if (img.complete && img.naturalWidth) ctx.drawImage(img, glyph.x, y, w, h);
+  if (img.complete && img.naturalWidth) ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
   else {
     ctx.fillStyle = "#f1f3f4";
     ctx.strokeStyle = "#dadce0";
-    ctx.fillRect(glyph.x, y, w, h);
-    ctx.strokeRect(glyph.x, y, w, h);
+    ctx.fillRect(-dw / 2, -dh / 2, dw, dh);
+    ctx.strokeRect(-dw / 2, -dh / 2, dw, dh);
     ctx.fillStyle = "#5f6368";
     ctx.font = `12px "Roboto", sans-serif`;
     ctx.textBaseline = "middle";
-    ctx.fillText(st.alt || "Image", glyph.x + 8, y + h / 2);
+    ctx.textAlign = "center";
+    ctx.fillText(st.alt || "Image", 0, 0);
+    ctx.textAlign = "left";
   }
+  ctx.restore();
+}
+
+function paintEq(ctx: CanvasRenderingContext2D, node: EqNode, x: number, baseline: number, em: number): void {
+  if (node.t === "char") {
+    ctx.font = `${em}px Lora, "Times New Roman", serif`;
+    ctx.textBaseline = "alphabetic";
+    ctx.fillText(node.s || "", x, baseline);
+    return;
+  }
+  if (node.t === "row") {
+    let cx = x;
+    for (const kid of node.kids || []) {
+      paintEq(ctx, kid, cx, baseline, em);
+      cx += kid.w * em;
+    }
+    return;
+  }
+  if (node.t === "frac") {
+    const [num, den] = node.kids || [];
+    const w = node.w * em;
+    const mid = baseline - em * 0.1;
+    if (num) paintEq(ctx, num, x + (w - num.w * em) / 2, mid - num.d * em - 1, em);
+    ctx.beginPath();
+    ctx.moveTo(x + 1, mid);
+    ctx.lineTo(x + w - 1, mid);
+    ctx.stroke();
+    if (den) paintEq(ctx, den, x + (w - den.w * em) / 2, mid + den.h * em + 2, em);
+    return;
+  }
+  if (node.t === "sqrt") {
+    const body = node.kids?.[0];
+    const h = ((body ? body.h + body.d : 1) + 0.15) * em;
+    ctx.beginPath();
+    ctx.moveTo(x, baseline - h * 0.45);
+    ctx.lineTo(x + 0.22 * em, baseline + (body?.d || 0.2) * em * 0.2);
+    ctx.lineTo(x + 0.48 * em, baseline - h);
+    ctx.lineTo(x + node.w * em - 1, baseline - h);
+    ctx.stroke();
+    if (body) paintEq(ctx, body, x + 0.62 * em, baseline, em);
+    return;
+  }
+  const [base, arg] = node.kids || [];
+  if (base) paintEq(ctx, base, x, baseline, em);
+  if (arg) {
+    const up = node.s !== "sub";
+    paintEq(ctx, arg, x + (base?.w || 0) * em, baseline + (up ? -0.45 * em : 0.4 * em), em * 0.7);
+  }
+}
+
+function drawEquation(ctx: CanvasRenderingContext2D, doc: Doc, glyph: Glyph, line: LineBox): void {
+  const node = parseEquation(doc.styles[glyph.i]?.label || "");
+  ctx.save();
+  ctx.fillStyle = "#202124";
+  ctx.strokeStyle = "#202124";
+  ctx.lineWidth = 1;
+  paintEq(ctx, node, glyph.x + 2, line.baseline, 16);
+  ctx.restore();
 }
 
 export interface PaintOpts {
@@ -747,6 +953,15 @@ export function drawPage(
   ctx.textAlign = "left";
   paintMargin(ctx, page, layout.pages, "header");
   paintMargin(ctx, page, layout.pages, "footer");
+  ctx.strokeStyle = "#dadce0";
+  ctx.lineWidth = 1;
+  for (const gutter of layout.gutters || []) {
+    if (gutter.page !== page) continue;
+    ctx.beginPath();
+    ctx.moveTo(gutter.x, gutter.y0);
+    ctx.lineTo(gutter.x, gutter.y1);
+    ctx.stroke();
+  }
 
   for (const line of layout.lines) {
     if (line.page !== page) continue;
@@ -825,6 +1040,7 @@ export function drawPage(
         const st = doc.styles[index];
         if (st?.embed === "img") drawImage(ctx, doc, glyphs[runStart], line);
         else if (st?.embed === "fn") drawFootnoteMark(ctx, doc, glyphs[runStart], line);
+        else if (st?.embed === "eq") drawEquation(ctx, doc, glyphs[runStart], line);
         else drawChip(ctx, doc, glyphs[runStart], line, colors);
         runStart++;
         continue;
@@ -854,9 +1070,22 @@ export function drawPage(
       let baseline = line.baseline;
       if (face.script === "sup") baseline -= face.size * 0.55;
       if (face.script === "sub") baseline += face.size * 0.25;
-      let text = "";
-      for (let k = runStart; k < runEnd; k++) text += doc.text[glyphs[k].i] === "\t" ? " " : doc.text[glyphs[k].i];
-      ctx.fillText(text, glyphs[runStart].x, baseline);
+      const small = glyphs.slice(runStart, runEnd).some((g) => doc.styles[g.i]?.sc);
+      if (small) {
+        for (let k = runStart; k < runEnd; k++) {
+          const g = glyphs[k];
+          const ch = doc.text[g.i] === "\t" ? " " : doc.text[g.i];
+          if (doc.styles[g.i]?.sc && ch >= "a" && ch <= "z") {
+            ctx.font = smallCapCss(face.css, face.size);
+            ctx.fillText(ch.toUpperCase(), g.x, baseline);
+            ctx.font = face.css;
+          } else ctx.fillText(ch, g.x, baseline);
+        }
+      } else {
+        let text = "";
+        for (let k = runStart; k < runEnd; k++) text += doc.text[glyphs[k].i] === "\t" ? " " : doc.text[glyphs[k].i];
+        ctx.fillText(text, glyphs[runStart].x, baseline);
+      }
       const last = glyphs[runEnd - 1];
       const x2 = last.x + last.w;
       if (face.underline) {
@@ -878,6 +1107,22 @@ export function drawPage(
       runStart = runEnd;
     }
     if (clipCells?.length) ctx.restore();
+    if (line.section === "cont" || line.section === "next") {
+      const y = line.y + line.h + 2;
+      ctx.save();
+      ctx.setLineDash([2, 3]);
+      ctx.strokeStyle = "#1a73e8";
+      ctx.beginPath();
+      ctx.moveTo(ML, y);
+      ctx.lineTo(PAGE_W - MR, y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.font = `10px Roboto, sans-serif`;
+      ctx.fillStyle = "#1a73e8";
+      ctx.textBaseline = "alphabetic";
+      ctx.fillText(line.section === "cont" ? "Section break (continuous)" : "Section break (next page)", ML, Math.max(line.y + 10, y - 4));
+      ctx.restore();
+    }
     paintExtras(ctx, doc, line, opts);
   }
   paintNotes(ctx, layout, page);

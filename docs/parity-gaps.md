@@ -4,31 +4,27 @@ Compared with the Docs help center: [keyboard shortcuts](https://support.google.
 
 ## Shipped earlier
 
-Page setup and the ruler, the heading outline, spelling, autocorrect, the right-click menu, paste without formatting, non-printing characters, full screen, hide the menus, menu search, the Extensions stub, and paragraph move plus drag-and-drop.
+Page setup and the horizontal ruler, the heading outline, spelling, autocorrect, the right-click menu, paste without formatting, non-printing characters, full screen, hide the menus, menu search, the Extensions stub, paragraph move and drag-and-drop, suggesting mode, headers and footers, footnotes, pageless format, table of contents, spacing, headings 4–6, comment keys, and image resize with alt text.
 
 ## Shipped in this pass
 
-1. **Suggesting mode.** The toolbar mode control switches Editing, Suggesting, and Viewing (Ctrl+Alt+Shift+X). Insertions and deletions stay in the document as `sug` and `del` marks, drawn in the author's color. Accept and Reject sit on cards in the comment sidebar. The marks travel through the same OT path as other character attributes, and accepting or rejecting is an ordinary undoable delta.
-2. **Headers, footers, and page numbers.** Insert > Header, Footer, and Page number. `{page}` and `{pages}` fill in on each page. A different first page is optional. The text is part of page setup, so it syncs with the page and survives reload.
-3. **Footnotes.** Insert > Footnote (Ctrl+Alt+F) places a superscript marker. The note is drawn at the bottom of that page, or after the story in pageless documents. The note body is an attribute on the marker, so edits converge.
-4. **Pageless format.** View > Pageless drops page breaks and draws one continuous sheet. It is stored with page setup.
-5. **Table of contents, bookmarks, and heading links.** Insert > Bookmark, Table of contents, Update table of contents, and Link to heading. Contents are paragraphs linked to heading bookmarks and can be rebuilt.
-6. **Paragraph spacing and custom line spacing.** Format > Line and paragraph spacing, and Custom on the spacing menu. Line spacing is a multiple from 0.5 to 3. Space before and after are in points.
-7. **Headings 4–6.** The style menu, Format menu, outline, and Ctrl+Alt+4/5/6.
-8. **Comment navigation.** With a comment card focused, J and K move between cards, R replies, and E resolves.
-9. **Image resize and alt text.** A selected image shows corner handles. Double-click or the right-click menu edits the description. Size and alt text are attributes on the image.
+1. **Columns and section breaks.** Format > Columns sets one, two, or three columns on the current section. Insert > Break adds a page break or a section break (next page or continuous). Column count is a paragraph attribute, so it travels through OT. Table column counts are left alone. Short sections are balanced by estimated height; longer ones fill down the page.
+2. **Vertical ruler.** Shown with the horizontal ruler. Drag the top or bottom marker to change the margins. The markers use the same blue margin band as the horizontal ruler.
+3. **Image rotation.** A round handle above a selected image rotates it, snapping to 15 degrees. The right-click menu rotates 90 degrees. The angle is an attribute on the image.
+4. **Document tabs.** A tab bar under the page lists the tabs in the file. Add a tab, double-click to rename, and click to switch. Extra tabs are documents under the same file and stay out of the home list.
+5. **Capitalization and small caps.** Format > Text has lowercase, UPPERCASE, and Title Case. Small caps is Ctrl+Shift+K. Case changes are ordinary undoable edits. Small caps is a character attribute.
+6. **Special characters.** Insert > Special characters opens a searchable grid.
+7. **Equations.** Insert > Equation takes a short formula: `^` and `_`, `\frac{a}{b}`, `\sqrt{x}`, and names such as `\pi`. The formula is stored on an embed, so edits converge. Double-click to edit it.
+8. **Regex find.** The find bar has a Regex checkbox. Replacement supports groups such as `$1`. A bad pattern shows Invalid.
+9. **Paginated print preview.** File > Print opens a preview of the pages, with Print sending them to the browser.
+10. **Share roles and trash.** Share sets general access to editor, commenter, or viewer, and copies a document link plus an editor, commenter, or viewer link. Viewers are read-only. Commenters can suggest. Editors can accept suggestions. File > Move to trash, with Restore and Delete forever on the home screen.
+11. **Chrome polish.** Hover is `#f1f3f4`, pressed is `#e8eaed`, the share button is `#0b57d0`, menu rows are 32px, and the page shadow is lighter.
 
 ## Still open, highest impact first
 
 1. **Grammar.** Blue underlines and accept/ignore, beyond the spelling dictionary. [Help](https://support.google.com/docs/answer/57859).
-2. **Columns, section breaks, and a vertical ruler.** Format > Columns and Insert > Break > Section break. The horizontal ruler is in; the vertical ruler is not.
-3. **Image rotation.** Resize and alt text are in. Rotation is not.
-4. **Building blocks and the rest of smart chips.** Place, calendar event, file, and task chips, plus meeting notes and email drafts. Person, date, dropdown, and voting chips are in. File chips need a drive.
-5. **Add-ons and Apps Script.** The Extensions menu is a stub. Running third-party add-ons is a platform, not an editor command.
-6. **Voice typing, translate, citations, compare documents, and dictionary lookup.** Tools menu items that call out to other services.
-7. **Watermarks, equations, drawings, charts, and special characters.** Insert-menu items with their own editors.
-8. **Document tabs.** A 2024 Docs structure for several documents in one file.
-9. **Capitalization commands and small caps.** Format > Text > Capitalization, and Ctrl+Shift+K for small caps.
-10. **Share permissions, email, and move to trash.** Share copies the link. Docs share is an access-control dialog.
-11. **Regex find.** Find and replace is literal.
-12. **Paginated print preview distinct from the browser print dialog.** File > Print uses the browser.
+2. **Building blocks and the rest of smart chips.** Place, calendar event, file, and task chips, plus meeting notes and email drafts. Person, date, dropdown, and voting chips are in. File chips need a drive.
+3. **Add-ons and Apps Script.** The Extensions menu is a stub. Running third-party add-ons is a platform, not an editor command.
+4. **Voice typing, translate, citations, compare documents, and dictionary lookup.** Tools menu items that call out to other services.
+5. **Watermarks, drawings, and charts.** Insert-menu items with their own editors. Equations and special characters are in.
+6. **Email from the share dialog.** The role links are in. Docs can also email collaborators.

@@ -11,7 +11,7 @@ import {
 export type Heading = "normal" | "title" | "subtitle" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6";
 export type Align = "left" | "center" | "right" | "justify";
 export type ListKind = "bullet" | "numbered" | "check";
-export type EmbedKind = "vote" | "person" | "date" | "drop" | "img" | "fn";
+export type EmbedKind = "vote" | "person" | "date" | "drop" | "img" | "fn" | "eq";
 
 export interface CharStyle {
   b?: true;
@@ -27,6 +27,8 @@ export interface CharStyle {
   link?: string;
   /** Comment thread id anchored to this character. */
   cmt?: string;
+  /** Small caps. Lowercase letters draw as smaller capitals. */
+  sc?: true;
   /** Suggestion id for an insertion that is still pending. */
   sug?: string;
   /** Suggestion id for a deletion that is still pending. */
@@ -41,6 +43,8 @@ export interface CharStyle {
   iw?: number;
   ih?: number;
   alt?: string;
+  /** Image rotation in degrees. */
+  rot?: number;
   h?: Heading;
   align?: Align;
   list?: ListKind;
@@ -60,6 +64,8 @@ export interface CharStyle {
   sa?: number;
   /** Paragraph was generated as a table-of-contents line. */
   toc?: true;
+  /** Section break on a form-feed. `cont` stays on the page; `next` starts a page. */
+  sec?: "cont" | "next";
 }
 
 export interface Doc {
@@ -314,6 +320,7 @@ export function chipLabel(style: CharStyle | undefined): string {
   if (style.embed === "drop") return style.val || "Choose";
   if (style.embed === "img") return style.alt || "Image";
   if (style.embed === "fn") return style.label || "Footnote";
+  if (style.embed === "eq") return style.label || "Equation";
   return "";
 }
 

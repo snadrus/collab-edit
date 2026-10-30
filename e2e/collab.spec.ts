@@ -40,6 +40,11 @@ declare global {
       acceptSuggestion: (id: string) => void;
       setPageless: (on: boolean) => void;
       insertFootnote: (text: string) => void;
+      setColumns: (cols: 1 | 2 | 3) => void;
+      insertSection: (kind: "cont" | "next") => void;
+      applyCase: (mode: "lower" | "upper" | "title") => void;
+      insertEquation: (src: string) => void;
+      role: () => string;
     };
   }
 }
@@ -326,5 +331,34 @@ test("suggesting mode, heading 4, footnote, and pageless", async ({ browser, req
   await expect(pa.locator("#outline-list")).toContainText("Deep topic");
   await expect(pa.locator("body")).toHaveClass(/pageless/);
   expect(await pa.evaluate(() => window.__editor!.page().pageless)).toBe(true);
+  await a.close();
+});
+
+test("columns, capitalization, print preview, and tabs", async ({ browser, request }) => {
+  const created = await request.post("/api/docs", { data: { title: "Columns" } });
+  expect(created.ok()).toBeTruthy();
+  const { id } = (await created.json()) as { id: string };
+  const a = await browser.newContext();
+  const pa = await a.newPage();
+  await openDoc(pa, id, "Avery");
+  await pa.evaluate(() => {
+    window.__editor!.insertText("Left side of the story.\nRight side follows.");
+    window.__editor!.setSelection(0, 4);
+    window.__editor!.applyCase("upper");
+    window.__editor!.setColumns(2);
+    window.__editor!.insertSection("cont");
+  });
+  await expect.poll(() => pa.evaluate(() => window.__editor!.getText())).toContain("LEFT");
+  await pa.locator(".menu-btn[data-menu=file]").click();
+  await pa.locator("[data-act=print]").click();
+  await expect(pa.locator("#print-preview")).toBeVisible();
+  await expect(pa.locator("#print-pages")).toContainText("pages");
+  await pa.locator("#print-close").click();
+  await expect(pa.locator("#tabs")).toBeVisible();
+  const added = await request.post("/api/docs/" + id + "/tabs", { data: { title: "Sources" } });
+  expect(added.ok()).toBeTruthy();
+  await pa.reload();
+  await pa.waitForFunction(() => window.__editor?.ready === true);
+  await expect(pa.locator("#tabs")).toContainText("Sources");
   await a.close();
 });

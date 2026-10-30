@@ -1,5 +1,9 @@
 import { commandsToDelta, deltaToCommands, type Command } from "../shared/commands.ts";
-import { type Attrs, type Delta, CELL, EMBED, compose, isBreak, transformPosition } from "../shared/delta.ts";
+import { type Role } from "../shared/access.ts";
+import { type CaseMode, caseDelta } from "../shared/case.ts";
+import { type Attrs, type Delta, CELL, EMBED, compose, isBreak, isNoop, transformPosition } from "../shared/delta.ts";
+import { applyReplacement, findRanges, regexOk } from "../shared/find.ts";
+import { insertSectionDelta, setColumnsDelta, type SectionKind } from "../shared/section.ts";
 import {
   type CharStyle,
   type Doc,
@@ -53,8 +57,8 @@ export interface EditorHooks {
 
 export type EditMode = "edit" | "suggest" | "view";
 
-const TYPE_KEYS = ["b", "i", "u", "strike", "sup", "sub", "font", "size", "color", "hl"] as const;
-type MarkKey = "b" | "i" | "u" | "strike" | "sup" | "sub";
+const TYPE_KEYS = ["b", "i", "u", "strike", "sup", "sub", "sc", "font", "size", "color", "hl"] as const;
+type MarkKey = "b" | "i" | "u" | "strike" | "sup" | "sub" | "sc";
 const SIZES = [8, 9, 10, 11, 12, 14, 15, 16, 18, 20, 22, 24, 26, 28, 36, 48, 72];
 
 export class Editor {
@@ -81,7 +85,10 @@ export class Editor {
   atMark: number | null = null;
   findQuery = "";
   findIndex = 0;
+  findRegex = false;
+  findError = false;
   findMatches: { start: number; end: number }[] = [];
+  role: Role = "edit";
   hoverSid: string | null = null;
   flashSid: string | null = null;
   preview: Doc | null = null;
@@ -102,7 +109,7 @@ export class Editor {
   private spellKey = "";
   private spellCache: { start: number; end: number; word: string }[] = [];
   private openSug: string | null = null;
-  private resize: { index: number; x: number; y: number; w: number; h: number; corner: string } | null = null;
+  private resize: { index: number; x: number; y: number; w: number; h: number; rot: number; corner: string } | null = null;
 
   constructor(sid: string, pagesEl: HTMLElement, overlay: HTMLElement, input: HTMLElement, color: string, hooks: EditorHooks) {
     this.sync = new ClientSync(sid);
@@ -358,8 +365,15 @@ export class Editor {
     else this.setParagraph({ list: kind, lv: para.lv || 0 });
   }
 
+  setRole(role: Role): void {
+    this.role = role;
+    if (role === "view") this.mode = "view";
+    else if (role === "comment" && this.mode === "edit") this.mode = "suggest";
+    this.hooks.onChange();
+  }
+
   clearFormatting(): void {
-    const wipe: Attrs = { b: null, i: null, u: null, strike: null, sup: null, sub: null, font: null, size: null, color: null, hl: null, link: null };
+    const wipe: Attrs = { b: null, i: null, u: null, strike: null, sup: null, sub: null, sc: null, font: null, size: null, color: null, hl: null, link: null };
     if (this.anchor !== this.head) this.applyText(wipe);
     this.setParagraph({ h: "normal", align: "left", list: null, lv: null, lh: null, sb: null, sa: null, ind: null, hr: null, check: null });
     this.typing = {};
@@ -661,7 +675,7 @@ export class Editor {
       }
       const idx = this.clamp(hitTest(this.doc, this.layout, page, point.x, point.y));
       const st = this.doc.styles[idx];
-      if (this.doc.text[idx] === EMBED && st?.embed === "fn") {
+      if (this.doc.text[idx] === EMBED && (st?.embed === "fn" || st?.embed === "eq")) {
         this.anchor = idx;
         this.head = idx;
         this.render();
@@ -732,12 +746,26 @@ export class Editor {
         const scale = rect && rect.width ? rect.width / PAGE_W : 1;
         const dx = (ev.clientX - this.resize.x) / scale;
         const dy = (ev.clientY - this.resize.y) / scale;
+        if (this.resize.corner === "rot") {
+          const box = imageBox(this.layout, this.resize.index);
+          if (box && rect) {
+            const px = (ev.clientX - rect.left) / scale;
+            const py = (ev.clientY - rect.top) / scale;
+            let deg = (Math.atan2(py - (box.y + box.h / 2), px - (box.x + box.w / 2)) * 180) / Math.PI + 90;
+            deg = Math.round(deg / 15) * 15;
+            deg = ((deg % 360) + 360) % 360;
+            this.resize = { ...this.resize, rot: deg };
+            setImageDraft({ index: this.resize.index, w: this.resize.w, h: this.resize.h, rot: deg });
+            this.render();
+          }
+          return;
+        }
         const sx = this.resize.corner.includes("w") ? -1 : 1;
         const sy = this.resize.corner.includes("n") ? -1 : 1;
         const w = Math.max(24, Math.min(contentWidth(), Math.round(this.resize.w + dx * sx)));
         const h = Math.max(24, Math.min(800, Math.round(this.resize.h + dy * sy)));
         this.resize = { ...this.resize, x: ev.clientX, y: ev.clientY, w, h };
-        setImageDraft({ index: this.resize.index, w, h });
+        setImageDraft({ index: this.resize.index, w, h, rot: this.resize.rot });
         this.render();
         return;
       }
@@ -761,10 +789,11 @@ export class Editor {
     });
     window.addEventListener("mouseup", () => {
       if (this.resize) {
-        const { index, w, h } = this.resize;
+        const held = this.resize;
         this.resize = null;
         setImageDraft(null);
-        this.setImageSize(index, w, h);
+        if (held.corner === "rot") this.setImageRotation(held.index, held.rot);
+        else this.setImageSize(held.index, held.w, held.h);
         return;
       }
       if (this.dragOrigin) {
@@ -1048,6 +1077,7 @@ export class Editor {
     if (para.lh) attrs.lh = para.lh;
     if (para.sb != null) attrs.sb = para.sb;
     if (para.sa != null) attrs.sa = para.sa;
+    if (para.cols === 2 || para.cols === 3) attrs.cols = para.cols;
     return attrs;
   }
 
@@ -1119,6 +1149,7 @@ export class Editor {
       if (st.strike) next.strike = true;
       if (st.sup) next.sup = true;
       if (st.sub) next.sub = true;
+      if (st.sc) next.sc = true;
       if (st.font) next.font = st.font;
       if (st.size) next.size = st.size;
       if (st.color) next.color = st.color;
@@ -1375,7 +1406,7 @@ export class Editor {
     const i = this.anchor === this.head ? Math.max(0, this.head - 1) : Math.min(this.anchor, this.head);
     const st = this.doc.styles[i] || {};
     const attrs: Attrs = {};
-    for (const k of ["b", "i", "u", "strike", "sup", "sub", "font", "size", "color", "hl", "link"] as const) {
+    for (const k of ["b", "i", "u", "strike", "sup", "sub", "sc", "font", "size", "color", "hl", "link"] as const) {
       const v = st[k];
       attrs[k] = v == null ? null : (v as string | number | boolean);
     }
@@ -1425,18 +1456,9 @@ export class Editor {
 
   setFind(query: string, index = 0): void {
     this.findQuery = query;
-    this.findMatches = [];
-    if (query) {
-      const hay = this.doc.text.toLowerCase();
-      const needle = query.toLowerCase();
-      let from = 0;
-      while (from < hay.length) {
-        const at = hay.indexOf(needle, from);
-        if (at < 0) break;
-        this.findMatches.push({ start: at, end: at + needle.length });
-        from = at + Math.max(1, needle.length);
-      }
-    }
+    this.findError = this.findRegex && !!query && !regexOk(query);
+    const limit = Math.max(0, this.doc.text.length - 1);
+    this.findMatches = findRanges(this.doc.text, query, this.findRegex).filter((hit) => hit.start < limit);
     this.findIndex = this.findMatches.length ? ((index % this.findMatches.length) + this.findMatches.length) % this.findMatches.length : 0;
     const m = this.findMatches[this.findIndex];
     if (m) this.setSelection(m.start, Math.min(m.end, this.doc.text.length - 1));
@@ -1454,7 +1476,7 @@ export class Editor {
     if (!m) return;
     this.anchor = m.start;
     this.head = Math.min(m.end, this.doc.text.length - 1);
-    this.insertText(repl);
+    this.insertText(applyReplacement(this.doc.text.slice(m.start, m.end), this.findQuery, repl, this.findRegex));
     this.setFind(this.findQuery, this.findIndex);
   }
 
@@ -1465,9 +1487,10 @@ export class Editor {
     let cursor = 0;
     for (const m of matches) {
       if (m.start < cursor) continue;
+      const text = applyReplacement(this.doc.text.slice(m.start, m.end), this.findQuery, repl, this.findRegex);
       if (m.start > cursor) ops.push({ t: "r" as const, n: m.start - cursor });
       if (m.end > m.start) ops.push({ t: "d" as const, n: m.end - m.start });
-      if (repl) ops.push({ t: "i" as const, s: repl });
+      if (text) ops.push({ t: "i" as const, s: text });
       cursor = m.end;
     }
     this.sync.local({ ops });
@@ -1562,7 +1585,12 @@ export class Editor {
       this.hooks.onCommand?.("comment");
       return true;
     }
-    if (meta && key === "k") {
+    if (meta && e.shiftKey && !e.altKey && key === "k") {
+      e.preventDefault();
+      this.toggleMark("sc");
+      return true;
+    }
+    if (meta && !e.shiftKey && key === "k") {
       e.preventDefault();
       this.hooks.onCommand?.("link");
       return true;
@@ -1836,6 +1864,8 @@ export class Editor {
   }
 
   setMode(mode: EditMode): void {
+    if (this.role === "view") mode = "view";
+    else if (this.role === "comment" && mode === "edit") mode = "suggest";
     this.mode = mode;
     this.openSug = null;
     this.hooks.onChange();
@@ -1886,11 +1916,13 @@ export class Editor {
   }
 
   acceptSuggestion(id: string): void {
+    if (this.role !== "edit") return;
     const delta = acceptDelta(this.doc, id);
     if (delta) this.localDelta(delta, this.head);
   }
 
   rejectSuggestion(id: string): void {
+    if (this.role !== "edit") return;
     const delta = rejectDelta(this.doc, id);
     if (delta) this.localDelta(delta, this.head);
   }
@@ -1904,6 +1936,39 @@ export class Editor {
   setFootnote(index: number, text: string): void {
     if (this.doc.styles[index]?.embed !== "fn") return;
     this.localDelta(this.patchIndices([index], { label: text.trim().slice(0, 500) || "Footnote" }), index);
+  }
+
+  setColumns(cols: 1 | 2 | 3): void {
+    const delta = setColumnsDelta(this.doc, this.head, cols);
+    if (!isNoop(delta)) this.localDelta(delta, this.head);
+  }
+
+  insertSection(kind: SectionKind): void {
+    const at = Math.min(this.head, Math.max(0, this.doc.text.length - 1));
+    this.localDelta(insertSectionDelta(this.doc, at, kind), at + 1);
+  }
+
+  applyCase(mode: CaseMode): void {
+    const delta = caseDelta(this.doc, Math.min(this.anchor, this.head), Math.max(this.anchor, this.head), mode);
+    if (delta) this.localDelta(delta, this.head);
+  }
+
+  insertEquation(src: string): void {
+    const label = src.trim().slice(0, 400) || "x^2";
+    const attrs: Attrs = { embed: "eq", label };
+    if (this.mode === "suggest") attrs.sug = this.ensureOpenSug();
+    this.insertEmbed(attrs);
+  }
+
+  setEquation(index: number, src: string): void {
+    if (this.doc.styles[index]?.embed !== "eq") return;
+    this.localDelta(this.patchIndices([index], { label: src.trim().slice(0, 400) || "x^2" }), index);
+  }
+
+  setImageRotation(index: number, rot: number): void {
+    if (this.doc.styles[index]?.embed !== "img") return;
+    const deg = ((Math.round(rot) % 360) + 360) % 360;
+    this.localDelta(this.patchIndices([index], { rot: deg || null }), index);
   }
 
   setImageSize(index: number, w: number, h: number): void {
@@ -1985,7 +2050,7 @@ export class Editor {
   }
 
   private canEdit(): boolean {
-    return this.mode !== "view" && !this.preview;
+    return this.role !== "view" && this.mode !== "view" && !this.preview;
   }
 
   private ownSuggestionIds(): Set<string> {
@@ -2049,10 +2114,23 @@ export class Editor {
         ev.preventDefault();
         ev.stopPropagation();
         const st = this.doc.styles[index];
-        this.resize = { index, corner, x: ev.clientX, y: ev.clientY, w: st?.iw || box.w, h: st?.ih || box.h };
+        this.resize = { index, corner, x: ev.clientX, y: ev.clientY, w: st?.iw || box.w, h: st?.ih || box.h, rot: st?.rot || 0 };
       });
       this.overlay.appendChild(handle);
     }
+    const knob = document.createElement("div");
+    knob.className = "image-handle rot";
+    knob.dataset.corner = "rot";
+    knob.title = "Rotate";
+    knob.style.left = box.x + box.w / 2 - 5 + "px";
+    knob.style.top = stackOffset(box.page, box.y - 18) + "px";
+    knob.addEventListener("mousedown", (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const st = this.doc.styles[index];
+      this.resize = { index, corner: "rot", x: ev.clientX, y: ev.clientY, w: st?.iw || box.w, h: st?.ih || box.h, rot: st?.rot || 0 };
+    });
+    this.overlay.appendChild(knob);
   }
 
   private maybeAutocorrect(): void {

@@ -1,4 +1,5 @@
 import type { Command } from "../shared/commands.ts";
+import type { Role } from "../shared/access.ts";
 import type { Heading } from "../shared/doc.ts";
 import { restoreDoc } from "../shared/doc.ts";
 import {
@@ -25,7 +26,7 @@ import type { SuggestionMeta } from "../shared/suggest.ts";
 import { mountChrome, type Chrome } from "./chrome.ts";
 import { loadWordText } from "./dict.ts";
 import { loadQueue, saveQueue } from "./offline.ts";
-import { ML, MR, PAGE_W, RULER_H, applyPage, currentPage } from "./layout.ts";
+import { MB, ML, MR, MT, PAGE_H, PAGE_W, RULER_H, applyPage, currentPage } from "./layout.ts";
 import { Editor, decodeCommands, encodeCommands, type RemoteCaret } from "./editor.ts";
 
 interface InitMsg {
@@ -38,6 +39,8 @@ interface InitMsg {
   threads?: Thread[];
   suggestions?: SuggestionMeta[];
   page?: PageSpec;
+  role?: Role;
+  trashed?: boolean;
   resume?: boolean;
   catchup?: { rev: number; sid: string; reqId: number; commands: Command[] }[];
 }
@@ -118,6 +121,48 @@ function drawRuler(): void {
   ctx.lineTo(mark + 5, RULER_H - 12);
   ctx.closePath();
   ctx.fill();
+  drawVRuler();
+}
+
+function drawVRuler(): void {
+  const canvas = document.querySelector("#vruler") as HTMLCanvasElement;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = 28 * dpr;
+  canvas.height = PAGE_H * dpr;
+  canvas.style.height = PAGE_H + "px";
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, 28, PAGE_H);
+  ctx.fillStyle = "rgba(11,87,208,0.18)";
+  ctx.fillRect(0, 0, 28, MT);
+  ctx.fillRect(0, PAGE_H - MB, 28, MB);
+  ctx.font = "10px Roboto, sans-serif";
+  ctx.textAlign = "right";
+  ctx.textBaseline = "middle";
+  for (let y = 0; y <= PAGE_H; y += 8) {
+    const inch = y % 96 === 0;
+    const half = y % 48 === 0;
+    const w = inch ? 14 : half ? 9 : 5;
+    ctx.strokeStyle = inch ? "#80868b" : "#c4c7c5";
+    ctx.beginPath();
+    ctx.moveTo(28, y + 0.5);
+    ctx.lineTo(28 - w, y + 0.5);
+    ctx.stroke();
+    if (inch && y > 0) ctx.fillText(String(y / 96), 12, y);
+  }
+  const mark = (y: number) => {
+    ctx.fillStyle = "#202124";
+    ctx.beginPath();
+    ctx.moveTo(26, y);
+    ctx.lineTo(14, y - 5);
+    ctx.lineTo(14, y + 5);
+    ctx.closePath();
+    ctx.fill();
+  };
+  mark(MT);
+  mark(PAGE_H - MB);
 }
 
 let rulerIndentPx = 0;
@@ -133,11 +178,9 @@ async function mountHome(): Promise<void> {
     location.href = "/d/" + body.id;
   });
   const docs = (await fetch("/api/docs").then((r) => r.json())) as { id: string; title: string; updated: number }[];
+  const trashed = (await fetch("/api/docs?trash=1").then((r) => r.json())) as { id: string; title: string; updated: number }[];
   recent.innerHTML = "";
-  if (!docs.length) {
-    recent.innerHTML = "<li class='empty'>No documents yet.</li>";
-    return;
-  }
+  if (!docs.length) recent.innerHTML = "<li class='empty'>No documents yet.</li>";
   for (const doc of docs) {
     const li = document.createElement("li");
     const a = document.createElement("a");
@@ -151,9 +194,32 @@ async function mountHome(): Promise<void> {
     li.appendChild(a);
     recent.appendChild(li);
   }
+  const trash = document.querySelector("#trash") as HTMLElement;
+  trash.innerHTML = "";
+  if (!trashed.length) trash.innerHTML = "<li class='empty'>Trash is empty.</li>";
+  for (const doc of trashed) {
+    const li = document.createElement("li");
+    const a = document.createElement("a");
+    a.href = "/d/" + doc.id;
+    a.textContent = doc.title;
+    const restore = document.createElement("button");
+    restore.type = "button";
+    restore.textContent = "Restore";
+    restore.addEventListener("click", () => {
+      void fetch("/api/docs/" + encodeURIComponent(doc.id) + "/restore", { method: "POST" }).then(() => location.reload());
+    });
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "Delete";
+    remove.addEventListener("click", () => {
+      void fetch("/api/docs/" + encodeURIComponent(doc.id), { method: "DELETE" }).then(() => location.reload());
+    });
+    li.append(a, restore, remove);
+    trash.appendChild(li);
+  }
 }
 
-function mountEditor(id: string): void {
+function mountEditor(id: string, shareToken = ""): void {
   (document.querySelector("#editor") as HTMLElement).hidden = false;
   drawRuler();
   const session = sid();
@@ -235,6 +301,13 @@ function mountEditor(id: string): void {
     setPageless: (on: boolean) => setPageless(on),
     insertFootnote: (text: string) => editor.insertFootnote(text),
     spacing: () => editor.paragraphSpacing(),
+    setColumns: (cols: 1 | 2 | 3) => editor.setColumns(cols),
+    insertSection: (kind: "cont" | "next") => editor.insertSection(kind),
+    applyCase: (mode: "lower" | "upper" | "title") => editor.applyCase(mode),
+    insertEquation: (src: string) => editor.insertEquation(src),
+    insertImage: (src: string, alt: string, w: number, h: number) => editor.insertImage(src, alt, w, h),
+    setImageRotation: (index: number, rot: number) => editor.setImageRotation(index, rot),
+    role: () => editor.role,
   };
   (window as unknown as { __editor: typeof api }).__editor = api;
 
@@ -292,6 +365,7 @@ function mountEditor(id: string): void {
     onPaint: () => {
       rulerIndentPx = editor.leftIndent() * 36;
       (document.querySelector("#ruler") as HTMLElement).classList.toggle("off", !showRuler);
+      (document.querySelector("#vruler") as HTMLElement).classList.toggle("off", !showRuler);
       if (showRuler) drawRuler();
       renderOutline();
       chrome?.refresh();
@@ -307,7 +381,7 @@ function mountEditor(id: string): void {
       else if (name === "saved") toast("All changes saved");
       else if (name === "paste-plain") void pastePlain();
       else if (name === "import") (document.querySelector("#import-file") as HTMLInputElement).click();
-      else if (name === "print") window.print();
+      else if (name === "print") openPrintPreview();
       else if (name === "menu-search") openMenuSearch();
       else if (name === "footnote") openFootnoteInsert();
     },
@@ -318,6 +392,7 @@ function mountEditor(id: string): void {
       if (st.embed === "drop") chrome.showDropdown(index);
       else if (st.embed === "fn") openFootnote(index);
       else if (st.embed === "img") openAlt(index);
+      else if (st.embed === "eq") openEquation(index);
     },
     onSuggestion: (meta) => send({ t: "suggest", suggestion: meta }),
     onMargin: (which) => openMargin(which),
@@ -364,13 +439,10 @@ function mountEditor(id: string): void {
     ws.send(JSON.stringify({ t: "title", title: title.value, ts: Date.now() }));
   }
 
-  document.querySelector("#share")!.addEventListener("click", async () => {
-    const url = location.href;
-    try {
-      await navigator.clipboard.writeText(url);
-      toast("Link copied");
-    } catch {
-      toast(url);
+  document.querySelector("#share")!.addEventListener("click", () => {
+    if (editor.role === "edit") void openShare();
+    else {
+      void navigator.clipboard.writeText(location.href).then(() => toast("Link copied")).catch(() => toast(location.href));
     }
   });
 
@@ -417,7 +489,8 @@ function mountEditor(id: string): void {
     "download-md": () => saveFile(safeName(title.value, ".md"), new Blob([toMarkdown(editor.doc)], { type: "text/markdown" })),
     "download-pdf": () => saveFile(safeName(title.value, ".pdf"), new Blob([toPdf(editor.doc, title.value)], { type: "application/pdf" })),
     import: () => (document.querySelector("#import-file") as HTMLInputElement).click(),
-    print: () => window.print(),
+    print: () => openPrintPreview(),
+    trash: () => void moveToTrash(),
     "page-setup": () => openPageSetup(),
     "paste-plain": () => void pastePlain(),
     delete: () => editor.insertText(""),
@@ -471,6 +544,17 @@ function mountEditor(id: string): void {
       applyZoom((scroll.clientWidth - 48) / PAGE_W);
     },
     "page-break": () => editor.insertPageBreak(),
+    "section-next": () => editor.insertSection("next"),
+    "section-cont": () => editor.insertSection("cont"),
+    equation: () => openEquation(),
+    chars: () => openCharacters(),
+    "cols-1": () => editor.setColumns(1),
+    "cols-2": () => editor.setColumns(2),
+    "cols-3": () => editor.setColumns(3),
+    "case-lower": () => editor.applyCase("lower"),
+    "case-upper": () => editor.applyCase("upper"),
+    "case-title": () => editor.applyCase("title"),
+    "small-caps": () => editor.toggleMark("sc"),
     rule: () => editor.insertRule(),
     table: () => editor.insertTable(3, 3),
     image: () => chrome.openImage(),
@@ -672,7 +756,7 @@ function mountEditor(id: string): void {
     ws.onopen = () => {
       const queued = editor.sync.exportQueue();
       const resume = !!(queued && !queued.transformed);
-      ws?.send(JSON.stringify({ t: "hello", sid: session, name: displayName(), resume, since: resume ? queued!.baseRev : undefined }));
+      ws?.send(JSON.stringify({ t: "hello", sid: session, name: displayName(), resume, since: resume ? queued!.baseRev : undefined, share: shareToken || undefined }));
     };
     ws.onmessage = (ev) => {
       const msg = JSON.parse(ev.data as string) as Record<string, unknown>;
@@ -682,7 +766,7 @@ function mountEditor(id: string): void {
           editor.applyRemote(decodeCommands(msg.commands as Command[]), String(msg.sid), Number(msg.rev), Number(msg.reqId));
         } catch (err) {
           console.error(err);
-          ws?.send(JSON.stringify({ t: "hello", sid: session, name: displayName() }));
+          ws?.send(JSON.stringify({ t: "hello", sid: session, name: displayName(), share: shareToken || undefined }));
         }
       } else if (msg.t === "ack") editor.ack(Number(msg.reqId), (msg.assignedRev as number | null) ?? null, Number(msg.serverRev));
       else if (msg.t === "sel") {
@@ -775,10 +859,12 @@ function mountEditor(id: string): void {
         editor.load(msg.snapshot as InitMsg["snapshot"] & { runs: { n: number; s: never }[] }, msg.rev);
         void saveQueue(id, null);
         applyPresence(msg);
+        applyAccess(msg.role || "edit", msg.trashed === true);
         pump();
         return;
       }
       applyPresence(msg);
+      applyAccess(msg.role || "edit", msg.trashed === true);
       editor.sync.resend();
       pump();
       void persistQueue();
@@ -787,6 +873,7 @@ function mountEditor(id: string): void {
     editor.load(msg.snapshot as InitMsg["snapshot"] & { runs: { n: number; s: never }[] }, msg.rev);
     void saveQueue(id, null);
     applyPresence(msg);
+    applyAccess(msg.role || "edit", msg.trashed === true);
     pump();
   }
 
@@ -825,6 +912,191 @@ function mountEditor(id: string): void {
     return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   }
 
+  function applyAccess(role: Role, trashed: boolean): void {
+    editor.setRole(trashed ? "view" : role);
+    (document.querySelector("#trash-banner") as HTMLElement).hidden = !trashed;
+    const select = document.querySelector("#mode") as HTMLSelectElement;
+    select.disabled = editor.role !== "edit";
+    syncMode();
+    void loadTabs();
+  }
+
+  async function loadTabs(): Promise<void> {
+    const rows = (await fetch("/api/docs/" + encodeURIComponent(id) + "/tabs").then((r) => r.json())) as { id: string; title: string }[];
+    const bar = document.querySelector("#tabs") as HTMLElement;
+    bar.hidden = false;
+    bar.replaceChildren();
+    for (const tab of rows) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "tab";
+      btn.textContent = tab.title || "Tab";
+      if (tab.id === id) btn.setAttribute("aria-current", "true");
+      btn.addEventListener("click", () => {
+        if (tab.id !== id) location.href = "/d/" + tab.id;
+      });
+      btn.addEventListener("dblclick", () => {
+        const next = window.prompt("Rename tab", tab.title);
+        if (!next?.trim() || editor.role !== "edit") return;
+        void fetch("/api/docs/" + encodeURIComponent(tab.id) + "/tab", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ title: next.trim() }),
+        }).then(() => loadTabs());
+      });
+      bar.append(btn);
+    }
+    if (editor.role === "edit") {
+      const add = document.createElement("button");
+      add.type = "button";
+      add.className = "icon";
+      add.title = "Add tab";
+      add.innerHTML = '<span class="material-symbols-outlined">add</span>';
+      add.addEventListener("click", () => {
+        void fetch("/api/docs/" + encodeURIComponent(id) + "/tabs", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: "{}",
+        })
+          .then((r) => r.json())
+          .then((body: { id: string }) => {
+            location.href = "/d/" + body.id;
+          });
+      });
+      bar.append(add);
+    }
+  }
+
+  function openPrintPreview(): void {
+    document.body.classList.add("print-preview");
+    const bar = document.querySelector("#print-preview") as HTMLElement;
+    bar.hidden = false;
+    (document.querySelector("#print-pages") as HTMLElement).textContent = document.querySelectorAll(".page").length + " pages";
+  }
+
+  async function moveToTrash(): Promise<void> {
+    await fetch("/api/docs/" + encodeURIComponent(id) + "/trash", { method: "POST" });
+    location.href = "/";
+  }
+
+  async function openShare(): Promise<void> {
+    const data = (await fetch("/api/docs/" + encodeURIComponent(id) + "/share").then((r) => r.json())) as {
+      access: string;
+      tokens: { edit: string; comment: string; view: string };
+    };
+    const wrap = document.createElement("div");
+    wrap.className = "setup";
+    const label = document.createElement("label");
+    label.append("General access");
+    const select = document.createElement("select");
+    for (const [value, text] of [
+      ["edit", "Editor"],
+      ["comment", "Commenter"],
+      ["view", "Viewer"],
+    ] as const) {
+      const opt = document.createElement("option");
+      opt.value = value;
+      opt.textContent = text;
+      if (data.access === value) opt.selected = true;
+      select.append(opt);
+    }
+    label.append(select);
+    const hint = document.createElement("p");
+    hint.className = "hint";
+    hint.textContent = "Anyone with the document link gets this role. Editor, commenter, and viewer links keep that role.";
+    select.addEventListener("change", () => {
+      void fetch("/api/docs/" + encodeURIComponent(id) + "/access", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ access: select.value }),
+      });
+    });
+    const links = document.createElement("div");
+    links.className = "share-links";
+    const origin = location.origin;
+    const entries: [string, string][] = [
+      ["document link", origin + "/d/" + id],
+      ["editor link", origin + "/e/" + data.tokens.edit],
+      ["commenter link", origin + "/c/" + data.tokens.comment],
+      ["viewer link", origin + "/v/" + data.tokens.view],
+    ];
+    for (const [name, url] of entries) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = "Copy " + name;
+      btn.addEventListener("click", () => {
+        void navigator.clipboard.writeText(url).then(() => toast("Copied " + name)).catch(() => toast(url));
+      });
+      links.append(btn);
+    }
+    wrap.append(label, hint, links);
+    openDialog("Share", wrap);
+  }
+
+  function openEquation(index?: number): void {
+    const wrap = document.createElement("div");
+    wrap.className = "setup";
+    const hint = document.createElement("p");
+    hint.className = "hint";
+    hint.textContent = "Use ^ and _ for scripts, \\frac{a}{b}, \\sqrt{x}, and names like \\pi.";
+    const input = document.createElement("textarea");
+    input.rows = 3;
+    input.value = index == null ? "E=mc^2" : editor.styleAt(index).label || "";
+    const save = document.createElement("button");
+    save.type = "button";
+    save.textContent = index == null ? "Insert" : "Update";
+    save.addEventListener("click", () => {
+      if (index == null) editor.insertEquation(input.value);
+      else editor.setEquation(index, input.value);
+      closeDialog();
+      editor.focus();
+    });
+    wrap.append(hint, input, save);
+    openDialog(index == null ? "Insert equation" : "Edit equation", wrap);
+  }
+
+  function openCharacters(): void {
+    const groups = [
+      ["Punctuation", "—–…·•“”‘’«»¿¡§¶†‡"],
+      ["Symbols", "©®™°‰★☆♠♣♥♦♪♫✓✗"],
+      ["Arrows", "←→↑↓↔⇒⇐⇔▲▼▶◀"],
+      ["Math", "±×÷≠≤≥≈∞√∑∫∂πµ"],
+      ["Currency", "$€£¥¢₹₩₽"],
+      ["Latin", "ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÑÒÓÔÕÖØÙÚÛÜÝßàáâãäåæçèéêëìíîïñòóôõöøùúûüýÿ"],
+    ];
+    const wrap = document.createElement("div");
+    const search = document.createElement("input");
+    search.placeholder = "Search";
+    search.setAttribute("aria-label", "Search characters");
+    const grid = document.createElement("div");
+    grid.className = "char-grid";
+    const paint = () => {
+      const q = search.value.trim().toLowerCase();
+      grid.replaceChildren();
+      for (const [name, chars] of groups) {
+        if (q && !name.toLowerCase().includes(q) && ![...chars].some((ch) => ch.toLowerCase() === q)) continue;
+        for (const ch of chars) {
+          if (q && q.length === 1 && ch.toLowerCase() !== q && !name.toLowerCase().includes(q)) continue;
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.textContent = ch;
+          btn.title = name;
+          btn.addEventListener("click", () => {
+            editor.insertText(ch);
+            closeDialog();
+            editor.focus();
+          });
+          grid.append(btn);
+        }
+      }
+    };
+    search.addEventListener("input", paint);
+    wrap.append(search, grid);
+    paint();
+    openDialog("Special characters", wrap);
+    window.setTimeout(() => search.focus(), 0);
+  }
+
   function openDialog(title: string, node: string | HTMLElement): void {
     (document.querySelector("#dialog-title") as HTMLElement).textContent = title;
     const body = document.querySelector("#dialog-body") as HTMLElement;
@@ -857,6 +1129,7 @@ function mountEditor(id: string): void {
     set("compact", document.body.classList.contains("compact"));
     set("pageless", currentPage().pageless);
     (document.querySelector("#ruler") as HTMLElement).classList.toggle("off", !showRuler);
+    (document.querySelector("#vruler") as HTMLElement).classList.toggle("off", !showRuler);
   }
 
   function usePage(input: unknown) {
@@ -881,9 +1154,13 @@ function mountEditor(id: string): void {
     banner.hidden = mode === "edit";
     banner.classList.toggle("viewing", mode === "view");
     banner.textContent =
-      mode === "suggest"
-        ? "Suggesting. Insertions and deletions stay marked until someone accepts them."
-        : "Viewing. This document is read-only until you switch back to Editing.";
+      editor.role === "comment"
+        ? "Commenting. Suggestions stay marked until an editor accepts them."
+        : editor.role === "view"
+          ? "Viewing. This document is read-only."
+          : mode === "suggest"
+            ? "Suggesting. Insertions and deletions stay marked until someone accepts them."
+            : "Viewing. This document is read-only until you switch back to Editing.";
   }
 
   function setOutline(on: boolean): void {
@@ -1232,7 +1509,11 @@ function mountEditor(id: string): void {
     addCtx(menu, "Paste", () => void actionsPaste());
     addCtx(menu, "Paste without formatting", () => void pastePlain());
     const style = editor.styleAt(index);
-    if (style.embed === "img") addCtx(menu, "Alt text", () => openAlt(index));
+    if (style.embed === "img") {
+      addCtx(menu, "Alt text", () => openAlt(index));
+      addCtx(menu, "Rotate 90°", () => editor.setImageRotation(index, ((style.rot || 0) + 90) % 360));
+    }
+    if (style.embed === "eq") addCtx(menu, "Edit equation", () => openEquation(index));
     addCtx(menu, "Comment", () => chrome.openComment());
     addCtx(menu, "Link", () => chrome.openLink());
     addCtx(menu, "Clear formatting", () => editor.clearFormatting());
@@ -1315,6 +1596,47 @@ function mountEditor(id: string): void {
   ruler.addEventListener("pointerup", () => {
     if (rulerDrag === "l" || rulerDrag === "r") sendPage();
     rulerDrag = null;
+  });
+
+  const vruler = document.querySelector("#vruler") as HTMLCanvasElement;
+  let vDrag: "t" | "b" | null = null;
+  const vPoint = (ev: PointerEvent) => {
+    const rect = vruler.getBoundingClientRect();
+    return ((ev.clientY - rect.top) / Math.max(1, rect.height)) * PAGE_H;
+  };
+  vruler.addEventListener("pointerdown", (ev) => {
+    const y = vPoint(ev);
+    if (Math.abs(y - MT) < 10) vDrag = "t";
+    else if (Math.abs(y - (PAGE_H - MB)) < 10) vDrag = "b";
+    else return;
+    vruler.setPointerCapture(ev.pointerId);
+  });
+  vruler.addEventListener("pointermove", (ev) => {
+    if (!vDrag) return;
+    const y = Math.max(36, Math.min(PAGE_H - 36, vPoint(ev)));
+    const page = currentPage();
+    if (vDrag === "t") usePage({ ...page, mt: Math.min(y, PAGE_H - page.mb - 120) });
+    else usePage({ ...page, mb: Math.min(PAGE_H - y, PAGE_H - page.mt - 120) });
+    editor.render();
+  });
+  vruler.addEventListener("pointerup", () => {
+    if (vDrag) sendPage();
+    vDrag = null;
+  });
+
+  document.querySelector("#print-go")!.addEventListener("click", () => window.print());
+  document.querySelector("#print-close")!.addEventListener("click", () => {
+    document.body.classList.remove("print-preview");
+    (document.querySelector("#print-preview") as HTMLElement).hidden = true;
+    editor.focus();
+  });
+  document.querySelector("#trash-restore")!.addEventListener("click", () => {
+    void fetch("/api/docs/" + encodeURIComponent(id) + "/restore", { method: "POST" }).then(() => location.reload());
+  });
+  document.querySelector("#trash-delete")!.addEventListener("click", () => {
+    void fetch("/api/docs/" + encodeURIComponent(id), { method: "DELETE" }).then(() => {
+      location.href = "/";
+    });
   });
 
   document.querySelector("#outline-close")!.addEventListener("click", () => setOutline(false));
@@ -1402,7 +1724,7 @@ function paintAvatars(editor: Editor, selfSid: string): void {
 function bindMenus(editor: Editor, actions: Record<string, () => void>): void {
   const bar = document.querySelector("#menubar") as HTMLElement;
   const close = () => {
-    for (const pop of bar.querySelectorAll(".menu-pop")) (pop as HTMLElement).hidden = true;
+    for (const pop of bar.querySelectorAll<HTMLElement>(".menu-pop[data-pop]")) pop.hidden = true;
     for (const btn of bar.querySelectorAll(".menu-btn")) btn.setAttribute("aria-expanded", "false");
   };
   bar.addEventListener("click", (ev) => {
@@ -1429,6 +1751,23 @@ function bindMenus(editor: Editor, actions: Record<string, () => void>): void {
   });
 }
 
-const id = docIdFromPath();
-if (id) mountEditor(id);
-else void mountHome();
+function boot(): void {
+  const doc = location.pathname.match(/^\/d\/([^/]+)\/?$/);
+  if (doc) {
+    mountEditor(decodeURIComponent(doc[1]), new URLSearchParams(location.search).get("s") || "");
+    return;
+  }
+  const linked = location.pathname.match(/^\/([vce])\/([^/]+)\/?$/);
+  if (linked) {
+    void fetch("/api/open/" + encodeURIComponent(linked[2]))
+      .then((res) => (res.ok ? res.json() : null))
+      .then((body: { id: string } | null) => {
+        if (!body) location.href = "/";
+        else mountEditor(body.id, linked[2]);
+      });
+    return;
+  }
+  void mountHome();
+}
+
+boot();

@@ -77,12 +77,22 @@ function serveFile(res: ServerResponse, file: string): void {
 const server = createServer(async (req, res) => {
   const url = new URL(req.url || "/", "http://localhost");
   try {
-    if (req.method === "GET" && (url.pathname === "/" || url.pathname.startsWith("/d/"))) {
+    if (req.method === "GET" && (url.pathname === "/" || url.pathname.startsWith("/d/") || /^\/[vce]\/[^/]+\/?$/.test(url.pathname))) {
       serveFile(res, path.join(PUB, "index.html"));
       return;
     }
     if (req.method === "GET" && url.pathname === "/api/docs") {
-      sendJson(res, 200, store.list());
+      sendJson(res, 200, url.searchParams.get("trash") === "1" ? store.listTrash() : store.list());
+      return;
+    }
+    const opened = url.pathname.match(/^\/api\/open\/([A-Za-z0-9_-]{1,80})$/);
+    if (req.method === "GET" && opened) {
+      const found = store.docForToken(opened[1]);
+      if (!found) {
+        sendJson(res, 404, { error: "missing" });
+        return;
+      }
+      sendJson(res, 200, found);
       return;
     }
     const copy = url.pathname.match(/^\/api\/docs\/([A-Za-z0-9_-]{1,80})\/copy$/);
@@ -97,6 +107,59 @@ const server = createServer(async (req, res) => {
       for (const suggestion of room.suggestions.values()) store.saveSuggestion(id, suggestion);
       sendJson(res, 201, { id, title });
       return;
+    }
+    const docApi = url.pathname.match(/^\/api\/docs\/([A-Za-z0-9_-]{1,80})(?:\/(share|access|trash|restore|tabs|tab))?$/);
+    if (docApi && docApi[1] !== "copy") {
+      const docId = docApi[1];
+      const action = docApi[2] || "";
+      if (!store.exists(docId) && action !== "tabs") {
+        sendJson(res, 404, { error: "missing" });
+        return;
+      }
+      if (req.method === "GET" && action === "share") {
+        const share = store.tokensFor(docId);
+        sendJson(res, 200, { access: share.access, tokens: share.tokens, trashed: store.trashedAt(docId) > 0 });
+        return;
+      }
+      if (req.method === "POST" && action === "access") {
+        const body = JSON.parse((await readBody(req)) || "{}") as { access?: string };
+        const access = body.access === "comment" || body.access === "view" ? body.access : "edit";
+        store.setAccess(docId, access);
+        sendJson(res, 200, { access });
+        return;
+      }
+      if (req.method === "POST" && action === "trash") {
+        store.trash(docId);
+        sendJson(res, 200, { ok: true });
+        return;
+      }
+      if (req.method === "POST" && action === "restore") {
+        store.restore(docId);
+        sendJson(res, 200, { ok: true });
+        return;
+      }
+      if (req.method === "DELETE" && !action) {
+        store.purge(docId);
+        sendJson(res, 200, { ok: true });
+        return;
+      }
+      if (req.method === "GET" && action === "tabs") {
+        sendJson(res, 200, store.tabs(docId));
+        return;
+      }
+      if (req.method === "POST" && action === "tabs") {
+        const body = JSON.parse((await readBody(req)) || "{}") as { title?: string };
+        const child = randomBytes(9).toString("base64url");
+        store.addTab(docId, child, body.title || "");
+        sendJson(res, 201, { id: child });
+        return;
+      }
+      if (req.method === "POST" && action === "tab") {
+        const body = JSON.parse((await readBody(req)) || "{}") as { title?: string };
+        store.setTabTitle(docId, body.title || "");
+        sendJson(res, 200, { ok: true });
+        return;
+      }
     }
     if (req.method === "POST" && url.pathname === "/api/docs") {
       const raw = await readBody(req);
@@ -150,8 +213,10 @@ wss.on("connection", (ws, req) => {
       const name = typeof msg.name === "string" ? msg.name : "Guest";
       const since = typeof msg.since === "number" && Number.isInteger(msg.since) ? msg.since : null;
       const resume = msg.resume === true && since != null;
+      const share = typeof msg.share === "string" ? msg.share : "";
       room = hub.open(docId);
-      if (!conn) conn = hub.connect(room, ws, sid, name, since, resume);
+      const role = store.roleFor(docId, share);
+      if (!conn) conn = hub.connect(room, ws, sid, name, since, resume, role);
       else hub.pushInit(room, conn, since, resume);
       return;
     }

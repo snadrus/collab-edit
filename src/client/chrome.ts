@@ -113,7 +113,7 @@ export function mountChrome(editor: Editor, opts: { send: (msg: unknown) => void
       const reject = el("button", "reject", "Reject");
       reject.type = "button";
       reject.addEventListener("click", () => editor.rejectSuggestion(card.id));
-      actions.append(accept, reject);
+      if (editor.role === "edit") actions.append(accept, reject);
       node.append(quote, head, actions);
       notes.append(node);
       floor = top + node.offsetHeight + 8;
@@ -334,7 +334,7 @@ export function mountChrome(editor: Editor, opts: { send: (msg: unknown) => void
 
   function refreshFindCount(): void {
     const n = editor.findMatches.length;
-    findCount.textContent = n ? `${editor.findIndex + 1} of ${n}` : findQ.value ? "0 of 0" : "";
+    findCount.textContent = editor.findError ? "Invalid" : n ? `${editor.findIndex + 1} of ${n}` : findQ.value ? "0 of 0" : "";
   }
 
   function openLink(): void {
@@ -382,6 +382,7 @@ export function mountChrome(editor: Editor, opts: { send: (msg: unknown) => void
       ["Superscript / subscript", "Ctrl+. / Ctrl+,"],
       ["Increase / decrease size", "Ctrl+Shift+. / Ctrl+Shift+,"],
       ["Link", "Ctrl+K"],
+      ["Small caps", "Ctrl+Shift+K"],
       ["Find / replace", "Ctrl+F / Ctrl+H"],
       ["Find next", "Ctrl+G"],
       ["Comment", "Ctrl+Alt+M"],
@@ -429,6 +430,11 @@ export function mountChrome(editor: Editor, opts: { send: (msg: unknown) => void
   }
 
   findQ.addEventListener("input", () => {
+    editor.setFind(findQ.value, 0);
+    refreshFindCount();
+  });
+  document.querySelector("#find-regex")?.addEventListener("change", (ev) => {
+    editor.findRegex = (ev.target as HTMLInputElement).checked;
     editor.setFind(findQ.value, 0);
     refreshFindCount();
   });

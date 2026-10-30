@@ -1,6 +1,8 @@
+import { randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { type Role, type ShareTokens, emptyTokens, normalizeRole, parseTokens, roleForToken } from "../shared/access.ts";
 import { type Delta } from "../shared/delta.ts";
 import { type Doc, type Snapshot, emptyDoc, snapshotDoc } from "../shared/doc.ts";
 import { type PageSpec, normalizePage } from "../shared/page.ts";
@@ -38,7 +40,13 @@ export class Store {
         title TEXT NOT NULL,
         title_ts INTEGER NOT NULL,
         created INTEGER NOT NULL,
-        updated INTEGER NOT NULL
+        updated INTEGER NOT NULL,
+        access TEXT NOT NULL DEFAULT 'edit',
+        share TEXT NOT NULL DEFAULT '',
+        parent TEXT NOT NULL DEFAULT '',
+        tab_title TEXT NOT NULL DEFAULT '',
+        tab_pos INTEGER NOT NULL DEFAULT 0,
+        trashed INTEGER NOT NULL DEFAULT 0
       );
       CREATE TABLE IF NOT EXISTS snaps (
         doc_id TEXT NOT NULL,
@@ -87,11 +95,23 @@ export class Store {
     const cols = this.db.prepare("PRAGMA table_info(docs)").all() as { name: string }[];
     if (!cols.some((col) => col.name === "page")) this.db.exec("ALTER TABLE docs ADD COLUMN page TEXT NOT NULL DEFAULT ''");
     if (!cols.some((col) => col.name === "page_ts")) this.db.exec("ALTER TABLE docs ADD COLUMN page_ts INTEGER NOT NULL DEFAULT 0");
+    if (!cols.some((col) => col.name === "access")) this.db.exec("ALTER TABLE docs ADD COLUMN access TEXT NOT NULL DEFAULT 'edit'");
+    if (!cols.some((col) => col.name === "share")) this.db.exec("ALTER TABLE docs ADD COLUMN share TEXT NOT NULL DEFAULT ''");
+    if (!cols.some((col) => col.name === "parent")) this.db.exec("ALTER TABLE docs ADD COLUMN parent TEXT NOT NULL DEFAULT ''");
+    if (!cols.some((col) => col.name === "tab_title")) this.db.exec("ALTER TABLE docs ADD COLUMN tab_title TEXT NOT NULL DEFAULT ''");
+    if (!cols.some((col) => col.name === "tab_pos")) this.db.exec("ALTER TABLE docs ADD COLUMN tab_pos INTEGER NOT NULL DEFAULT 0");
+    if (!cols.some((col) => col.name === "trashed")) this.db.exec("ALTER TABLE docs ADD COLUMN trashed INTEGER NOT NULL DEFAULT 0");
   }
 
   list(): { id: string; title: string; updated: number }[] {
     return this.db
-      .prepare("SELECT id, title, updated FROM docs ORDER BY updated DESC LIMIT 100")
+      .prepare("SELECT id, title, updated FROM docs WHERE trashed = 0 AND parent = '' ORDER BY updated DESC LIMIT 100")
+      .all() as { id: string; title: string; updated: number }[];
+  }
+
+  listTrash(): { id: string; title: string; updated: number }[] {
+    return this.db
+      .prepare("SELECT id, title, updated FROM docs WHERE trashed > 0 AND parent = '' ORDER BY trashed DESC LIMIT 100")
       .all() as { id: string; title: string; updated: number }[];
   }
 
@@ -103,7 +123,12 @@ export class Store {
   create(id: string, title: string): void {
     const now = Date.now();
     const snap = snapshotDoc(emptyDoc());
-    this.db.prepare("INSERT INTO docs (id, title, title_ts, created, updated) VALUES (?, ?, ?, ?, ?)").run(id, title, now, now, now);
+    const share = JSON.stringify(freshTokens());
+    this.db
+      .prepare(
+        "INSERT INTO docs (id, title, title_ts, created, updated, access, share, parent, tab_title, tab_pos, trashed) VALUES (?, ?, ?, ?, ?, 'edit', ?, '', 'Tab 1', 0, 0)",
+      )
+      .run(id, title, now, now, now, share);
     this.db.prepare("INSERT INTO snaps (doc_id, rev, data) VALUES (?, 0, ?)").run(id, JSON.stringify(snap));
   }
 
@@ -255,5 +280,126 @@ export class Store {
     this.db
       .prepare("INSERT INTO threads (doc_id, id, data) VALUES (?, ?, ?) ON CONFLICT(doc_id, id) DO UPDATE SET data = excluded.data")
       .run(docId, thread.id, JSON.stringify(thread));
+  }
+
+  private shareRow(id: string): { access: string; share: string } | undefined {
+    return this.db.prepare("SELECT access, share FROM docs WHERE id = ?").get(id) as { access: string; share: string } | undefined;
+  }
+
+  tokensFor(id: string): { access: Role; tokens: ShareTokens } {
+    const row = this.shareRow(id);
+    if (!row) return { access: "edit", tokens: emptyTokens() };
+    let tokens = parseTokens(safeJson(row.share));
+    if (!tokens.edit || !tokens.comment || !tokens.view) {
+      tokens = freshTokens();
+      this.db.prepare("UPDATE docs SET share = ? WHERE id = ?").run(JSON.stringify(tokens), id);
+    }
+    return { access: normalizeRole(row.access), tokens };
+  }
+
+  roleFor(id: string, token: string): Role {
+    const { access, tokens } = this.tokensFor(id);
+    const role = roleForToken(access, tokens, token);
+    return this.trashedAt(id) > 0 ? "view" : role;
+  }
+
+  setAccess(id: string, access: Role): void {
+    this.db.prepare("UPDATE docs SET access = ?, updated = ? WHERE id = ?").run(normalizeRole(access), Date.now(), id);
+  }
+
+  docForToken(token: string): { id: string; role: Role } | null {
+    if (!/^[A-Za-z0-9_-]{6,80}$/.test(token)) return null;
+    const rows = this.db.prepare("SELECT id, share FROM docs").all() as { id: string; share: string }[];
+    for (const row of rows) {
+      const tokens = parseTokens(safeJson(row.share));
+      if (token === tokens.edit) return { id: row.id, role: "edit" };
+      if (token === tokens.comment) return { id: row.id, role: "comment" };
+      if (token === tokens.view) return { id: row.id, role: "view" };
+    }
+    return null;
+  }
+
+  trashedAt(id: string): number {
+    const row = this.db.prepare("SELECT trashed FROM docs WHERE id = ?").get(id) as { trashed: number } | undefined;
+    return row?.trashed || 0;
+  }
+
+  trash(id: string): void {
+    const now = Date.now();
+    const root = this.rootId(id);
+    this.db.prepare("UPDATE docs SET trashed = ?, updated = ? WHERE id = ? OR parent = ?").run(now, now, root, root);
+  }
+
+  restore(id: string): void {
+    const root = this.rootId(id);
+    this.db.prepare("UPDATE docs SET trashed = 0, updated = ? WHERE id = ? OR parent = ?").run(Date.now(), root, root);
+  }
+
+  purge(id: string): void {
+    const root = this.rootId(id);
+    const ids = [
+      root,
+      ...(this.db.prepare("SELECT id FROM docs WHERE parent = ?").all(root) as { id: string }[]).map((row) => row.id),
+    ];
+    this.db.exec("BEGIN");
+    try {
+      for (const docId of ids) {
+        for (const table of ["snaps", "oplog", "reqs", "threads", "suggestions", "versions"]) {
+          this.db.prepare(`DELETE FROM ${table} WHERE doc_id = ?`).run(docId);
+        }
+        this.db.prepare("DELETE FROM docs WHERE id = ?").run(docId);
+      }
+      this.db.exec("COMMIT");
+    } catch (err) {
+      this.db.exec("ROLLBACK");
+      throw err;
+    }
+  }
+
+  tabs(id: string): { id: string; title: string }[] {
+    const root = this.rootId(id);
+    const head = this.db.prepare("SELECT id, title, tab_title FROM docs WHERE id = ?").get(root) as
+      | { id: string; title: string; tab_title: string }
+      | undefined;
+    if (!head) return [];
+    const kids = this.db
+      .prepare("SELECT id, title, tab_title FROM docs WHERE parent = ? AND trashed = 0 ORDER BY tab_pos, created")
+      .all(root) as { id: string; title: string; tab_title: string }[];
+    return [{ id: head.id, title: head.tab_title || head.title || "Tab 1" }, ...kids.map((row) => ({ id: row.id, title: row.tab_title || row.title || "Tab" }))];
+  }
+
+  addTab(parentId: string, childId: string, title: string): void {
+    const root = this.rootId(parentId);
+    const count = (this.db.prepare("SELECT COUNT(*) AS n FROM docs WHERE parent = ?").get(root) as { n: number }).n;
+    const label = title.trim().slice(0, 80) || "Tab " + (count + 2);
+    this.create(childId, label);
+    this.db.prepare("UPDATE docs SET parent = ?, tab_title = ?, tab_pos = ? WHERE id = ?").run(root, label, count + 1, childId);
+    const head = this.db.prepare("SELECT tab_title FROM docs WHERE id = ?").get(root) as { tab_title: string } | undefined;
+    if (head && !head.tab_title) this.db.prepare("UPDATE docs SET tab_title = 'Tab 1' WHERE id = ?").run(root);
+  }
+
+  setTabTitle(id: string, title: string): void {
+    const label = title.trim().slice(0, 80);
+    if (!label) return;
+    this.db.prepare("UPDATE docs SET tab_title = ?, updated = ? WHERE id = ?").run(label, Date.now(), id);
+  }
+
+  private rootId(id: string): string {
+    const row = this.db.prepare("SELECT parent FROM docs WHERE id = ?").get(id) as { parent: string } | undefined;
+    return row?.parent || id;
+  }
+}
+
+function freshTokens(): ShareTokens {
+  const one = () => randomBytes(9).toString("base64url");
+  return { edit: one(), comment: one(), view: one() };
+}
+
+function safeJson(raw: string): unknown {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return null;
   }
 }

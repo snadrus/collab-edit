@@ -20,9 +20,9 @@ export const CELL = "\u001c";
 /** Ends a table row. A break, so paragraph attrs (including `cols`) live on it. */
 export const ROW = "\u001e";
 
-export const TEXT_KEYS = ["b", "i", "u", "strike", "sup", "sub", "font", "size", "color", "hl", "link", "cmt"] as const;
-export const EMBED_KEYS = ["embed", "emoji", "label", "iso", "opts", "val", "src", "iw", "ih", "alt"] as const;
-export const PARA_KEYS = ["h", "align", "list", "lv", "lh", "ind", "hr", "check", "cols", "bm", "sb", "sa", "toc"] as const;
+export const TEXT_KEYS = ["b", "i", "u", "strike", "sup", "sub", "sc", "font", "size", "color", "hl", "link", "cmt"] as const;
+export const EMBED_KEYS = ["embed", "emoji", "label", "iso", "opts", "val", "src", "iw", "ih", "alt", "rot"] as const;
+export const PARA_KEYS = ["h", "align", "list", "lv", "lh", "ind", "hr", "check", "cols", "bm", "sb", "sa", "toc", "sec"] as const;
 
 const TEXT_SET = new Set<string>(TEXT_KEYS);
 const EMBED_SET = new Set<string>(EMBED_KEYS);

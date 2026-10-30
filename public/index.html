@@ -21,6 +21,8 @@
       </button>
       <h2>Recent documents</h2>
       <ul id="recent"></ul>
+      <h2>Trash</h2>
+      <ul id="trash"></ul>
     </main>
   </div>
 
@@ -57,6 +59,7 @@
           <button type="button" data-act="import">Open / Import</button>
           <button type="button" data-act="page-setup">Page setup</button>
           <button type="button" data-act="print">Print</button>
+          <button type="button" data-act="trash">Move to trash</button>
         </div>
       </div>
       <div class="menu">
@@ -92,7 +95,14 @@
       <div class="menu">
         <button type="button" class="menu-btn" data-menu="insert">Insert</button>
         <div class="menu-pop" data-pop="insert" hidden>
-          <button type="button" data-act="page-break">Page break</button>
+          <div class="menu-sub">
+            <button type="button" class="sub-label">Break</button>
+            <div class="menu-pop sub">
+              <button type="button" data-act="page-break">Page break</button>
+              <button type="button" data-act="section-next">Section break (next page)</button>
+              <button type="button" data-act="section-cont">Section break (continuous)</button>
+            </div>
+          </div>
           <button type="button" data-act="header">Header</button>
           <button type="button" data-act="footer">Footer</button>
           <button type="button" data-act="page-number">Page number</button>
@@ -104,6 +114,8 @@
           <button type="button" data-act="rule">Horizontal line</button>
           <button type="button" data-act="table">Table</button>
           <button type="button" data-act="image">Image</button>
+          <button type="button" data-act="equation">Equation</button>
+          <button type="button" data-act="chars">Special characters</button>
           <button type="button" data-act="link">Link</button>
           <button type="button" data-act="vote">Voting chip</button>
           <button type="button" data-act="person">Person</button>
@@ -115,6 +127,23 @@
       <div class="menu">
         <button type="button" class="menu-btn" data-menu="format">Format</button>
         <div class="menu-pop" data-pop="format" hidden>
+          <div class="menu-sub">
+            <button type="button" class="sub-label">Text</button>
+            <div class="menu-pop sub">
+              <button type="button" data-act="case-lower">lowercase</button>
+              <button type="button" data-act="case-upper">UPPERCASE</button>
+              <button type="button" data-act="case-title">Title Case</button>
+              <button type="button" data-act="small-caps">Small caps</button>
+            </div>
+          </div>
+          <div class="menu-sub">
+            <button type="button" class="sub-label">Columns</button>
+            <div class="menu-pop sub">
+              <button type="button" data-act="cols-1">One</button>
+              <button type="button" data-act="cols-2">Two</button>
+              <button type="button" data-act="cols-3">Three</button>
+            </div>
+          </div>
           <button type="button" data-act="bold">Bold</button>
           <button type="button" data-act="italic">Italic</button>
           <button type="button" data-act="underline">Underline</button>
@@ -245,6 +274,7 @@
     <div id="mode-banner" hidden></div>
     <div id="findbar" hidden>
       <input id="find-q" aria-label="Find" placeholder="Find">
+      <label class="find-opt"><input id="find-regex" type="checkbox">Regex</label>
       <span id="find-count"></span>
       <button type="button" id="find-prev" class="icon" title="Previous"><span class="material-symbols-outlined">keyboard_arrow_up</span></button>
       <button type="button" id="find-next" class="icon" title="Next"><span class="material-symbols-outlined">keyboard_arrow_down</span></button>
@@ -261,8 +291,20 @@
       <button type="button" id="col-remove">Remove column</button>
     </div>
 
+    <div id="print-preview" hidden>
+      <strong>Print preview</strong>
+      <span id="print-pages"></span>
+      <button type="button" id="print-go">Print</button>
+      <button type="button" id="print-close">Close</button>
+    </div>
+    <div id="trash-banner" hidden>
+      <span>This document is in the trash.</span>
+      <button type="button" id="trash-restore">Restore</button>
+      <button type="button" id="trash-delete">Delete forever</button>
+    </div>
     <main id="scroll">
       <div id="stack">
+        <canvas id="vruler" width="28" height="1056" aria-hidden="true"></canvas>
         <canvas id="ruler" width="816" height="28" aria-hidden="true"></canvas>
         <div id="pages"></div>
         <div id="overlay"></div>
@@ -309,6 +351,7 @@
     </aside>
     <input id="import-file" type="file" accept=".felarumi,.docx,.odt,.html,.htm,.md,.txt,.json" hidden>
     <div id="toast" hidden></div>
+    <nav id="tabs" hidden></nav>
   </div>
   <script src="/app.js"></script>
 </body>
