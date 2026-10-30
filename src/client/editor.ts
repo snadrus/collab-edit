@@ -1,21 +1,26 @@
 import { commandsToDelta, deltaToCommands, type Command } from "../shared/commands.ts";
-import { type Attrs, type Delta, compose, isBreak, transformPosition } from "../shared/delta.ts";
+import { type Attrs, type Delta, CELL, EMBED, compose, isBreak, transformPosition } from "../shared/delta.ts";
 import {
   type CharStyle,
   type Doc,
   type Heading,
   type Align,
   type ListKind,
+  chipLabel,
   insertedLength,
   paraBounds,
   paragraphStyle,
   plainText,
   restoreDoc,
   splice,
+  voteMap,
   type Snapshot,
 } from "../shared/doc.ts";
 import { ClientSync } from "../shared/engine.ts";
-import { caretBox, drawPage, hitTest, layoutDoc, PAGE_GAP, PAGE_H, PAGE_W, RULER_H, type Layout } from "./layout.ts";
+import { hexAlpha } from "../shared/palette.ts";
+import { type Thread } from "../shared/threads.ts";
+import { addColumnDelta, addRowDelta, insertTableDelta, removeColumnDelta, removeRowDelta, tableAt, tableRowAt } from "../shared/table.ts";
+import { caretBox, drawPage, hitTest, layoutDoc, markerHit, onNeedPaint, PAGE_GAP, PAGE_H, PAGE_W, RULER_H, stackOffset, type Layout } from "./layout.ts";
 import { clipboardToDelta } from "./paste.ts";
 
 export interface RemoteCaret {
@@ -30,9 +35,16 @@ export interface EditorHooks {
   onOutbound: () => void;
   onChange: () => void;
   onSelection: () => void;
+  onCommand?: (name: string) => void;
+  onAt?: (query: string | null) => void;
+  atKey?: (e: KeyboardEvent) => boolean;
+  onEmbed?: (index: number) => void;
+  onPaint?: () => void;
 }
 
-const TEXT_KEYS = ["b", "i", "u", "font", "size", "color"] as const;
+const TYPE_KEYS = ["b", "i", "u", "strike", "sup", "sub", "font", "size", "color", "hl"] as const;
+type MarkKey = "b" | "i" | "u" | "strike" | "sup" | "sub";
+const SIZES = [8, 9, 10, 11, 12, 14, 15, 16, 18, 20, 22, 24, 26, 28, 36, 48, 72];
 
 export class Editor {
   sync: ClientSync;
@@ -50,6 +62,13 @@ export class Editor {
   layout: Layout = { lines: [], pages: 1 };
   measure: CanvasRenderingContext2D;
   zoom = 1;
+  name = "Guest";
+  threads: Thread[] = [];
+  formatPaint: Attrs | null = null;
+  atMark: number | null = null;
+  findQuery = "";
+  findIndex = 0;
+  findMatches: { start: number; end: number }[] = [];
   private composing = false;
   private ignoreInput = false;
   private dragging = false;
@@ -69,6 +88,7 @@ export class Editor {
     this.localCaret = document.createElement("div");
     this.localCaret.className = "local-caret";
     this.overlay.appendChild(this.localCaret);
+    onNeedPaint(() => this.render());
     this.bindInput();
     this.bindPointer();
     this.render();
@@ -163,10 +183,12 @@ export class Editor {
     }
     const ops = this.opsForString(text);
     const delta = splice(lo, hi, ops, this.doc.text.length);
+    const opening = text === "@" && this.atMark == null;
     this.sync.local(delta);
     const at = this.clamp(lo + insertedLength(ops));
     this.anchor = at;
     this.head = at;
+    if (opening) this.atMark = lo;
     this.sampleTyping();
     this.afterEdit();
   }
@@ -183,15 +205,21 @@ export class Editor {
     this.afterEdit();
   }
 
-  toggleMark(key: "b" | "i" | "u"): void {
+  toggleMark(key: MarkKey): void {
+    const other = key === "sup" ? "sub" : key === "sub" ? "sup" : null;
     if (this.anchor === this.head) {
       if (this.typing[key]) delete this.typing[key];
-      else this.typing[key] = true;
+      else {
+        this.typing[key] = true;
+        if (other) delete this.typing[other];
+      }
       this.hooks.onChange();
       return;
     }
     const on = this.rangeAll(key);
-    this.applyText({ [key]: on ? null : true });
+    const patch: Attrs = { [key]: on ? null : true };
+    if (other && !on) patch[other] = null;
+    this.applyText(patch);
   }
 
   setTextAttr(attrs: Attrs): void {
@@ -231,10 +259,9 @@ export class Editor {
   }
 
   clearFormatting(): void {
-    if (this.anchor !== this.head) {
-      this.applyText({ b: null, i: null, u: null, font: null, size: null, color: null });
-    }
-    this.setParagraph({ h: "normal", align: "left", list: null, lv: null });
+    const wipe: Attrs = { b: null, i: null, u: null, strike: null, sup: null, sub: null, font: null, size: null, color: null, hl: null, link: null };
+    if (this.anchor !== this.head) this.applyText(wipe);
+    this.setParagraph({ h: "normal", align: "left", list: null, lv: null, lh: null, ind: null, hr: null, check: null });
     this.typing = {};
   }
 
@@ -268,7 +295,21 @@ export class Editor {
     return html;
   }
 
-  markState(): { b: boolean; i: boolean; u: boolean; font: string; size: number; heading: Heading; align: Align; list: ListKind | "" } {
+  markState(): {
+    b: boolean;
+    i: boolean;
+    u: boolean;
+    strike: boolean;
+    sup: boolean;
+    sub: boolean;
+    font: string;
+    size: number;
+    heading: Heading;
+    align: Align;
+    list: ListKind | "";
+    lh: number;
+    hl: string;
+  } {
     const para = paragraphStyle(this.doc, this.head);
     const collapsed = this.anchor === this.head;
     const probe = collapsed ? this.typing : this.doc.styles[Math.min(this.anchor, this.doc.text.length - 1)] || {};
@@ -278,11 +319,16 @@ export class Editor {
       b: collapsed ? !!this.typing.b : this.rangeAll("b"),
       i: collapsed ? !!this.typing.i : this.rangeAll("i"),
       u: collapsed ? !!this.typing.u : this.rangeAll("u"),
+      strike: collapsed ? !!this.typing.strike : this.rangeAll("strike"),
+      sup: collapsed ? !!this.typing.sup : this.rangeAll("sup"),
+      sub: collapsed ? !!this.typing.sub : this.rangeAll("sub"),
       font: (collapsed ? this.typing.font : probe.font) || "Open Sans",
       size,
       heading,
       align: para.align || "left",
       list: para.list || "",
+      lh: para.lh || 1.15,
+      hl: (typeof probe.hl === "string" ? probe.hl : "") || "",
     };
   }
 
@@ -321,15 +367,29 @@ export class Editor {
       const ctx = canvas.getContext("2d");
       if (!ctx) continue;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      drawPage(ctx, doc, this.layout, p, ranges);
+      drawPage(ctx, doc, this.layout, p, ranges, this.colorMap());
     }
     this.placeCarets();
+    this.hooks.onPaint?.();
+  }
+
+  private colorMap(): Record<string, string> {
+    const colors: Record<string, string> = { [this.sync.sid]: this.color };
+    for (const remote of this.remotes.values()) colors[remote.sid] = remote.color;
+    for (const thread of this.threads) colors[thread.sid] = thread.color;
+    return colors;
   }
 
   private selectionRanges(): { start: number; end: number; color: string }[] {
     const ranges: { start: number; end: number; color: string }[] = [];
-    if (this.anchor !== this.head) {
-      ranges.push({ start: Math.min(this.anchor, this.head), end: Math.max(this.anchor, this.head), color: "rgba(26,115,232,0.28)" });
+    this.findMatches.forEach((m, n) => {
+      ranges.push({ start: m.start, end: m.end, color: n === this.findIndex ? "rgba(255,167,38,0.55)" : "rgba(255,235,59,0.45)" });
+    });
+    for (const thread of this.threads) {
+      if (thread.resolved) continue;
+      for (const span of this.commentSpans(thread.id)) {
+        ranges.push({ start: span.start, end: span.end, color: hexAlpha(thread.color, 0.28) });
+      }
     }
     for (const remote of this.remotes.values()) {
       if (remote.anchor === remote.head) continue;
@@ -338,6 +398,9 @@ export class Editor {
         end: Math.max(remote.anchor, remote.head),
         color: hexAlpha(remote.color, 0.28),
       });
+    }
+    if (this.anchor !== this.head) {
+      ranges.push({ start: Math.min(this.anchor, this.head), end: Math.max(this.anchor, this.head), color: hexAlpha(this.color, 0.28) });
     }
     return ranges;
   }
@@ -409,7 +472,30 @@ export class Editor {
       ev.preventDefault();
       this.focus();
       const page = Number(pageEl.dataset.page || 0);
-      const idx = this.indexFromEvent(ev as MouseEvent, pageEl, page);
+      const point = this.pointFromEvent(ev as MouseEvent, pageEl);
+      const marker = markerHit(this.layout, page, point.x, point.y);
+      if (marker != null && paragraphStyle(this.doc, marker).list === "check") {
+        this.toggleCheck(marker);
+        return;
+      }
+      const idx = this.clamp(hitTest(this.doc, this.layout, page, point.x, point.y));
+      const st = this.doc.styles[idx];
+      if (this.doc.text[idx] === EMBED && st?.embed === "vote") {
+        this.toggleVote(idx);
+        return;
+      }
+      if (this.doc.text[idx] === EMBED && st?.embed === "drop") {
+        this.anchor = idx;
+        this.head = idx;
+        this.render();
+        this.hooks.onEmbed?.(idx);
+        return;
+      }
+      if (((ev as MouseEvent).metaKey || (ev as MouseEvent).ctrlKey) && st?.link) {
+        window.open(st.link, "_blank", "noopener");
+        return;
+      }
+      if (this.atMark != null) this.closeAt();
       if ((ev as MouseEvent).detail >= 3) {
         const b = paraBounds(this.doc, idx);
         this.anchor = b.start;
@@ -440,12 +526,22 @@ export class Editor {
     window.addEventListener("mouseup", () => {
       if (!this.dragging) return;
       this.dragging = false;
+      if (this.formatPaint && this.anchor !== this.head) {
+        this.applyText(this.formatPaint);
+        this.formatPaint = null;
+        this.hooks.onChange();
+      }
       this.hooks.onSelection();
     });
   }
 
   private onKey(e: KeyboardEvent): void {
     if (e.isComposing || this.composing) return;
+    if (this.atMark != null && this.hooks.atKey?.(e)) {
+      e.preventDefault();
+      return;
+    }
+    if (this.handleShortcut(e)) return;
     const meta = e.metaKey || e.ctrlKey;
     const key = e.key;
     if (meta && key.toLowerCase() === "z") {
@@ -496,7 +592,10 @@ export class Editor {
     }
     if (key === "Tab") {
       e.preventDefault();
-      this.insertText("\t");
+      const para = paragraphStyle(this.doc, this.head);
+      if (tableRowAt(this.doc, this.head)) this.moveCell(e.shiftKey ? -1 : 1);
+      else if (para.list) this.indent(e.shiftKey ? -1 : 1);
+      else this.insertText("\t");
       return;
     }
     if (key === "ArrowLeft" || key === "ArrowRight" || key === "ArrowUp" || key === "ArrowDown" || key === "Home" || key === "End") {
@@ -586,6 +685,7 @@ export class Editor {
   private afterEdit(): void {
     if (this.sync.lastDelta) this.shiftRemotes(this.sync.lastDelta);
     this.clampCarets();
+    this.syncAt();
     this.hooks.onOutbound();
     this.hooks.onChange();
     this.hooks.onSelection();
@@ -594,6 +694,10 @@ export class Editor {
 
   /** Enter keeps the heading on the first half and starts the next paragraph in normal text. */
   insertParagraphBreak(): void {
+    if (tableRowAt(this.doc, this.head)) {
+      this.addRow();
+      return;
+    }
     const lo = Math.min(this.anchor, this.head);
     const hi = Math.max(this.anchor, this.head);
     const para = paragraphStyle(this.doc, lo);
@@ -629,9 +733,14 @@ export class Editor {
 
   private textAttrs(): Attrs {
     const attrs: Attrs = {};
-    for (const k of TEXT_KEYS) {
+    for (const k of TYPE_KEYS) {
       const v = (this.typing as Record<string, unknown>)[k];
       if (v != null) attrs[k] = v as string | number | boolean;
+    }
+    if (this.head > 0) {
+      const prev = this.doc.styles[this.head - 1]?.cmt;
+      const here = this.doc.styles[this.head]?.cmt;
+      if (prev && prev === here) attrs.cmt = prev;
     }
     return attrs;
   }
@@ -641,6 +750,8 @@ export class Editor {
     const attrs: Attrs = { h: para.h || "normal", align: para.align || "left" };
     if (para.list) attrs.list = para.list;
     if (para.lv) attrs.lv = para.lv;
+    if (para.ind) attrs.ind = para.ind;
+    if (para.lh) attrs.lh = para.lh;
     return attrs;
   }
 
@@ -684,7 +795,7 @@ export class Editor {
     return { ops };
   }
 
-  private rangeAll(key: "b" | "i" | "u"): boolean {
+  private rangeAll(key: MarkKey): boolean {
     const lo = Math.min(this.anchor, this.head);
     const hi = Math.max(this.anchor, this.head);
     let any = false;
@@ -704,18 +815,24 @@ export class Editor {
     const st = doc.styles[i] || {};
     const para = paragraphStyle(doc, this.head);
     const next: CharStyle = {};
-    if (!isBreak(doc.text[i])) {
+    if (!isBreak(doc.text[i]) && doc.text[i] !== EMBED) {
       if (st.b) next.b = true;
       if (st.i) next.i = true;
       if (st.u) next.u = true;
+      if (st.strike) next.strike = true;
+      if (st.sup) next.sup = true;
+      if (st.sub) next.sub = true;
       if (st.font) next.font = st.font;
       if (st.size) next.size = st.size;
       if (st.color) next.color = st.color;
+      if (st.hl) next.hl = st.hl;
     }
     next.h = para.h;
     next.align = para.align;
     next.list = para.list;
     next.lv = para.lv;
+    next.ind = para.ind;
+    next.lh = para.lh;
     this.typing = next;
   }
 
@@ -750,17 +867,537 @@ export class Editor {
     }
   }
 
-  private indexFromEvent(ev: MouseEvent, pageEl: HTMLElement, page: number): number {
+  private pointFromEvent(ev: MouseEvent, pageEl: HTMLElement): { x: number; y: number } {
     const canvas = pageEl.querySelector("canvas") as HTMLCanvasElement;
     const rect = canvas.getBoundingClientRect();
-    const x = ((ev.clientX - rect.left) / rect.width) * PAGE_W;
-    const y = ((ev.clientY - rect.top) / rect.height) * PAGE_H;
-    return this.clamp(hitTest(this.doc, this.layout, page, x, y));
+    return { x: ((ev.clientX - rect.left) / rect.width) * PAGE_W, y: ((ev.clientY - rect.top) / rect.height) * PAGE_H };
+  }
+
+  private indexFromEvent(ev: MouseEvent, pageEl: HTMLElement, page: number): number {
+    const point = this.pointFromEvent(ev, pageEl);
+    return this.clamp(hitTest(this.doc, this.layout, page, point.x, point.y));
   }
 
   private pageFromPoint(x: number, y: number): HTMLElement | null {
     const el = document.elementFromPoint(x, y);
     return (el?.closest(".page") as HTMLElement) || null;
+  }
+
+  selectionPoint(): { x: number; y: number; h: number; collapsed: boolean } {
+    const box = caretBox(this.layout, this.head);
+    return { x: box.x, y: stackOffset(box.page, box.y), h: box.h, collapsed: this.anchor === this.head };
+  }
+
+  anchorPoint(index: number): { y: number } {
+    const box = caretBox(this.layout, this.clamp(index));
+    return { y: stackOffset(box.page, box.y) };
+  }
+
+  commentSpans(id?: string): { id: string; start: number; end: number }[] {
+    const spans: { id: string; start: number; end: number }[] = [];
+    let i = 0;
+    const doc = this.doc;
+    while (i < doc.text.length) {
+      const mark = doc.styles[i]?.cmt;
+      if (!mark || (id && mark !== id) || isBreak(doc.text[i])) {
+        i++;
+        continue;
+      }
+      let j = i + 1;
+      while (j < doc.text.length && doc.styles[j]?.cmt === mark) j++;
+      spans.push({ id: mark, start: i, end: j });
+      i = j;
+    }
+    return spans;
+  }
+
+  setThreads(list: Thread[]): void {
+    this.threads = list;
+    this.render();
+  }
+
+  upsertThread(thread: Thread): void {
+    const i = this.threads.findIndex((t) => t.id === thread.id);
+    if (i >= 0) this.threads[i] = thread;
+    else this.threads.push(thread);
+    this.render();
+  }
+
+  addCommentMark(id: string): string | null {
+    const lo = Math.min(this.anchor, this.head);
+    const hi = Math.max(this.anchor, this.head);
+    if (hi <= lo) return null;
+    const quote = this.doc.text.slice(lo, hi).replace(/\s+/g, " ").trim().slice(0, 240);
+    this.applyText({ cmt: id });
+    return quote;
+  }
+
+  inTable(): boolean {
+    return !!tableRowAt(this.doc, this.head);
+  }
+
+  tableRowCount(): number {
+    let n = 0;
+    for (const ch of this.doc.text) if (ch === "\u001e") n++;
+    return n;
+  }
+
+  insertTable(rows: number, cols: number): void {
+    this.closeAt();
+    const at = Math.min(this.anchor, this.head);
+    const needBreak = at > 0 && !isBreak(this.doc.text[Math.min(at, this.doc.text.length - 1) - 1]);
+    this.localDelta(insertTableDelta(this.doc, at, rows, cols), at + (needBreak ? 1 : 0));
+  }
+
+  addRow(): void {
+    const delta = addRowDelta(this.doc, this.head);
+    if (!delta) return;
+    const row = tableRowAt(this.doc, this.head);
+    this.localDelta(delta, row ? row.end + 1 : this.head);
+  }
+
+  removeRow(): void {
+    const row = tableRowAt(this.doc, this.head);
+    const delta = removeRowDelta(this.doc, this.head);
+    if (!delta || !row) return;
+    this.localDelta(delta, row.start);
+  }
+
+  addColumn(): void {
+    const delta = addColumnDelta(this.doc, this.head);
+    if (delta) this.localDelta(delta, this.head);
+  }
+
+  removeColumn(): void {
+    const delta = removeColumnDelta(this.doc, this.head);
+    if (delta) this.localDelta(delta, this.head);
+  }
+
+  insertRule(): void {
+    this.closeAt();
+    const lo = Math.min(this.anchor, this.head);
+    const hi = Math.max(this.anchor, this.head);
+    const bounds = paraBounds(this.doc, lo);
+    const para = paragraphStyle(this.doc, lo);
+    if (bounds.start === bounds.end && !para.hr && !para.cols) {
+      this.setParagraph({ hr: true, list: null });
+      return;
+    }
+    const open = this.paraAttrs();
+    const delta = splice(lo, hi, [
+      { t: "i", s: "\n", a: open },
+      { t: "i", s: "\n", a: { h: "normal", align: "left", hr: true } },
+    ], this.doc.text.length);
+    this.localDelta(delta, lo + 2);
+  }
+
+  insertPageBreak(): void {
+    this.closeAt();
+    this.insertText("\f");
+  }
+
+  insertEmbed(attrs: Attrs): void {
+    this.commitQuery([{ t: "i", s: EMBED, a: attrs }]);
+  }
+
+  insertVote(emoji: string): void {
+    this.insertEmbed({ embed: "vote", emoji });
+  }
+
+  insertImage(src: string, alt: string, w: number, h: number): void {
+    this.insertEmbed({ embed: "img", src, alt, iw: Math.round(w), ih: Math.round(h) });
+  }
+
+  toggleVote(index: number): void {
+    const st = this.doc.styles[index];
+    if (!st || st.embed !== "vote") return;
+    const key = "v." + this.sync.sid;
+    const cur = (st as Record<string, unknown>)[key];
+    this.localDelta(this.patchIndices([index], { [key]: typeof cur === "string" ? null : this.name || "Guest" }), index);
+  }
+
+  voteNames(): string[] {
+    const names: string[] = [];
+    for (let i = 0; i < this.doc.text.length; i++) {
+      if (this.doc.styles[i]?.embed !== "vote") continue;
+      names.push(...Object.values(voteMap(this.doc.styles[i])));
+    }
+    return names;
+  }
+
+  setDropdown(index: number, val: string): void {
+    if (this.doc.styles[index]?.embed !== "drop") return;
+    this.localDelta(this.patchIndices([index], { val }), index);
+  }
+
+  toggleCheck(index: number): void {
+    const end = paraBounds(this.doc, index).end;
+    const on = !!this.doc.styles[end]?.check;
+    this.localDelta(this.patchIndices([end], { check: on ? null : true }), this.head);
+  }
+
+  indent(dir: 1 | -1): void {
+    const para = paragraphStyle(this.doc, this.head);
+    if (para.list) {
+      const lv = para.lv || 0;
+      if (dir < 0 && lv === 0) this.setParagraph({ list: null, lv: null });
+      else this.setParagraph({ lv: Math.max(0, lv + dir) });
+      return;
+    }
+    this.setParagraph({ ind: Math.max(0, Math.min(8, (para.ind || 0) + dir)) });
+  }
+
+  setLineSpacing(lh: number): void {
+    this.setParagraph({ lh });
+  }
+
+  setLink(url: string | null): void {
+    const value = url?.trim() || "";
+    if (!value) {
+      if (this.anchor !== this.head) this.applyText({ link: null });
+      return;
+    }
+    if (this.anchor === this.head) {
+      const attrs = this.textAttrs();
+      attrs.link = value;
+      const lo = this.head;
+      this.localDelta(splice(lo, lo, [{ t: "i", s: value, a: attrs }], this.doc.text.length), lo + value.length);
+      return;
+    }
+    this.applyText({ link: value });
+  }
+
+  currentLink(): string | null {
+    const i = Math.min(this.anchor, this.head, Math.max(0, this.doc.text.length - 1));
+    const link = this.doc.styles[i]?.link;
+    return typeof link === "string" ? link : null;
+  }
+
+  copyFormatting(): void {
+    const i = this.anchor === this.head ? Math.max(0, this.head - 1) : Math.min(this.anchor, this.head);
+    const st = this.doc.styles[i] || {};
+    const attrs: Attrs = {};
+    for (const k of ["b", "i", "u", "strike", "sup", "sub", "font", "size", "color", "hl", "link"] as const) {
+      const v = st[k];
+      attrs[k] = v == null ? null : (v as string | number | boolean);
+    }
+    this.formatPaint = attrs;
+    this.hooks.onChange();
+  }
+
+  pasteFormatting(): void {
+    if (!this.formatPaint) return;
+    if (this.anchor === this.head) this.setTextAttr(this.formatPaint);
+    else {
+      this.applyText(this.formatPaint);
+      this.formatPaint = null;
+    }
+  }
+
+  bumpSize(dir: number): void {
+    const cur = this.markState().size;
+    let i = SIZES.findIndex((s) => s >= cur);
+    if (i < 0) i = SIZES.length - 1;
+    if (SIZES[i] !== cur) i = dir < 0 ? Math.max(0, i - 1) : i;
+    else i = Math.max(0, Math.min(SIZES.length - 1, i + dir));
+    this.setTextAttr({ size: SIZES[Math.max(0, Math.min(SIZES.length - 1, i))] });
+  }
+
+  wordCount(): { words: number; characters: number; charactersNoSpaces: number; selection: boolean } {
+    const selected = this.anchor !== this.head;
+    const lo = Math.min(this.anchor, this.head);
+    const hi = Math.max(this.anchor, this.head);
+    let raw = "";
+    const from = selected ? lo : 0;
+    const to = selected ? hi : this.doc.text.length;
+    for (let i = from; i < to; i++) {
+      const ch = this.doc.text[i];
+      if (ch === EMBED) raw += " " + chipLabel(this.doc.styles[i]) + " ";
+      else if (ch === CELL || ch === "\f" || ch === "\u001e") raw += " ";
+      else raw += ch;
+    }
+    const trimmed = raw.trim();
+    return {
+      words: trimmed ? trimmed.split(/\s+/).length : 0,
+      characters: [...raw].length,
+      charactersNoSpaces: [...raw.replace(/\s/g, "")].length,
+      selection: selected,
+    };
+  }
+
+  setFind(query: string, index = 0): void {
+    this.findQuery = query;
+    this.findMatches = [];
+    if (query) {
+      const hay = this.doc.text.toLowerCase();
+      const needle = query.toLowerCase();
+      let from = 0;
+      while (from < hay.length) {
+        const at = hay.indexOf(needle, from);
+        if (at < 0) break;
+        this.findMatches.push({ start: at, end: at + needle.length });
+        from = at + Math.max(1, needle.length);
+      }
+    }
+    this.findIndex = this.findMatches.length ? ((index % this.findMatches.length) + this.findMatches.length) % this.findMatches.length : 0;
+    const m = this.findMatches[this.findIndex];
+    if (m) this.setSelection(m.start, Math.min(m.end, this.doc.text.length - 1));
+    else this.render();
+    this.scrollHeadIntoView();
+  }
+
+  findStep(dir: number): void {
+    if (!this.findMatches.length) return;
+    this.setFind(this.findQuery, this.findIndex + dir);
+  }
+
+  replaceOne(repl: string): void {
+    const m = this.findMatches[this.findIndex];
+    if (!m) return;
+    this.anchor = m.start;
+    this.head = Math.min(m.end, this.doc.text.length - 1);
+    this.insertText(repl);
+    this.setFind(this.findQuery, this.findIndex);
+  }
+
+  replaceAll(repl: string): number {
+    const matches = this.findMatches.filter((m, n) => n === 0 || m.start >= this.findMatches[n - 1].end);
+    if (!matches.length) return 0;
+    const ops = [];
+    let cursor = 0;
+    for (const m of matches) {
+      if (m.start < cursor) continue;
+      if (m.start > cursor) ops.push({ t: "r" as const, n: m.start - cursor });
+      if (m.end > m.start) ops.push({ t: "d" as const, n: m.end - m.start });
+      if (repl) ops.push({ t: "i" as const, s: repl });
+      cursor = m.end;
+    }
+    this.sync.local({ ops });
+    const count = matches.length;
+    this.afterEdit();
+    this.setFind(this.findQuery, 0);
+    return count;
+  }
+
+  atQuery(): string | null {
+    if (this.atMark == null) return null;
+    if (this.head < this.atMark || this.doc.text[this.atMark] !== "@") {
+      this.atMark = null;
+      return null;
+    }
+    return this.doc.text.slice(this.atMark + 1, this.head).replace(/\n/g, "");
+  }
+
+  closeAt(): void {
+    if (this.atMark == null) return;
+    this.atMark = null;
+    this.hooks.onAt?.(null);
+  }
+
+  commitQuery(ops: { t: "i"; s: string; a?: Attrs }[]): void {
+    const start = this.atMark == null ? Math.min(this.anchor, this.head) : this.atMark;
+    const end = this.atMark == null ? Math.max(this.anchor, this.head) : this.head;
+    this.atMark = null;
+    this.hooks.onAt?.(null);
+    const delta = splice(start, end, ops, this.doc.text.length);
+    this.localDelta(delta, start + insertedLength(ops));
+  }
+
+  private localDelta(delta: Delta, caret: number): void {
+    this.sync.local(delta);
+    const at = this.clamp(caret);
+    this.anchor = at;
+    this.head = at;
+    this.sampleTyping();
+    this.afterEdit();
+  }
+
+  private moveCell(dir: number): void {
+    const rows = tableAt(this.doc, this.head);
+    const row = tableRowAt(this.doc, this.head);
+    if (!rows || !row) return;
+    const spots: number[] = [];
+    for (const item of rows) for (const cell of item.cells) spots.push(cell.start);
+    let cur = 0;
+    for (let i = 0; i < row.cells.length; i++) {
+      const cell = row.cells[i];
+      if (this.head >= cell.start && this.head <= cell.end) cur = spots.indexOf(cell.start);
+    }
+    const next = spots[cur + dir];
+    if (next == null) return;
+    this.setSelection(next, next);
+  }
+
+  private syncAt(): void {
+    if (this.atMark == null) return;
+    this.hooks.onAt?.(this.atQuery());
+  }
+
+  private scrollHeadIntoView(): void {
+    const box = caretBox(this.layout, this.head);
+    const top = stackOffset(box.page, box.y);
+    const scroller = this.pagesEl.closest("#scroll") as HTMLElement | null;
+    if (!scroller) return;
+    if (top < scroller.scrollTop + 40 || top > scroller.scrollTop + scroller.clientHeight - 80) {
+      scroller.scrollTop = Math.max(0, top - 80);
+    }
+  }
+
+  private handleShortcut(e: KeyboardEvent): boolean {
+    const meta = e.metaKey || e.ctrlKey;
+    const key = e.key.toLowerCase();
+    const code = e.code;
+    if (meta && e.altKey && key === "m") {
+      e.preventDefault();
+      this.hooks.onCommand?.("comment");
+      return true;
+    }
+    if (meta && key === "k") {
+      e.preventDefault();
+      this.hooks.onCommand?.("link");
+      return true;
+    }
+    if (meta && key === "f") {
+      e.preventDefault();
+      this.hooks.onCommand?.("find");
+      return true;
+    }
+    if (meta && key === "h") {
+      e.preventDefault();
+      this.hooks.onCommand?.("replace");
+      return true;
+    }
+    if (meta && key === "g") {
+      e.preventDefault();
+      this.findStep(e.shiftKey ? -1 : 1);
+      return true;
+    }
+    if (meta && key === "s") {
+      e.preventDefault();
+      this.hooks.onCommand?.("saved");
+      return true;
+    }
+    if (meta && (key === "/" || code === "Slash")) {
+      e.preventDefault();
+      this.hooks.onCommand?.("shortcuts");
+      return true;
+    }
+    if (meta && e.shiftKey && code === "Digit7") {
+      e.preventDefault();
+      this.toggleList("numbered");
+      return true;
+    }
+    if (meta && e.shiftKey && code === "Digit8") {
+      e.preventDefault();
+      this.toggleList("bullet");
+      return true;
+    }
+    if (meta && e.shiftKey && code === "Digit9") {
+      e.preventDefault();
+      this.toggleList("check");
+      return true;
+    }
+    if (meta && e.shiftKey && code === "KeyL") {
+      e.preventDefault();
+      this.setAlign("left");
+      return true;
+    }
+    if (meta && e.shiftKey && code === "KeyE") {
+      e.preventDefault();
+      this.setAlign("center");
+      return true;
+    }
+    if (meta && e.shiftKey && code === "KeyR") {
+      e.preventDefault();
+      this.setAlign("right");
+      return true;
+    }
+    if (meta && e.shiftKey && code === "KeyJ") {
+      e.preventDefault();
+      this.setAlign("justify");
+      return true;
+    }
+    if (meta && e.altKey && code === "Digit0") {
+      e.preventDefault();
+      this.setHeading("normal");
+      return true;
+    }
+    if (meta && e.altKey && code === "Digit1") {
+      e.preventDefault();
+      this.setHeading("h1");
+      return true;
+    }
+    if (meta && e.altKey && code === "Digit2") {
+      e.preventDefault();
+      this.setHeading("h2");
+      return true;
+    }
+    if (meta && e.altKey && code === "Digit3") {
+      e.preventDefault();
+      this.setHeading("h3");
+      return true;
+    }
+    if (meta && code === "BracketRight") {
+      e.preventDefault();
+      this.indent(1);
+      return true;
+    }
+    if (meta && code === "BracketLeft") {
+      e.preventDefault();
+      this.indent(-1);
+      return true;
+    }
+    if (meta && e.shiftKey && code === "Period") {
+      e.preventDefault();
+      this.bumpSize(1);
+      return true;
+    }
+    if (meta && e.shiftKey && code === "Comma") {
+      e.preventDefault();
+      this.bumpSize(-1);
+      return true;
+    }
+    if (meta && !e.shiftKey && code === "Period") {
+      e.preventDefault();
+      this.toggleMark("sup");
+      return true;
+    }
+    if (meta && !e.shiftKey && code === "Comma") {
+      e.preventDefault();
+      this.toggleMark("sub");
+      return true;
+    }
+    if (meta && e.altKey && code === "KeyC") {
+      e.preventDefault();
+      this.copyFormatting();
+      return true;
+    }
+    if (meta && e.altKey && code === "KeyV") {
+      e.preventDefault();
+      this.pasteFormatting();
+      return true;
+    }
+    if ((meta && code === "Backslash") || (meta && code === "Space")) {
+      e.preventDefault();
+      this.clearFormatting();
+      return true;
+    }
+    if (e.altKey && e.shiftKey && code === "Digit5") {
+      e.preventDefault();
+      this.toggleMark("strike");
+      return true;
+    }
+    if (meta && code === "Enter") {
+      e.preventDefault();
+      this.insertPageBreak();
+      return true;
+    }
+    if (meta && e.shiftKey && !e.altKey && code === "KeyC") {
+      e.preventDefault();
+      this.hooks.onCommand?.("wordcount");
+      return true;
+    }
+    return false;
   }
 }
 
@@ -780,15 +1417,6 @@ function wordBounds(doc: Doc, index: number): [number, number] {
   while (a > 0 && isWord(doc.text[a - 1])) a--;
   while (b < doc.text.length - 1 && isWord(doc.text[b])) b++;
   return [a, b];
-}
-
-function hexAlpha(hex: string, alpha: number): string {
-  const h = hex.replace("#", "");
-  const n = parseInt(h.length === 3 ? h.split("").map((c) => c + c).join("") : h, 16);
-  const r = (n >> 16) & 255;
-  const g = (n >> 8) & 255;
-  const b = n & 255;
-  return `rgba(${r},${g},${b},${alpha})`;
 }
 
 function escapeHtml(ch: string): string {

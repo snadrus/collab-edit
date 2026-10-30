@@ -1,5 +1,8 @@
 import type { Command } from "../shared/commands.ts";
 import type { Heading } from "../shared/doc.ts";
+import { hexAlpha } from "../shared/palette.ts";
+import type { Thread } from "../shared/threads.ts";
+import { mountChrome, type Chrome } from "./chrome.ts";
 import { PAGE_W, RULER_H } from "./layout.ts";
 import { Editor, decodeCommands, encodeCommands, type RemoteCaret } from "./editor.ts";
 
@@ -10,6 +13,7 @@ interface InitMsg {
   title: string;
   self: { sid: string; name: string; color: string };
   presence: RemoteCaret[];
+  threads?: Thread[];
 }
 
 const ZOOMS = [0.5, 0.75, 1, 1.25, 1.5, 2];
@@ -121,11 +125,34 @@ function mountEditor(id: string): void {
   let zoom = 1;
   let editor!: Editor;
   let ws: WebSocket | null = null;
+  let chrome: Chrome;
+  const people = () => [{ sid: session, name: displayName(), color: editor.color }, ...editor.remotes.values()];
   const api = {
     ready: false,
     getText: () => editor.getText(),
     setSelection: (a: number, b: number) => editor.setSelection(a, b),
+    insertText: (text: string) => editor.insertText(text),
     remoteCount: () => editor.remotes.size,
+    color: () => editor.color,
+    insertVote: (emoji: string) => editor.insertVote(emoji),
+    toggleVote: (index: number) => editor.toggleVote(index),
+    voteNames: () => editor.voteNames(),
+    addComment: (text: string) => {
+      const id = ("c" + Math.random().toString(36).slice(2, 12)).slice(0, 40);
+      const quote = editor.addCommentMark(id);
+      if (quote == null) return false;
+      const thread: Thread = { id, sid: session, name: editor.name, color: editor.color, text, ts: Date.now(), quote, resolved: false, replies: [] };
+      chrome.upsert(thread);
+      ws?.send(JSON.stringify({ t: "thread", id, text, quote }));
+      return true;
+    },
+    reply: (id: string, text: string) => {
+      const replyId = ("r" + Math.random().toString(36).slice(2, 12)).slice(0, 40);
+      ws?.send(JSON.stringify({ t: "reply", id, replyId, text }));
+    },
+    threads: () => editor.threads.map((t) => ({ id: t.id, text: t.text, resolved: t.resolved, replies: t.replies.map((r) => r.text), name: t.name })),
+    insertTable: (rows: number, cols: number) => editor.insertTable(rows, cols),
+    tableRows: () => editor.tableRowCount(),
   };
   (window as unknown as { __editor: typeof api }).__editor = api;
 
@@ -153,7 +180,10 @@ function mountEditor(id: string): void {
     press("align-justify", state.align === "justify");
     press("list-bullet", state.list === "bullet");
     press("list-numbered", state.list === "numbered");
+    press("list-check", state.list === "check");
+    press("strike", state.strike);
     setSelect("style", state.heading);
+    setSelect("spacing", String(state.lh));
     setSelect("font", state.font);
     const size = document.querySelector("#size") as HTMLSelectElement;
     const sizeText = String(state.size);
@@ -161,13 +191,38 @@ function mountEditor(id: string): void {
     document.title = (title.value || "Untitled document") + " - Folio";
   };
 
-  editor = new Editor(session, pages, overlay, input, "#1a73e8", {
+  editor = new Editor(session, pages, overlay, input, "#f44336", {
     onOutbound: pump,
-    onChange: refreshChrome,
+    onChange: () => {
+      refreshChrome();
+      chrome?.refresh();
+    },
     onSelection: () => {
       refreshChrome();
       sendSel();
+      chrome?.refresh();
     },
+    onPaint: () => chrome?.refresh(),
+    onCommand: (name) => {
+      if (name === "find") chrome.openFind(false);
+      else if (name === "replace") chrome.openFind(true);
+      else if (name === "link") chrome.openLink();
+      else if (name === "comment") chrome.openComment();
+      else if (name === "wordcount") chrome.openWordCount();
+      else if (name === "shortcuts") chrome.openShortcuts();
+      else if (name === "saved") toast("All changes saved");
+    },
+    onAt: (query) => chrome.syncAt(query),
+    atKey: (e) => chrome.atKey(e),
+    onEmbed: (index) => chrome.showDropdown(index),
+  });
+  editor.name = displayName();
+  chrome = mountChrome(editor, {
+    send: (msg) => {
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+    },
+    toast,
+    people,
   });
 
   const applyZoom = (z: number) => {
@@ -183,6 +238,7 @@ function mountEditor(id: string): void {
     if (!next) return;
     sessionStorage.setItem("folio-name", next.trim().slice(0, 40) || "Guest");
     nameBtn.textContent = displayName();
+    editor.name = displayName();
     ws?.send(JSON.stringify({ t: "name", name: displayName() }));
     paintAvatars(editor, session);
   });
@@ -217,6 +273,13 @@ function mountEditor(id: string): void {
     if (target.closest("select, input")) return;
     ev.preventDefault();
   });
+  for (const sel of ["#table-tools", "#findbar"]) {
+    document.querySelector(sel)!.addEventListener("mousedown", (ev) => {
+      const target = ev.target as HTMLElement;
+      if (target.closest("input, textarea, select")) return;
+      ev.preventDefault();
+    });
+  }
   document.querySelector("#menubar")!.addEventListener("mousedown", (ev) => {
     ev.preventDefault();
   });
@@ -258,9 +321,26 @@ function mountEditor(id: string): void {
       const scroll = document.querySelector("#scroll") as HTMLElement;
       applyZoom((scroll.clientWidth - 48) / PAGE_W);
     },
-    "page-break": () => editor.insertText("\f"),
-    rule: () => editor.insertText("────────"),
-    date: () => editor.insertText(new Date().toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" })),
+    "page-break": () => editor.insertPageBreak(),
+    rule: () => editor.insertRule(),
+    table: () => editor.insertTable(3, 3),
+    image: () => chrome.openImage(),
+    link: () => chrome.openLink(),
+    vote: () => editor.insertVote("👍"),
+    person: () => editor.insertEmbed({ embed: "person", label: displayName() }),
+    date: () => editor.insertEmbed({ embed: "date", iso: new Date().toISOString().slice(0, 10) }),
+    dropdown: () => editor.insertEmbed({ embed: "drop", opts: JSON.stringify(["Yes", "No", "Maybe"]), val: "Yes" }),
+    comment: () => chrome.openComment(),
+    find: () => chrome.openFind(false),
+    replace: () => chrome.openFind(true),
+    wordcount: () => chrome.openWordCount(),
+    shortcuts: () => chrome.openShortcuts(),
+    strike: () => editor.toggleMark("strike"),
+    sup: () => editor.toggleMark("sup"),
+    sub: () => editor.toggleMark("sub"),
+    check: () => editor.toggleList("check"),
+    indent: () => editor.indent(1),
+    outdent: () => editor.indent(-1),
     bold: () => editor.toggleMark("b"),
     italic: () => editor.toggleMark("i"),
     underline: () => editor.toggleMark("u"),
@@ -286,6 +366,23 @@ function mountEditor(id: string): void {
   document.querySelector("#align-justify")!.addEventListener("click", () => editor.setAlign("justify"));
   document.querySelector("#list-bullet")!.addEventListener("click", () => editor.toggleList("bullet"));
   document.querySelector("#list-numbered")!.addEventListener("click", () => editor.toggleList("numbered"));
+  document.querySelector("#list-check")!.addEventListener("click", () => editor.toggleList("check"));
+  document.querySelector("#strike")!.addEventListener("click", () => editor.toggleMark("strike"));
+  document.querySelector("#link")!.addEventListener("click", () => chrome.openLink());
+  document.querySelector("#comment")!.addEventListener("click", () => chrome.openComment());
+  document.querySelector("#paint")!.addEventListener("click", () => editor.copyFormatting());
+  document.querySelector("#clear")!.addEventListener("click", () => editor.clearFormatting());
+  document.querySelector("#indent")!.addEventListener("click", () => editor.indent(1));
+  document.querySelector("#outdent")!.addEventListener("click", () => editor.indent(-1));
+  (document.querySelector("#spacing") as HTMLSelectElement).addEventListener("change", (ev) => {
+    editor.setLineSpacing(Number((ev.target as HTMLSelectElement).value));
+    editor.focus();
+  });
+  (document.querySelector("#highlight") as HTMLInputElement).addEventListener("input", (ev) => {
+    const value = (ev.target as HTMLInputElement).value;
+    (document.querySelector("#highlight-bar") as HTMLElement).style.background = value;
+    editor.setTextAttr({ hl: value });
+  });
   (document.querySelector("#style") as HTMLSelectElement).addEventListener("change", (ev) => {
     editor.setHeading((ev.target as HTMLSelectElement).value as Heading);
     editor.focus();
@@ -350,6 +447,8 @@ function mountEditor(id: string): void {
       } else if (msg.t === "title") {
         if (document.activeElement !== title) title.value = String(msg.title);
         refreshChrome();
+      } else if (msg.t === "thread") {
+        chrome.upsert(msg.thread as Thread);
       } else if (msg.t === "reject") {
         console.warn("op rejected", msg.error);
       }
@@ -363,7 +462,9 @@ function mountEditor(id: string): void {
 
   function onInit(msg: InitMsg): void {
     editor.color = msg.self.color;
+    editor.name = msg.self.name || displayName();
     editor.load(msg.snapshot as InitMsg["snapshot"] & { runs: { n: number; s: never }[] }, msg.rev);
+    chrome.setThreads(msg.threads || []);
     title.value = msg.title;
     for (const person of msg.presence) {
       if (person.sid !== session) editor.setRemote(person);
@@ -412,7 +513,9 @@ function paintAvatars(editor: Editor, selfSid: string): void {
   for (const person of people) {
     const el = document.createElement("div");
     el.className = "avatar";
-    el.style.background = person.color;
+    el.style.background = hexAlpha(person.color, 0.16);
+    el.style.color = person.color;
+    el.style.boxShadow = `0 0 0 2px ${person.color}`;
     el.title = person.name;
     el.textContent = (person.name.trim()[0] || "?").toUpperCase();
     root.appendChild(el);

@@ -6,7 +6,17 @@ declare global {
       ready: boolean;
       getText: () => string;
       setSelection: (anchor: number, head: number) => void;
+      insertText: (text: string) => void;
       remoteCount: () => number;
+      color: () => string;
+      insertVote: (emoji: string) => void;
+      toggleVote: (index: number) => void;
+      voteNames: () => string[];
+      addComment: (text: string) => boolean;
+      reply: (id: string, text: string) => void;
+      threads: () => { id: string; text: string; replies: string[]; name: string }[];
+      insertTable: (rows: number, cols: number) => void;
+      tableRows: () => number;
     };
   }
 }
@@ -65,6 +75,54 @@ test("concurrent typing, paste, undo, and remote caret", async ({ browser, reque
       return left === right && left !== "Pasted" ? left : "";
     })
     .not.toBe("");
+
+  await a.close();
+  await b.close();
+});
+
+test("votes, comment thread, and table insert", async ({ browser, request }) => {
+  const created = await request.post("/api/docs", { data: { title: "Review" } });
+  expect(created.ok()).toBeTruthy();
+  const { id } = (await created.json()) as { id: string };
+
+  const a = await browser.newContext();
+  const b = await browser.newContext();
+  const pa = await a.newPage();
+  const pb = await b.newPage();
+  await openDoc(pa, id, "Avery");
+  await openDoc(pb, id, "Blair");
+
+  const colors = await Promise.all([pa.evaluate(() => window.__editor!.color()), pb.evaluate(() => window.__editor!.color())]);
+  expect(colors[0]).not.toBe(colors[1]);
+
+  await pa.evaluate(() => window.__editor!.insertVote("👍"));
+  await expect.poll(() => pb.evaluate(() => window.__editor!.getText().includes("\uFFFC"))).toBe(true);
+  await Promise.all([pa.evaluate(() => window.__editor!.toggleVote(0)), pb.evaluate(() => window.__editor!.toggleVote(0))]);
+  await expect
+    .poll(async () => {
+      const left = await pa.evaluate(() => window.__editor!.voteNames().slice().sort().join(","));
+      const right = await pb.evaluate(() => window.__editor!.voteNames().slice().sort().join(","));
+      return left === right ? left : "";
+    })
+    .toBe("Avery,Blair");
+
+  await pa.evaluate(() => window.__editor!.insertText("Please review this plan"));
+  await expect.poll(() => pb.evaluate(() => window.__editor!.getText().includes("review"))).toBe(true);
+  await pa.evaluate(() => {
+    const text = window.__editor!.getText();
+    const at = text.indexOf("review");
+    window.__editor!.setSelection(at, at + "review".length);
+    window.__editor!.addComment("Please check the wording");
+  });
+  await expect.poll(() => pb.evaluate(() => window.__editor!.threads().length)).toBe(1);
+  const threadId = await pb.evaluate(() => window.__editor!.threads()[0].id);
+  await pb.evaluate((tid) => window.__editor!.reply(tid, "On it"), threadId);
+  await expect.poll(() => pa.evaluate(() => window.__editor!.threads()[0]?.replies[0] || "")).toBe("On it");
+  await expect.poll(() => pb.evaluate(() => window.__editor!.threads()[0]?.text || "")).toBe("Please check the wording");
+
+  await pa.evaluate(() => window.__editor!.insertTable(2, 3));
+  await expect.poll(() => pb.evaluate(() => window.__editor!.tableRows())).toBe(2);
+  await expect.poll(() => pa.evaluate(() => window.__editor!.tableRows())).toBe(2);
 
   await a.close();
   await b.close();

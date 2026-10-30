@@ -3,6 +3,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { type Delta } from "../shared/delta.ts";
 import { type Doc, type Snapshot, emptyDoc, snapshotDoc } from "../shared/doc.ts";
+import { type Thread, sanitizeThread } from "../shared/threads.ts";
 
 export interface OpRow {
   rev: number;
@@ -57,6 +58,12 @@ export class Store {
         req_id INTEGER NOT NULL,
         assigned INTEGER,
         PRIMARY KEY (doc_id, sid, req_id)
+      );
+      CREATE TABLE IF NOT EXISTS threads (
+        doc_id TEXT NOT NULL,
+        id TEXT NOT NULL,
+        data TEXT NOT NULL,
+        PRIMARY KEY (doc_id, id)
       );
     `);
   }
@@ -130,5 +137,21 @@ export class Store {
 
   setTitle(id: string, title: string, ts: number): void {
     this.db.prepare("UPDATE docs SET title = ?, title_ts = ?, updated = ? WHERE id = ? AND title_ts <= ?").run(title, ts, Date.now(), id, ts);
+  }
+
+  loadThreads(id: string): Thread[] {
+    const rows = this.db.prepare("SELECT data FROM threads WHERE doc_id = ?").all(id) as { data: string }[];
+    const out: Thread[] = [];
+    for (const row of rows) {
+      const thread = sanitizeThread(JSON.parse(row.data) as unknown);
+      if (thread) out.push(thread);
+    }
+    return out.sort((a, b) => a.ts - b.ts);
+  }
+
+  saveThread(docId: string, thread: Thread): void {
+    this.db
+      .prepare("INSERT INTO threads (doc_id, id, data) VALUES (?, ?, ?) ON CONFLICT(doc_id, id) DO UPDATE SET data = excluded.data")
+      .run(docId, thread.id, JSON.stringify(thread));
   }
 }

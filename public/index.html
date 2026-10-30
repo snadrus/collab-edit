@@ -55,6 +55,8 @@
           <button type="button" data-act="copy">Copy</button>
           <button type="button" data-act="paste">Paste</button>
           <button type="button" data-act="select-all">Select all</button>
+          <button type="button" data-act="find">Find</button>
+          <button type="button" data-act="replace">Find and replace</button>
         </div>
       </div>
       <div class="menu">
@@ -71,7 +73,14 @@
         <div class="menu-pop" data-pop="insert" hidden>
           <button type="button" data-act="page-break">Page break</button>
           <button type="button" data-act="rule">Horizontal line</button>
+          <button type="button" data-act="table">Table</button>
+          <button type="button" data-act="image">Image</button>
+          <button type="button" data-act="link">Link</button>
+          <button type="button" data-act="vote">Voting chip</button>
+          <button type="button" data-act="person">Person</button>
           <button type="button" data-act="date">Date</button>
+          <button type="button" data-act="dropdown">Dropdown</button>
+          <button type="button" data-act="comment">Comment</button>
         </div>
       </div>
       <div class="menu">
@@ -80,6 +89,9 @@
           <button type="button" data-act="bold">Bold</button>
           <button type="button" data-act="italic">Italic</button>
           <button type="button" data-act="underline">Underline</button>
+          <button type="button" data-act="strike">Strikethrough</button>
+          <button type="button" data-act="sup">Superscript</button>
+          <button type="button" data-act="sub">Subscript</button>
           <button type="button" data-act="h1">Heading 1</button>
           <button type="button" data-act="h2">Heading 2</button>
           <button type="button" data-act="normal">Normal text</button>
@@ -88,7 +100,17 @@
           <button type="button" data-act="align-right">Align right</button>
           <button type="button" data-act="bullet">Bulleted list</button>
           <button type="button" data-act="numbered">Numbered list</button>
+          <button type="button" data-act="check">Checklist</button>
+          <button type="button" data-act="indent">Increase indent</button>
+          <button type="button" data-act="outdent">Decrease indent</button>
           <button type="button" data-act="clear">Clear formatting</button>
+        </div>
+      </div>
+      <div class="menu">
+        <button type="button" class="menu-btn" data-menu="tools">Tools</button>
+        <div class="menu-pop" data-pop="tools" hidden>
+          <button type="button" data-act="wordcount">Word count</button>
+          <button type="button" data-act="shortcuts">Keyboard shortcuts</button>
         </div>
       </div>
     </div>
@@ -127,19 +149,56 @@
       <span class="sep"></span>
       <button type="button" id="bold" class="icon" title="Bold"><span class="material-symbols-outlined">format_bold</span></button>
       <button type="button" id="italic" class="icon" title="Italic"><span class="material-symbols-outlined">format_italic</span></button>
-      <button type="button" id="underline" class="icon" title="Underline"><span class="material-symbols-outlined">format_underlined</span></button>
+      <button type="button" id="underline" class="icon" title="Underline (Ctrl+U)"><span class="material-symbols-outlined">format_underlined</span></button>
+      <button type="button" id="strike" class="icon" title="Strikethrough (Alt+Shift+5)"><span class="material-symbols-outlined">format_strikethrough</span></button>
       <label class="icon color-btn" title="Text color">
         <span class="material-symbols-outlined">format_color_text</span>
         <input id="color" type="color" value="#202124" aria-label="Text color">
         <i id="color-bar"></i>
       </label>
+      <label class="icon color-btn" title="Highlight color">
+        <span class="material-symbols-outlined">format_ink_highlighter</span>
+        <input id="highlight" type="color" value="#fff59d" aria-label="Highlight color">
+        <i id="highlight-bar"></i>
+      </label>
+      <span class="sep"></span>
+      <button type="button" id="link" class="icon" title="Insert link (Ctrl+K)"><span class="material-symbols-outlined">link</span></button>
+      <button type="button" id="comment" class="icon" title="Comment (Ctrl+Alt+M)"><span class="material-symbols-outlined">comment</span></button>
+      <button type="button" id="paint" class="icon" title="Paint format (Ctrl+Alt+C, then Ctrl+Alt+V)"><span class="material-symbols-outlined">format_paint</span></button>
+      <button type="button" id="clear" class="icon" title="Clear formatting (Ctrl+\\)"><span class="material-symbols-outlined">format_clear</span></button>
       <span class="sep"></span>
       <button type="button" id="align-left" class="icon" title="Align left"><span class="material-symbols-outlined">format_align_left</span></button>
       <button type="button" id="align-center" class="icon" title="Align center"><span class="material-symbols-outlined">format_align_center</span></button>
       <button type="button" id="align-right" class="icon" title="Align right"><span class="material-symbols-outlined">format_align_right</span></button>
       <button type="button" id="align-justify" class="icon" title="Justify"><span class="material-symbols-outlined">format_align_justify</span></button>
-      <button type="button" id="list-bullet" class="icon" title="Bulleted list"><span class="material-symbols-outlined">format_list_bulleted</span></button>
-      <button type="button" id="list-numbered" class="icon" title="Numbered list"><span class="material-symbols-outlined">format_list_numbered</span></button>
+      <button type="button" id="list-bullet" class="icon" title="Bulleted list (Ctrl+Shift+8)"><span class="material-symbols-outlined">format_list_bulleted</span></button>
+      <button type="button" id="list-numbered" class="icon" title="Numbered list (Ctrl+Shift+7)"><span class="material-symbols-outlined">format_list_numbered</span></button>
+      <button type="button" id="list-check" class="icon" title="Checklist (Ctrl+Shift+9)"><span class="material-symbols-outlined">checklist</span></button>
+      <button type="button" id="indent" class="icon" title="Increase indent (Ctrl+])"><span class="material-symbols-outlined">format_indent_increase</span></button>
+      <button type="button" id="outdent" class="icon" title="Decrease indent (Ctrl+[)"><span class="material-symbols-outlined">format_indent_decrease</span></button>
+      <select id="spacing" aria-label="Line spacing">
+        <option value="1">1.0</option>
+        <option value="1.15" selected>1.15</option>
+        <option value="1.5">1.5</option>
+        <option value="2">2.0</option>
+      </select>
+    </div>
+    <div id="findbar" hidden>
+      <input id="find-q" aria-label="Find" placeholder="Find">
+      <span id="find-count"></span>
+      <button type="button" id="find-prev" class="icon" title="Previous"><span class="material-symbols-outlined">keyboard_arrow_up</span></button>
+      <button type="button" id="find-next" class="icon" title="Next"><span class="material-symbols-outlined">keyboard_arrow_down</span></button>
+      <input id="find-repl" aria-label="Replace with" placeholder="Replace with">
+      <button type="button" id="find-replace">Replace</button>
+      <button type="button" id="find-all">All</button>
+      <button type="button" id="find-close" class="icon" title="Close"><span class="material-symbols-outlined">close</span></button>
+    </div>
+    <div id="table-tools" hidden>
+      <span>Table</span>
+      <button type="button" id="row-add">Add row</button>
+      <button type="button" id="row-remove">Remove row</button>
+      <button type="button" id="col-add">Add column</button>
+      <button type="button" id="col-remove">Remove column</button>
     </div>
 
     <main id="scroll">
@@ -147,8 +206,29 @@
         <canvas id="ruler" width="816" height="28" aria-hidden="true"></canvas>
         <div id="pages"></div>
         <div id="overlay"></div>
+        <button type="button" id="comment-add" class="icon" title="Add comment" hidden><span class="material-symbols-outlined">add_comment</span></button>
+        <div id="notes"></div>
+        <div id="at-menu" hidden></div>
+        <div id="link-pop" hidden>
+          <input id="link-url" aria-label="Link URL" placeholder="https://">
+          <button type="button" id="link-apply">Apply</button>
+          <button type="button" id="link-clear">Remove</button>
+          <button type="button" id="link-open">Open</button>
+        </div>
       </div>
     </main>
+    <div id="image-pop" hidden>
+      <input id="image-url" aria-label="Image URL" placeholder="Image URL">
+      <button type="button" id="image-insert">Insert</button>
+      <label class="text-btn">Upload<input id="image-file" type="file" accept="image/*" hidden></label>
+      <button type="button" id="image-close" class="icon" title="Close"><span class="material-symbols-outlined">close</span></button>
+    </div>
+    <div id="dialog" hidden>
+      <div class="dialog-card">
+        <header><h2 id="dialog-title"></h2><button type="button" id="dialog-close" class="icon" title="Close"><span class="material-symbols-outlined">close</span></button></header>
+        <div id="dialog-body"></div>
+      </div>
+    </div>
     <div id="input" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Document body" spellcheck="true"></div>
     <div id="toast" hidden></div>
   </div>

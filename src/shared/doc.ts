@@ -2,9 +2,7 @@ import {
   type Attrs,
   type Delta,
   type Op,
-  PARA_KEYS,
-  TEXT_KEYS,
-  allowedAttrSet,
+  allowsAttr,
   chop,
   isBreak,
   isNoop,
@@ -12,19 +10,44 @@ import {
 
 export type Heading = "normal" | "title" | "subtitle" | "h1" | "h2" | "h3";
 export type Align = "left" | "center" | "right" | "justify";
-export type ListKind = "bullet" | "numbered";
+export type ListKind = "bullet" | "numbered" | "check";
+export type EmbedKind = "vote" | "person" | "date" | "drop" | "img";
 
 export interface CharStyle {
   b?: true;
   i?: true;
   u?: true;
+  strike?: true;
+  sup?: true;
+  sub?: true;
   font?: string;
   size?: number;
   color?: string;
+  hl?: string;
+  link?: string;
+  /** Comment thread id anchored to this character. */
+  cmt?: string;
+  embed?: EmbedKind;
+  emoji?: string;
+  label?: string;
+  iso?: string;
+  opts?: string;
+  val?: string;
+  src?: string;
+  iw?: number;
+  ih?: number;
+  alt?: string;
   h?: Heading;
   align?: Align;
   list?: ListKind;
   lv?: number;
+  /** Line-spacing multiple. Absent means 1.15. */
+  lh?: number;
+  ind?: number;
+  hr?: true;
+  check?: true;
+  /** Column count. Meaningful on a table-row break. */
+  cols?: number;
 }
 
 export interface Doc {
@@ -57,10 +80,9 @@ export function docEqual(a: Doc, b: Doc): boolean {
 
 export function applyAttrs(style: CharStyle, attrs: Attrs | undefined, ch: string): CharStyle {
   if (!attrs) return style;
-  const allow = allowedAttrSet(ch);
   let next: CharStyle | null = null;
   for (const k of Object.keys(attrs)) {
-    if (!allow.has(k)) continue;
+    if (!allowsAttr(ch, k)) continue;
     if (!next) next = { ...style };
     const v = attrs[k];
     if (v == null || v === false) delete (next as Record<string, unknown>)[k];
@@ -104,21 +126,20 @@ export function applyDoc(doc: Doc, delta: Delta): Doc {
 }
 
 function styleAttrs(style: CharStyle, ch: string): Attrs | undefined {
-  const keys = isBreak(ch) ? PARA_KEYS : TEXT_KEYS;
   const out: Attrs = {};
-  for (const k of keys) {
+  for (const k of Object.keys(style)) {
+    if (!allowsAttr(ch, k)) continue;
     const v = (style as Record<string, unknown>)[k];
-    if (v != null) out[k] = v as string | number | boolean;
+    if (typeof v === "string" || typeof v === "number" || v === true) out[k] = v;
   }
   return Object.keys(out).length ? out : undefined;
 }
 
 function inverseAttrs(style: CharStyle, attrs: Attrs, ch: string): Attrs | undefined {
-  const allow = allowedAttrSet(ch);
   const out: Attrs = {};
   let any = false;
   for (const k of Object.keys(attrs)) {
-    if (!allow.has(k)) continue;
+    if (!allowsAttr(ch, k)) continue;
     any = true;
     const old = (style as Record<string, unknown>)[k];
     out[k] = old == null ? null : (old as string | number | boolean);
@@ -250,4 +271,41 @@ export function insertedLength(ops: Op[]): number {
 
 export function plainText(doc: Doc): string {
   return doc.text.endsWith("\n") ? doc.text.slice(0, -1) : doc.text;
+}
+
+/** Ballot map stored as `v.<sessionId>` on a voting chip. Keys do not collide across sessions. */
+export function voteMap(style: CharStyle | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!style) return out;
+  for (const [k, v] of Object.entries(style)) {
+    if (k.startsWith("v.") && typeof v === "string" && v) out[k.slice(2)] = v;
+  }
+  return out;
+}
+
+export function dropOptions(style: CharStyle | undefined): string[] {
+  if (!style?.opts) return [];
+  try {
+    const v = JSON.parse(style.opts) as unknown;
+    if (Array.isArray(v) && v.every((x) => typeof x === "string")) return v.slice(0, 20);
+  } catch {
+    /* ignore bad opts */
+  }
+  return [];
+}
+
+export function chipLabel(style: CharStyle | undefined): string {
+  if (!style) return "";
+  if (style.embed === "vote") return `${style.emoji || "👍"} ${Object.keys(voteMap(style)).length}`;
+  if (style.embed === "person") return style.label || "Person";
+  if (style.embed === "date") return style.iso || "Date";
+  if (style.embed === "drop") return style.val || "Choose";
+  if (style.embed === "img") return style.alt || "Image";
+  return "";
+}
+
+export function markedText(doc: Doc, id: string): string {
+  let out = "";
+  for (let i = 0; i < doc.text.length; i++) if (doc.styles[i]?.cmt === id) out += doc.text[i];
+  return out;
 }

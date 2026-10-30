@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { commandsToDelta, deltaToCommands } from "../src/shared/commands.ts";
-import { type Attrs, type Delta, compose, isNoop, transform, transformPosition } from "../src/shared/delta.ts";
+import { type Attrs, type Delta, EMBED, compose, isNoop, transform, transformPosition } from "../src/shared/delta.ts";
 import {
   type CharStyle,
   type Doc,
@@ -9,9 +9,13 @@ import {
   docEqual,
   emptyDoc,
   invert,
+  markedText,
   plainText,
+  voteMap,
 } from "../src/shared/doc.ts";
 import { ClientSync, ServerDoc } from "../src/shared/engine.ts";
+import { assignColor } from "../src/shared/palette.ts";
+import { addColumnDelta, addRowDelta, insertTableDelta, removeColumnDelta, removeRowDelta } from "../src/shared/table.ts";
 
 function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
@@ -389,4 +393,121 @@ test("thousands of concurrent ops converge, including undo", () => {
     }
   }
   assert.ok(applied > 2000, "expected thousands of committed ops, got " + applied);
+});
+
+function chipDoc(): Doc {
+  const text = EMBED + "hello\n";
+  const styles: CharStyle[] = [{ embed: "vote", emoji: "👍" }];
+  for (let i = 0; i < 5; i++) styles.push({ cmt: "thread1" });
+  styles.push({ h: "normal", align: "left" });
+  return { text, styles };
+}
+
+test("concurrent votes and comment anchors converge", () => {
+  const doc = chipDoc();
+  const voteA: Delta = { ops: [{ t: "r", n: 1, a: { "v.avery": "Avery" } }] };
+  const voteB: Delta = { ops: [{ t: "r", n: 1, a: { "v.blair": "Blair" } }] };
+  const left = applyDoc(applyDoc(doc, voteA), transform(voteB, voteA, false));
+  const right = applyDoc(applyDoc(doc, voteB), transform(voteA, voteB, true));
+  assert.ok(docEqual(left, right));
+  assert.equal(voteMap(left.styles[0]).avery, "Avery");
+  assert.equal(voteMap(left.styles[0]).blair, "Blair");
+  const via = commandsToDelta(deltaToCommands(compose(voteA, transform(voteB, voteA, false))));
+  const canonDoc = applyDoc(doc, via);
+  assert.equal(voteMap(canonDoc.styles[0]).avery, "Avery");
+  assert.equal(voteMap(canonDoc.styles[0]).blair, "Blair");
+  assert.ok(docEqual(applyDoc(canonDoc, invert(via, doc)), doc));
+
+  const server = new ServerDoc(doc);
+  const a = server.submit("avery", 1, 0, voteA);
+  const b = server.submit("blair", 1, 0, voteB);
+  assert.equal(a.error, undefined);
+  assert.equal(b.error, undefined);
+  assert.equal(voteMap(server.doc.styles[0]).avery, "Avery");
+  assert.equal(voteMap(server.doc.styles[0]).blair, "Blair");
+
+  const front: Delta = { ops: [{ t: "i", s: "X" }] };
+  const back: Delta = { ops: [{ t: "r", n: 6 }, { t: "i", s: "Y" }] };
+  const anchored = applyDoc(applyDoc(doc, front), transform(back, front, false));
+  const other = applyDoc(applyDoc(doc, back), transform(front, back, true));
+  assert.ok(docEqual(anchored, other));
+  assert.equal(markedText(anchored, "thread1"), "hello");
+
+  const rng = mulberry32(2026);
+  for (let i = 0; i < 600; i++) {
+    const base = i % 5 === 0 ? chipDoc() : randomDoc(rng);
+    const rich = (source: Doc): Delta => {
+      const roll = rng();
+      if (source.text[0] === EMBED && roll < 0.34) {
+        const key = rng() < 0.5 ? "v.avery" : "v.blair";
+        return { ops: [{ t: "r", n: 1, a: { [key]: rng() < 0.2 ? null : "Ada" } }] };
+      }
+      if (roll < 0.55) {
+        const at = ri(rng, 0, Math.max(0, source.text.length - 1));
+        const ops = [];
+        if (at > 0) ops.push({ t: "r" as const, n: at });
+        const attrs: Attrs = {};
+        if (rng() < 0.5) attrs.cmt = rng() < 0.3 ? null : "thread1";
+        if (rng() < 0.3) attrs.strike = true;
+        ops.push({ t: "i" as const, s: pick(rng, ["x", "yo", EMBED]), a: Object.keys(attrs).length ? attrs : undefined });
+        return { ops };
+      }
+      return randomPrimitive(source, rng);
+    };
+    const opA = rich(base);
+    const opB = rich(base);
+    for (const aw of [true, false]) {
+      const b2 = transform(opB, opA, !aw);
+      const a2 = transform(opA, opB, aw);
+      const l = applyDoc(applyDoc(base, opA), b2);
+      const r = applyDoc(applyDoc(base, opB), a2);
+      assert.ok(docEqual(l, r), "rich TP1 " + i);
+      const round = commandsToDelta(deltaToCommands(opA));
+      assert.ok(docEqual(applyDoc(base, opA), applyDoc(base, round)), "rich canon " + i);
+    }
+  }
+});
+
+test("table structure edits", () => {
+  let doc = applyDoc(emptyDoc(), insertTableDelta(emptyDoc(), 0, 2, 2));
+  assert.equal([...doc.text].filter((ch) => ch === "\u001e").length, 2);
+  assert.equal(doc.styles[doc.text.indexOf("\u001e")].cols, 2);
+  const added = addColumnDelta(doc, 0);
+  assert.ok(added);
+  doc = applyDoc(doc, added!);
+  assert.equal(doc.styles[doc.text.indexOf("\u001e")].cols, 3);
+  const row = addRowDelta(doc, 0);
+  assert.ok(row);
+  doc = applyDoc(doc, row!);
+  assert.equal([...doc.text].filter((ch) => ch === "\u001e").length, 3);
+  const removed = removeColumnDelta(doc, 0);
+  assert.ok(removed);
+  doc = applyDoc(doc, removed!);
+  assert.equal(doc.styles[doc.text.indexOf("\u001e")].cols, 2);
+  const dropped = removeRowDelta(doc, 0);
+  assert.ok(dropped);
+  doc = applyDoc(doc, dropped!);
+  assert.equal([...doc.text].filter((ch) => ch === "\u001e").length, 2);
+  assert.ok(doc.text.endsWith("\n"));
+
+  let para = applyDoc(emptyDoc(), { ops: [{ t: "i", s: "Hello" }] });
+  para = applyDoc(para, { ops: [{ t: "r", n: 5 }, { t: "r", n: 1, a: { list: "check" } }] });
+  const split = applyDoc(para, insertTableDelta(para, para.text.length - 1, 2, 2));
+  assert.ok(split.text.startsWith("Hello\n\u001c"), split.text);
+  assert.equal(split.text.includes("Hello\u001c"), false);
+  assert.equal(split.styles[5].list, "check");
+  assert.equal(split.styles[split.text.length - 1].list, undefined);
+  const cell = split.text.indexOf("\u001c");
+  assert.equal(split.text[cell + 1], "\u001e");
+});
+
+test("collaborator colors stay distinct", () => {
+  const used: string[] = [];
+  for (let i = 0; i < 10; i++) {
+    const color = assignColor(used, "s" + i);
+    assert.equal(used.includes(color), false);
+    used.push(color);
+  }
+  const extra = assignColor(used, "overflow");
+  assert.equal(used.includes(extra), false);
 });

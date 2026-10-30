@@ -19,11 +19,20 @@ function textFromEl(el: HTMLElement): Attrs {
   if (tag === "B" || tag === "STRONG") attrs.b = true;
   if (tag === "I" || tag === "EM") attrs.i = true;
   if (tag === "U") attrs.u = true;
+  if (tag === "S" || tag === "STRIKE" || tag === "DEL") attrs.strike = true;
+  if (tag === "SUP") attrs.sup = true;
+  if (tag === "SUB") attrs.sub = true;
+  if (tag === "A") {
+    const href = el.getAttribute("href");
+    if (href) attrs.link = href;
+  }
+  if (tag === "MARK") attrs.hl = el.style.backgroundColor || "#fff59d";
   const style = el.style;
   if (style.fontWeight === "bold" || Number(style.fontWeight) >= 600) attrs.b = true;
   if (style.fontStyle === "italic") attrs.i = true;
   const deco = style.textDecoration || style.textDecorationLine || "";
   if (deco.includes("underline")) attrs.u = true;
+  if (deco.includes("line-through")) attrs.strike = true;
   if (style.color) attrs.color = style.color;
   if (style.fontFamily) {
     const font = mapFont(style.fontFamily);

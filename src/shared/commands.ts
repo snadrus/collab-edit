@@ -1,4 +1,4 @@
-import { type Attrs, type Delta, type Op, PARA_KEYS, TEXT_KEYS, chop, compose, pickAttrs } from "./delta.ts";
+import { type Attrs, type Delta, type Op, PARA_KEYS, chop, compose } from "./delta.ts";
 
 export type StyleMap = Record<string, { op: "set"; opValue: string | number | boolean | null }>;
 
@@ -9,8 +9,8 @@ export type Command =
   | { ty: "mlti"; mts: Command[] }
   | { ty: "null" };
 
-const LIST_KEYS = ["list", "lv"] as const;
-const HEAD_KEYS = ["h", "align"] as const;
+const LIST_KEYS = new Set(["list", "lv"]);
+const PARA_SET = new Set<string>(PARA_KEYS);
 
 function toSm(attrs: Attrs): StyleMap {
   const sm: StyleMap = {};
@@ -84,6 +84,24 @@ function pushAs(cmds: Command[], st: "text" | "paragraph" | "list", si: number, 
   cmds.push({ ty: "as", st, si, ei, sm: toSm(attrs) });
 }
 
+/** Keep every key. List and paragraph keys travel in their own `as` so the wire shape stays stable. */
+function splitAttrs(attrs?: Attrs): { text?: Attrs; para?: Attrs; list?: Attrs } {
+  if (!attrs) return {};
+  const text: Attrs = {};
+  const para: Attrs = {};
+  const list: Attrs = {};
+  for (const k of Object.keys(attrs)) {
+    if (LIST_KEYS.has(k)) list[k] = attrs[k];
+    else if (PARA_SET.has(k)) para[k] = attrs[k];
+    else text[k] = attrs[k];
+  }
+  return {
+    text: Object.keys(text).length ? text : undefined,
+    para: Object.keys(para).length ? para : undefined,
+    list: Object.keys(list).length ? list : undefined,
+  };
+}
+
 /** Kix-style commands. A multi-command change is wrapped in one atomic `mlti`. */
 export function deltaToCommands(delta: Delta): Command[] {
   const cmds: Command[] = [];
@@ -95,9 +113,10 @@ export function deltaToCommands(delta: Delta): Command[] {
       cmds.push({ ty: "is", ibi, s: op.s });
       cursor += op.s.length;
       const ei = cursor;
-      pushAs(cmds, "text", ibi, ei, pickAttrs(op.a, TEXT_KEYS));
-      pushAs(cmds, "paragraph", ibi, ei, pickAttrs(op.a, HEAD_KEYS));
-      pushAs(cmds, "list", ibi, ei, pickAttrs(op.a, LIST_KEYS));
+      const parts = splitAttrs(op.a);
+      pushAs(cmds, "text", ibi, ei, parts.text);
+      pushAs(cmds, "paragraph", ibi, ei, parts.para);
+      pushAs(cmds, "list", ibi, ei, parts.list);
     } else if (op.t === "d") {
       if (op.n <= 0) continue;
       cmds.push({ ty: "ds", si: cursor + 1, ei: cursor + op.n });
@@ -105,9 +124,10 @@ export function deltaToCommands(delta: Delta): Command[] {
       if (op.a) {
         const si = cursor + 1;
         const ei = cursor + op.n;
-        pushAs(cmds, "text", si, ei, pickAttrs(op.a, TEXT_KEYS));
-        pushAs(cmds, "paragraph", si, ei, pickAttrs(op.a, HEAD_KEYS));
-        pushAs(cmds, "list", si, ei, pickAttrs(op.a, LIST_KEYS));
+        const parts = splitAttrs(op.a);
+        pushAs(cmds, "text", si, ei, parts.text);
+        pushAs(cmds, "paragraph", si, ei, parts.para);
+        pushAs(cmds, "list", si, ei, parts.list);
       }
       cursor += op.n;
     }

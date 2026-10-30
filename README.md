@@ -26,7 +26,7 @@ npm run test:e2e
 
 ## How it works
 
-The document is a flat string plus per-character styles (bold, italic, underline, font, size, color, paragraph alignment, heading level, lists). Edits are insert, delete, and style deltas. The browser turns those into 1-based `is` / `ds` / `as` / `mlti` commands.
+The document is a flat string plus per-character styles (bold, italic, underline, strikethrough, super/subscript, font, size, color, highlight, links, lists, spacing, indent, and embedded chips). Edits are insert, delete, and style deltas. The browser turns those into 1-based `is` / `ds` / `as` / `mlti` commands. A chip is one object-replacement character; votes are per-session attributes so concurrent ballots merge. Comment anchors are a mark on the characters they cover, so they move with the text. Comment bodies sync beside the op log.
 
 A Node server is authoritative. Each client batch is tagged with a base revision, a session id, and a request id. The server transforms the batch against revisions the client has not seen yet, assigns the next revision, acks it (duplicate request ids are ignored), and broadcasts the canonical batch over a WebSocket. Clients keep one in-flight batch and one pending batch and rebase both when a remote edit arrives. Undo and redo are inverse deltas computed on the client. Concurrent inserts at the same index are ordered by session id, so arrival order does not change the result.
 

@@ -13,14 +13,31 @@ export interface Delta {
   ops: Op[];
 }
 
-export const TEXT_KEYS = ["b", "i", "u", "font", "size", "color"] as const;
-export const PARA_KEYS = ["h", "align", "list", "lv"] as const;
+/** Object-replacement character. One atomic embed (chip or image). */
+export const EMBED = "\uFFFC";
+/** Unit separator between table cells. */
+export const CELL = "\u001c";
+/** Ends a table row. A break, so paragraph attrs (including `cols`) live on it. */
+export const ROW = "\u001e";
+
+export const TEXT_KEYS = ["b", "i", "u", "strike", "sup", "sub", "font", "size", "color", "hl", "link", "cmt"] as const;
+export const EMBED_KEYS = ["embed", "emoji", "label", "iso", "opts", "val", "src", "iw", "ih", "alt"] as const;
+export const PARA_KEYS = ["h", "align", "list", "lv", "lh", "ind", "hr", "check", "cols"] as const;
 
 const TEXT_SET = new Set<string>(TEXT_KEYS);
+const EMBED_SET = new Set<string>(EMBED_KEYS);
 const PARA_SET = new Set<string>(PARA_KEYS);
 
 export function isBreak(ch: string): boolean {
-  return ch === "\n" || ch === "\f";
+  return ch === "\n" || ch === "\f" || ch === ROW;
+}
+
+/** Which attribute keys a character is allowed to carry. Vote ballots are `v.<sessionId>`. */
+export function allowsAttr(ch: string, key: string): boolean {
+  if (isBreak(ch)) return PARA_SET.has(key);
+  if (ch === EMBED) return EMBED_SET.has(key) || key.startsWith("v.");
+  if (ch === CELL) return false;
+  return TEXT_SET.has(key);
 }
 
 export function attrEq(a?: Attrs, b?: Attrs): boolean {
@@ -266,5 +283,8 @@ export function transformPosition(delta: Delta, pos: number, insertAfter: boolea
 }
 
 export function allowedAttrSet(ch: string): Set<string> {
-  return isBreak(ch) ? PARA_SET : TEXT_SET;
+  if (isBreak(ch)) return PARA_SET;
+  if (ch === EMBED) return EMBED_SET;
+  if (ch === CELL) return new Set();
+  return TEXT_SET;
 }

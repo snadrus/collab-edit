@@ -2,14 +2,12 @@ import type { WebSocket } from "ws";
 import { deltaToCommands, commandsToDelta, type Command } from "../shared/commands.ts";
 import { applyDoc, snapshotDoc, restoreDoc, type Snapshot } from "../shared/doc.ts";
 import { ServerDoc } from "../shared/engine.ts";
+import { assignColor } from "../shared/palette.ts";
+import { type Reply, type Thread, sanitizeThread, validId } from "../shared/threads.ts";
 import { Store, type LoadedDoc } from "./store.ts";
 
-const PALETTE = ["#1a73e8", "#188038", "#d93025", "#e37400", "#9334e6", "#007b83", "#c5221f", "#1967d2"];
-
-export function colorFor(sid: string): string {
-  let h = 0;
-  for (let i = 0; i < sid.length; i++) h = (h * 33 + sid.charCodeAt(i)) >>> 0;
-  return PALETTE[h % PALETTE.length];
+export function colorFor(used: Iterable<string>, sid: string): string {
+  return assignColor(used, sid);
 }
 
 interface Conn {
@@ -27,6 +25,7 @@ interface Room {
   titleTs: number;
   server: ServerDoc;
   conns: Set<Conn>;
+  threads: Map<string, Thread>;
 }
 
 function send(ws: WebSocket, msg: unknown): void {
@@ -69,7 +68,9 @@ export class Hub {
     }
     if (server.log.length !== server.rev || server.log.some((entry) => !entry)) throw new Error("oplog has gaps");
     for (const ack of loaded.acks) server.acks.set(ack.sid + ":" + ack.reqId, ack.assigned);
-    return { id: loaded.id, title: loaded.title, titleTs: loaded.titleTs, server, conns: new Set() };
+    const threads = new Map<string, Thread>();
+    for (const thread of this.store.loadThreads(loaded.id)) threads.set(thread.id, thread);
+    return { id: loaded.id, title: loaded.title, titleTs: loaded.titleTs, server, conns: new Set(), threads };
   }
 
   snapshot(room: Room): Snapshot {
@@ -87,7 +88,9 @@ export class Hub {
   }
 
   connect(room: Room, ws: WebSocket, sid: string, name: string): Conn {
-    const conn: Conn = { ws, sid, name: name.slice(0, 40) || "Guest", color: colorFor(sid), anchor: 0, head: 0 };
+    const same = [...room.conns].find((c) => c.sid === sid);
+    const color = same ? same.color : colorFor([...room.conns].map((c) => c.color), sid);
+    const conn: Conn = { ws, sid, name: name.slice(0, 40) || "Guest", color, anchor: 0, head: 0 };
     room.conns.add(conn);
     this.pushInit(room, conn);
     this.broadcast(room, { t: "join", sid: conn.sid, name: conn.name, color: conn.color }, conn);
@@ -102,6 +105,7 @@ export class Hub {
       title: room.title,
       self: { sid: conn.sid, name: conn.name, color: conn.color },
       presence: this.presence(room),
+      threads: [...room.threads.values()],
     });
   }
 
@@ -124,6 +128,9 @@ export class Hub {
     else if (t === "sel") this.onSel(room, conn, msg);
     else if (t === "title") this.onTitle(room, conn, msg);
     else if (t === "name") this.onName(room, conn, msg);
+    else if (t === "thread") this.onThread(room, conn, msg);
+    else if (t === "reply") this.onReply(room, conn, msg);
+    else if (t === "resolve") this.onResolve(room, conn, msg);
   }
 
   onOp(room: Room, conn: Conn, msg: Record<string, unknown>): void {
@@ -187,5 +194,60 @@ export class Hub {
     if (typeof msg.name !== "string") return;
     conn.name = msg.name.trim().slice(0, 40) || "Guest";
     this.broadcast(room, { t: "join", sid: conn.sid, name: conn.name, color: conn.color }, null);
+  }
+
+  publishThread(room: Room, thread: Thread): void {
+    this.store.saveThread(room.id, thread);
+    this.broadcast(room, { t: "thread", thread }, null);
+  }
+
+  onThread(room: Room, conn: Conn, msg: Record<string, unknown>): void {
+    const id = validId(msg.id);
+    const text = typeof msg.text === "string" ? msg.text.trim().slice(0, 2000) : "";
+    if (!id || !text) return;
+    const existing = room.threads.get(id);
+    if (existing) {
+      this.broadcast(room, { t: "thread", thread: existing }, null);
+      return;
+    }
+    const thread: Thread = {
+      id,
+      sid: conn.sid,
+      name: conn.name,
+      color: conn.color,
+      text,
+      ts: Date.now(),
+      quote: typeof msg.quote === "string" ? msg.quote.replace(/\s+/g, " ").trim().slice(0, 240) : "",
+      resolved: false,
+      replies: [],
+    };
+    const clean = sanitizeThread(thread);
+    if (!clean) return;
+    room.threads.set(id, clean);
+    this.publishThread(room, clean);
+  }
+
+  onReply(room: Room, conn: Conn, msg: Record<string, unknown>): void {
+    const id = validId(msg.id);
+    const replyId = validId(msg.replyId);
+    const text = typeof msg.text === "string" ? msg.text.trim().slice(0, 2000) : "";
+    const thread = id ? room.threads.get(id) : undefined;
+    if (!thread || !replyId || !text) return;
+    if (thread.replies.some((r) => r.id === replyId)) {
+      this.broadcast(room, { t: "thread", thread }, null);
+      return;
+    }
+    const reply: Reply = { id: replyId, sid: conn.sid, name: conn.name, text, ts: Date.now() };
+    thread.replies.push(reply);
+    this.publishThread(room, thread);
+  }
+
+  onResolve(room: Room, conn: Conn, msg: Record<string, unknown>): void {
+    const id = validId(msg.id);
+    const thread = id ? room.threads.get(id) : undefined;
+    if (!thread || typeof msg.resolved !== "boolean") return;
+    void conn;
+    thread.resolved = msg.resolved;
+    this.publishThread(room, thread);
   }
 }
