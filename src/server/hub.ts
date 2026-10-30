@@ -4,6 +4,7 @@ import { applyDoc, snapshotDoc, restoreDoc, type Doc, type Snapshot } from "../s
 import { insertedRanges } from "../shared/replace.ts";
 import { ServerDoc } from "../shared/engine.ts";
 import { assignColor } from "../shared/palette.ts";
+import { type PageSpec, normalizePage } from "../shared/page.ts";
 import { type Reply, type Thread, sanitizeThread, validId } from "../shared/threads.ts";
 import { Store, type LoadedDoc } from "./store.ts";
 
@@ -27,6 +28,8 @@ interface Room {
   server: ServerDoc;
   conns: Set<Conn>;
   threads: Map<string, Thread>;
+  page: PageSpec;
+  pageTs: number;
 }
 
 function send(ws: WebSocket, msg: unknown): void {
@@ -71,7 +74,17 @@ export class Hub {
     for (const ack of loaded.acks) server.acks.set(ack.sid + ":" + ack.reqId, ack.assigned);
     const threads = new Map<string, Thread>();
     for (const thread of this.store.loadThreads(loaded.id)) threads.set(thread.id, thread);
-    return { id: loaded.id, title: loaded.title, titleTs: loaded.titleTs, server, conns: new Set(), threads };
+    const page = this.store.loadPage(loaded.id);
+    return {
+      id: loaded.id,
+      title: loaded.title,
+      titleTs: loaded.titleTs,
+      server,
+      conns: new Set(),
+      threads,
+      page: page.page,
+      pageTs: page.ts,
+    };
   }
 
   snapshot(room: Room): Snapshot {
@@ -115,6 +128,7 @@ export class Hub {
       self: { sid: conn.sid, name: conn.name, color: conn.color },
       presence: this.presence(room),
       threads: [...room.threads.values()],
+      page: room.page,
       resume: resume && since != null && catchup.length === room.server.rev - since,
       catchup,
     });
@@ -157,6 +171,7 @@ export class Hub {
     else if (t === "history") this.onHistory(room, conn);
     else if (t === "preview") this.onPreview(room, conn, msg);
     else if (t === "namever") this.onNameVersion(room, conn, msg);
+    else if (t === "page") this.onPage(room, msg);
   }
 
   onOp(room: Room, conn: Conn, msg: Record<string, unknown>): void {
@@ -276,6 +291,16 @@ export class Hub {
     void conn;
     thread.resolved = msg.resolved;
     this.publishThread(room, thread);
+  }
+
+  onPage(room: Room, msg: Record<string, unknown>): void {
+    if (typeof msg.ts !== "number") return;
+    const page = normalizePage(msg.page);
+    if (msg.ts < room.pageTs) return;
+    room.page = page;
+    room.pageTs = msg.ts;
+    this.store.setPage(room.id, page, msg.ts);
+    this.broadcast(room, { t: "page", page, ts: msg.ts }, null);
   }
 
   onHistory(room: Room, conn: Conn): void {

@@ -3,6 +3,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { type Delta } from "../shared/delta.ts";
 import { type Doc, type Snapshot, emptyDoc, snapshotDoc } from "../shared/doc.ts";
+import { type PageSpec, normalizePage } from "../shared/page.ts";
 import { type Thread, sanitizeThread } from "../shared/threads.ts";
 
 export interface OpRow {
@@ -76,6 +77,9 @@ export class Store {
         PRIMARY KEY (doc_id, rev)
       );
     `);
+    const cols = this.db.prepare("PRAGMA table_info(docs)").all() as { name: string }[];
+    if (!cols.some((col) => col.name === "page")) this.db.exec("ALTER TABLE docs ADD COLUMN page TEXT NOT NULL DEFAULT ''");
+    if (!cols.some((col) => col.name === "page_ts")) this.db.exec("ALTER TABLE docs ADD COLUMN page_ts INTEGER NOT NULL DEFAULT 0");
   }
 
   list(): { id: string; title: string; updated: number }[] {
@@ -205,6 +209,23 @@ export class Store {
     return this.db
       .prepare("SELECT rev, ts, sid, name, color, label FROM versions WHERE doc_id = ? ORDER BY rev DESC")
       .all(docId) as { rev: number; ts: number; sid: string; name: string; color: string; label: string }[];
+  }
+
+  loadPage(id: string): { page: PageSpec; ts: number } {
+    const row = this.db.prepare("SELECT page, page_ts FROM docs WHERE id = ?").get(id) as { page: string; page_ts: number } | undefined;
+    if (!row || !row.page) return { page: normalizePage({}), ts: row?.page_ts || 0 };
+    try {
+      return { page: normalizePage(JSON.parse(row.page)), ts: row.page_ts || 0 };
+    } catch {
+      return { page: normalizePage({}), ts: 0 };
+    }
+  }
+
+  setPage(id: string, page: PageSpec, ts: number): boolean {
+    const current = this.db.prepare("SELECT page_ts FROM docs WHERE id = ?").get(id) as { page_ts: number } | undefined;
+    if (!current || ts < current.page_ts) return false;
+    this.db.prepare("UPDATE docs SET page = ?, page_ts = ?, updated = ? WHERE id = ?").run(JSON.stringify(page), ts, Date.now(), id);
+    return true;
   }
 
   saveThread(docId: string, thread: Thread): void {

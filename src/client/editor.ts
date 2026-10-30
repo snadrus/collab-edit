@@ -18,9 +18,12 @@ import {
 } from "../shared/doc.ts";
 import { ClientSync } from "../shared/engine.ts";
 import { hexAlpha } from "../shared/palette.ts";
-import { replaceDelta } from "../shared/replace.ts";
+import { moveParagraphDelta, moveSliceDelta } from "../shared/edit.ts";
+import { replaceDelta, styleToAttrs } from "../shared/replace.ts";
+import { DEFAULT_SUBS, autocorrectSpan } from "../shared/spell.ts";
 import { type Thread } from "../shared/threads.ts";
 import { addColumnDelta, addRowDelta, insertTableDelta, removeColumnDelta, removeRowDelta, tableAt, tableRowAt } from "../shared/table.ts";
+import { spellHits, spellSuggestions, dictReady } from "./dict.ts";
 import { caretBox, drawPage, hitTest, layoutDoc, markerHit, onNeedPaint, PAGE_GAP, PAGE_H, PAGE_W, RULER_H, stackOffset, type Layout } from "./layout.ts";
 import { clipboardToDelta } from "./paste.ts";
 
@@ -41,6 +44,7 @@ export interface EditorHooks {
   atKey?: (e: KeyboardEvent) => boolean;
   onEmbed?: (index: number) => void;
   onPaint?: () => void;
+  onContext?: (clientX: number, clientY: number, index: number) => void;
 }
 
 const TYPE_KEYS = ["b", "i", "u", "strike", "sup", "sub", "font", "size", "color", "hl"] as const;
@@ -74,10 +78,21 @@ export class Editor {
   flashSid: string | null = null;
   preview: Doc | null = null;
   previewMarks: { start: number; end: number; color: string }[] = [];
+  invisibles = false;
+  autocorrect = true;
+  subs: Record<string, string> = { ...DEFAULT_SUBS };
+  personal = new Set<string>();
+  ignored = new Set<string>();
+  dropAt: number | null = null;
   private composing = false;
   private ignoreInput = false;
   private dragging = false;
+  private moving = false;
+  private dragOrigin: { x: number; y: number; anchor: number; head: number; index: number } | null = null;
   private raf = 0;
+  private dropCaret!: HTMLElement;
+  private spellKey = "";
+  private spellCache: { start: number; end: number; word: string }[] = [];
 
   constructor(sid: string, pagesEl: HTMLElement, overlay: HTMLElement, input: HTMLElement, color: string, hooks: EditorHooks) {
     this.sync = new ClientSync(sid);
@@ -93,6 +108,10 @@ export class Editor {
     this.localCaret = document.createElement("div");
     this.localCaret.className = "local-caret";
     this.overlay.appendChild(this.localCaret);
+    this.dropCaret = document.createElement("div");
+    this.dropCaret.className = "local-caret drop-caret";
+    this.dropCaret.hidden = true;
+    this.overlay.appendChild(this.dropCaret);
     onNeedPaint(() => this.render());
     this.bindInput();
     this.bindPointer();
@@ -166,6 +185,10 @@ export class Editor {
       const on = el.dataset.sid === this.hoverSid || el.dataset.sid === this.flashSid;
       el.classList.toggle("show-flag", on);
     }
+  }
+
+  leftIndent(): number {
+    return paragraphStyle(this.doc, this.head).ind || 0;
   }
 
   styleAt(index: number): CharStyle {
@@ -245,8 +268,13 @@ export class Editor {
     this.anchor = at;
     this.head = at;
     if (opening) this.atMark = lo;
+    this.maybeAutocorrect();
     this.sampleTyping();
     this.afterEdit();
+  }
+
+  pastePlain(text: string): void {
+    this.paste("", text);
   }
 
   paste(html: string, plain: string): void {
@@ -423,7 +451,10 @@ export class Editor {
       const ctx = canvas.getContext("2d");
       if (!ctx) continue;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      drawPage(ctx, doc, this.layout, p, ranges, this.colorMap());
+      drawPage(ctx, doc, this.layout, p, ranges, this.colorMap(), {
+        spell: this.preview ? [] : this.spellSpans(doc),
+        invisibles: this.invisibles && !this.preview,
+      });
     }
     this.placeCarets();
     this.hooks.onPaint?.();
@@ -472,6 +503,15 @@ export class Editor {
     this.localCaret.style.height = local.h + "px";
     this.localCaret.style.background = this.color;
     this.localCaret.style.opacity = this.preview ? "0" : "";
+    if (this.dropAt == null || this.preview) this.dropCaret.hidden = true;
+    else {
+      const drop = caretBox(this.layout, this.dropAt);
+      this.dropCaret.hidden = false;
+      this.dropCaret.style.left = drop.x + "px";
+      this.dropCaret.style.top = stackTop(drop.page, drop.y) + "px";
+      this.dropCaret.style.height = drop.h + "px";
+      this.dropCaret.style.background = this.color;
+    }
     for (const el of [...this.overlay.querySelectorAll(".remote-caret")]) el.remove();
     if (this.preview) return;
     for (const remote of this.remotes.values()) {
@@ -596,6 +636,18 @@ export class Editor {
         return;
       }
       if (this.atMark != null) this.closeAt();
+      const lo = Math.min(this.anchor, this.head);
+      const hi = Math.max(this.anchor, this.head);
+      const inside = (ev as MouseEvent).detail === 1 && !(ev as MouseEvent).shiftKey && hi - lo > 0 && idx > lo && idx < hi;
+      if (inside) {
+        this.dragOrigin = { x: (ev as MouseEvent).clientX, y: (ev as MouseEvent).clientY, anchor: this.anchor, head: this.head, index: idx };
+        this.dragging = false;
+        this.moving = false;
+        return;
+      }
+      this.dragOrigin = null;
+      this.moving = false;
+      this.dropAt = null;
       if ((ev as MouseEvent).detail >= 3) {
         const b = paraBounds(this.doc, idx);
         this.anchor = b.start;
@@ -615,7 +667,27 @@ export class Editor {
       this.render();
       this.hooks.onSelection();
     });
+    this.pagesEl.addEventListener("contextmenu", (ev) => {
+      if (this.preview) return;
+      const pageEl = (ev.target as HTMLElement).closest(".page") as HTMLElement | null;
+      if (!pageEl) return;
+      ev.preventDefault();
+      const page = Number(pageEl.dataset.page || 0);
+      const idx = this.indexFromEvent(ev as MouseEvent, pageEl, page);
+      this.hooks.onContext?.((ev as MouseEvent).clientX, (ev as MouseEvent).clientY, idx);
+    });
     window.addEventListener("mousemove", (ev) => {
+      if (this.dragOrigin) {
+        const dx = ev.clientX - this.dragOrigin.x;
+        const dy = ev.clientY - this.dragOrigin.y;
+        if (!this.moving && dx * dx + dy * dy > 16) this.moving = true;
+        if (this.moving) {
+          const pageEl = this.pageFromPoint(ev.clientX, ev.clientY);
+          this.dropAt = pageEl ? this.indexFromEvent(ev, pageEl, Number(pageEl.dataset.page || 0)) : this.dropAt;
+          this.render();
+        }
+        return;
+      }
       if (!this.dragging) return;
       const pageEl = this.pageFromPoint(ev.clientX, ev.clientY);
       if (!pageEl) return;
@@ -624,6 +696,30 @@ export class Editor {
       this.render();
     });
     window.addEventListener("mouseup", () => {
+      if (this.dragOrigin) {
+        const origin = this.dragOrigin;
+        const dest = this.dropAt;
+        const moved = this.moving;
+        this.dragOrigin = null;
+        this.moving = false;
+        this.dropAt = null;
+        if (moved && dest != null) {
+          const lo = Math.min(origin.anchor, origin.head);
+          const hi = Math.max(origin.anchor, origin.head);
+          const delta = moveSliceDelta(this.doc, lo, hi, dest);
+          if (delta) {
+            const caret = dest <= lo ? dest + (hi - lo) : dest;
+            this.localDelta(delta, caret);
+            return;
+          }
+        } else {
+          this.anchor = origin.index;
+          this.head = origin.index;
+          this.render();
+          this.hooks.onSelection();
+        }
+        return;
+      }
       if (!this.dragging) return;
       this.dragging = false;
       if (this.formatPaint && this.anchor !== this.head) {
@@ -1501,7 +1597,144 @@ export class Editor {
       this.hooks.onCommand?.("wordcount");
       return true;
     }
+    if (meta && e.shiftKey && !e.altKey && key === "v") {
+      e.preventDefault();
+      this.hooks.onCommand?.("paste-plain");
+      return true;
+    }
+    if (meta && !e.shiftKey && key === "o") {
+      e.preventDefault();
+      this.hooks.onCommand?.("import");
+      return true;
+    }
+    if (meta && !e.shiftKey && key === "p") {
+      e.preventDefault();
+      this.hooks.onCommand?.("print");
+      return true;
+    }
+    if (meta && e.shiftKey && (key === "arrowup" || key === "arrowdown")) {
+      e.preventDefault();
+      this.moveParagraph(key === "arrowup" ? -1 : 1);
+      return true;
+    }
+    if (e.shiftKey && e.key === "F10") {
+      e.preventDefault();
+      const box = caretBox(this.layout, this.head);
+      const pageEl = this.pagesEl.children[box.page] as HTMLElement | undefined;
+      const rect = pageEl?.getBoundingClientRect();
+      const scale = rect && rect.width ? rect.width / PAGE_W : 1;
+      this.hooks.onContext?.(rect ? rect.left + box.x * scale : 40, rect ? rect.top + box.y * scale : 40, this.head);
+      return true;
+    }
+    if (e.altKey && (key === "/" || code === "Slash")) {
+      e.preventDefault();
+      this.hooks.onCommand?.("menu-search");
+      return true;
+    }
     return false;
+  }
+
+  headings(): { index: number; level: number; text: string }[] {
+    const out: { index: number; level: number; text: string }[] = [];
+    const rank: Record<string, number> = { title: 0, h1: 1, h2: 2, h3: 3 };
+    let start = 0;
+    for (let i = 0; i < this.doc.text.length; i++) {
+      if (!isBreak(this.doc.text[i])) continue;
+      const h = paragraphStyle(this.doc, start).h || "normal";
+      if (h in rank) {
+        const text = this.doc.text.slice(start, i).replace(/\uFFFC/g, "").replace(/\s+/g, " ").trim();
+        if (text) out.push({ index: start, level: rank[h], text });
+      }
+      start = i + 1;
+    }
+    return out;
+  }
+
+  moveParagraph(dir: -1 | 1): void {
+    const delta = moveParagraphDelta(this.doc, this.head, dir);
+    if (!delta) return;
+    const cur = paraBounds(this.doc, this.head);
+    const nextHead = dir < 0 ? Math.max(0, cur.start - 1) : cur.end + 1;
+    this.localDelta(delta, nextHead);
+  }
+
+  wordAt(index: number): { start: number; end: number; word: string } | null {
+    const [a, b] = wordBounds(this.doc, this.clamp(index));
+    const word = this.doc.text.slice(a, b);
+    if (!/[A-Za-z]/.test(word)) return null;
+    return { start: a, end: b, word };
+  }
+
+  misspelledWords(): string[] {
+    return this.spellSpans(this.doc).map((hit) => hit.word);
+  }
+
+  spellList(): { start: number; end: number; word: string }[] {
+    return this.spellSpans(this.doc).slice();
+  }
+
+  suggestionsFor(word: string): string[] {
+    return spellSuggestions(word);
+  }
+
+  replaceRange(start: number, end: number, value: string): void {
+    const attrs = styleToAttrs(this.doc.styles[start], this.doc.text[start]);
+    const ops = [];
+    if (start > 0) ops.push({ t: "r" as const, n: start });
+    if (end > start) ops.push({ t: "d" as const, n: end - start });
+    ops.push(attrs ? { t: "i" as const, s: value, a: attrs } : { t: "i" as const, s: value });
+    this.localDelta({ ops }, start + value.length);
+  }
+
+  allowWord(word: string): void {
+    const key = word.toLowerCase();
+    if (!key) return;
+    this.personal.add(key);
+    this.spellKey = "";
+    this.render();
+  }
+
+  ignoreWord(word: string): void {
+    this.ignored.add(word.toLowerCase());
+    this.spellKey = "";
+    this.render();
+  }
+
+  jumpTo(index: number): void {
+    const at = this.clamp(index);
+    this.anchor = at;
+    this.head = at;
+    this.render();
+    const box = caretBox(this.layout, at);
+    const top = stackOffset(box.page, box.y);
+    const scroller = this.pagesEl.closest("#scroll") as HTMLElement | null;
+    if (scroller) scroller.scrollTop = Math.max(0, top - 80);
+    this.hooks.onSelection();
+    this.focus();
+  }
+
+  private spellSpans(doc: Doc): { start: number; end: number; word: string }[] {
+    const allowed = new Set<string>([...this.personal, ...this.ignored]);
+    const key = doc.text + "\0" + [...allowed].sort().join(",") + (dictReady() ? "1" : "0");
+    if (key === this.spellKey) return this.spellCache;
+    this.spellKey = key;
+    this.spellCache = spellHits(doc.text, allowed);
+    return this.spellCache;
+  }
+
+  private maybeAutocorrect(): void {
+    if (!this.autocorrect) return;
+    const hit = autocorrectSpan(this.doc.text, this.head, this.subs);
+    if (!hit) return;
+    const attrs = styleToAttrs(this.doc.styles[hit.start], this.doc.text[hit.start]);
+    const ops = [];
+    if (hit.start > 0) ops.push({ t: "r" as const, n: hit.start });
+    ops.push({ t: "d" as const, n: hit.end - hit.start });
+    ops.push(attrs ? { t: "i" as const, s: hit.value, a: attrs } : { t: "i" as const, s: hit.value });
+    this.sync.local({ ops });
+    const shift = hit.value.length - (hit.end - hit.start);
+    this.head = this.clamp(this.head + shift);
+    this.anchor = this.head;
   }
 }
 

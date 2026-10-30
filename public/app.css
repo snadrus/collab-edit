@@ -124,6 +124,8 @@ button { cursor: pointer; }
   padding: 0 12px;
   background: white;
   border-bottom: 1px solid var(--line);
+  position: relative;
+  z-index: 35;
 }
 .menu { position: relative; }
 .menu-btn, .menu-pop button {
@@ -145,7 +147,19 @@ button { cursor: pointer; }
   box-shadow: var(--shadow);
 }
 .menu-pop button { display: block; width: 100%; text-align: left; padding: 8px 16px; }
+.menu-pop button.tog { padding-left: 32px; position: relative; }
+.menu-pop button.tog[aria-pressed="true"]::before {
+  content: "check";
+  font-family: "Material Symbols Outlined";
+  font-size: 16px;
+  position: absolute;
+  left: 8px;
+  top: 7px;
+}
 .menu-pop button:hover { background: var(--hover); }
+body.compact .menubar, body.compact .toolbar { display: none; }
+#ruler.off { display: none; }
+.drop-caret { animation: none; width: 2px; }
 
 .toolbar {
   display: flex;
@@ -211,6 +225,7 @@ button { cursor: pointer; }
 
 #scroll { flex: 1; overflow: auto; }
 #stack { width: 1140px; margin: 16px auto 48px; position: relative; }
+body.outline-open #stack { margin-left: 248px; margin-right: auto; }
 #ruler { display: block; width: 816px; height: 28px; background: #fff; border-radius: 2px 2px 0 0; }
 #comment-add {
   position: absolute;
@@ -277,7 +292,7 @@ button { cursor: pointer; }
 #dialog {
   position: fixed;
   inset: 0;
-  z-index: 40;
+  z-index: 70;
   background: rgba(32, 33, 36, 0.35);
   display: grid;
   place-items: center;
@@ -336,6 +351,50 @@ button { cursor: pointer; }
 .header-logo { height: 44px; width: auto; display: block; }
 .menu-label { padding: 8px 16px 2px; font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
 .avatar { cursor: pointer; }
+#outline {
+  position: fixed;
+  z-index: 30;
+  top: 156px;
+  left: 12px;
+  bottom: 16px;
+  width: 220px;
+  display: flex;
+  flex-direction: column;
+  background: white;
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+#outline header { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; }
+#outline h2 { margin: 0; font-size: 16px; }
+#outline-list { list-style: none; margin: 0; padding: 0 8px 12px; overflow: auto; }
+#outline-list button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  border-radius: 8px;
+  padding: 6px 8px;
+  font-size: 13px;
+}
+#outline-list button:hover { background: var(--hover); }
+#context {
+  position: fixed;
+  z-index: 60;
+  min-width: 220px;
+  padding: 6px 0;
+  background: white;
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+.setup { display: grid; gap: 8px; }
+.setup label { display: flex; justify-content: space-between; gap: 12px; align-items: center; }
+.setup input, .setup select { width: 120px; }
+#dialog-body button { margin: 4px 8px 4px 0; }
+#context button { display: block; width: 100%; text-align: left; border: 0; background: transparent; padding: 8px 16px; }
+#context button:hover { background: var(--hover); }
+#context .menu-label { padding-top: 4px; }
 #history {
   position: fixed;
   z-index: 40;

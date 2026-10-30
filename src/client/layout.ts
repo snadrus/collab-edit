@@ -2,12 +2,39 @@ import { type Doc, type Heading, chipLabel, dropOptions, paragraphStyle, voteMap
 import { CELL, EMBED, ROW, isBreak } from "../shared/delta.ts";
 import { COLLAB_PALETTE, hexAlpha } from "../shared/palette.ts";
 
-export const PAGE_W = 816;
-export const PAGE_H = 1056;
-export const MARGIN = 96;
-export const CONTENT_W = PAGE_W - MARGIN * 2;
+import { type PageSpec, normalizePage, DEFAULT_PAGE } from "../shared/page.ts";
+
+export let PAGE_W = DEFAULT_PAGE.w;
+export let PAGE_H = DEFAULT_PAGE.h;
+export let ML = DEFAULT_PAGE.ml;
+export let MR = DEFAULT_PAGE.mr;
+export let MT = DEFAULT_PAGE.mt;
+export let MB = DEFAULT_PAGE.mb;
+let paperName: PageSpec["paper"] = DEFAULT_PAGE.paper;
+let orientName: PageSpec["orient"] = DEFAULT_PAGE.orient;
 export const PAGE_GAP = 20;
 export const RULER_H = 28;
+
+export function contentWidth(): number {
+  return PAGE_W - ML - MR;
+}
+
+export function currentPage(): PageSpec {
+  return { w: PAGE_W, h: PAGE_H, ml: ML, mr: MR, mt: MT, mb: MB, paper: paperName, orient: orientName };
+}
+
+export function applyPage(input: unknown): PageSpec {
+  const next = normalizePage(input);
+  PAGE_W = next.w;
+  PAGE_H = next.h;
+  ML = next.ml;
+  MR = next.mr;
+  MT = next.mt;
+  MB = next.mb;
+  paperName = next.paper;
+  orientName = next.orient;
+  return next;
+}
 
 const HEAD_PT: Record<Heading, number> = { title: 26, subtitle: 15, h1: 20, h2: 16, h3: 14, normal: 11 };
 const SPACE_BEFORE: Record<Heading, number> = { title: 0, subtitle: 4, h1: 16, h2: 12, h3: 10, normal: 0 };
@@ -114,7 +141,7 @@ function loadImage(src: string): HTMLImageElement {
 
 function embedWidth(ctx: CanvasRenderingContext2D, doc: Doc, index: number): number {
   const st = doc.styles[index] || {};
-  if (st.embed === "img") return Math.min(CONTENT_W, Math.max(48, st.iw || 240));
+  if (st.embed === "img") return Math.min(contentWidth(), Math.max(48, st.iw || 240));
   ctx.font = `500 12px "Roboto", sans-serif`;
   if (st.embed === "vote") return Math.min(280, 46 + Object.keys(voteMap(st)).length * 18);
   return Math.min(280, ctx.measureText(chipLabel(st) || "Chip").width + 28);
@@ -167,7 +194,7 @@ export function stackOffset(page: number, y: number): number {
 export function layoutDoc(doc: Doc, ctx: CanvasRenderingContext2D): Layout {
   const lines: LineBox[] = [];
   let page = 0;
-  let y = MARGIN;
+  let y = MT;
   const n = doc.text.length;
   let i = 0;
   let numberRun = 0;
@@ -176,7 +203,7 @@ export function layoutDoc(doc: Doc, ctx: CanvasRenderingContext2D): Layout {
 
   const newPage = () => {
     page++;
-    y = MARGIN;
+    y = MT;
   };
 
   while (i < n && guard++ < n + 10) {
@@ -192,8 +219,8 @@ export function layoutDoc(doc: Doc, ctx: CanvasRenderingContext2D): Layout {
     const mul = para.lh && para.lh > 0 ? para.lh : 1.15;
     const lineH = blockHeight(doc, i, breakAt, Math.max(18, Math.round(sample.size * mul * 1.2)));
     const indent = (para.ind || 0) * 36 + (para.list ? 26 : 0) + (para.lv || 0) * 18;
-    const inner = Math.max(40, CONTENT_W - indent);
-    const x0 = MARGIN + indent;
+    const inner = Math.max(40, contentWidth() - indent);
+    const x0 = ML + indent;
 
     let marker: string | undefined;
     if (para.list === "bullet") {
@@ -217,7 +244,7 @@ export function layoutDoc(doc: Doc, ctx: CanvasRenderingContext2D): Layout {
     }
 
     const place = (glyphs: Glyph[], hard: boolean, endIndex: number, h: number, rule = false, table?: LineBox["table"]) => {
-      if (y + h > PAGE_H - MARGIN && y > MARGIN) newPage();
+      if (y + h > PAGE_H - MB && y > MT) newPage();
       lines.push({
         page,
         x: x0,
@@ -229,7 +256,7 @@ export function layoutDoc(doc: Doc, ctx: CanvasRenderingContext2D): Layout {
         hard,
         glyphs,
         marker: hard ? marker : undefined,
-        markerX: MARGIN + (para.ind || 0) * 36 + (para.lv || 0) * 18,
+        markerX: ML + (para.ind || 0) * 36 + (para.lv || 0) * 18,
         rule,
         table,
       });
@@ -245,7 +272,7 @@ export function layoutDoc(doc: Doc, ctx: CanvasRenderingContext2D): Layout {
 
     if (hardCh === ROW && (para.cols || 0) > 0) {
       const cols = para.cols || 1;
-      const cellW = CONTENT_W / cols;
+      const cellW = contentWidth() / cols;
       const segments: { from: number; to: number }[] = [];
       let seg = i;
       for (let k = i; k <= breakAt; k++) {
@@ -258,7 +285,7 @@ export function layoutDoc(doc: Doc, ctx: CanvasRenderingContext2D): Layout {
       const glyphs: Glyph[] = [];
       const rowH = blockHeight(doc, i, breakAt, Math.max(28, lineH));
       segments.slice(0, cols).forEach((part, ci) => {
-        const x = MARGIN + ci * cellW;
+        const x = ML + ci * cellW;
         cells.push({ x, w: cellW, start: part.from, end: part.to });
         const measured = measureRun(ctx, doc, part.from, part.to);
         let gx = x + 8;
@@ -275,10 +302,10 @@ export function layoutDoc(doc: Doc, ctx: CanvasRenderingContext2D): Layout {
 
     const measured = measureRun(ctx, doc, i, breakAt);
     const spaceBefore = lines.length === 0 || lines[lines.length - 1].page !== page ? 0 : SPACE_BEFORE[heading];
-    if (spaceBefore && y + spaceBefore + lineH <= PAGE_H - MARGIN) y += spaceBefore;
+    if (spaceBefore && y + spaceBefore + lineH <= PAGE_H - MB) y += spaceBefore;
 
     const pushLine = (slice: Measured[], hard: boolean, endIndex: number) => {
-      if (y + lineH > PAGE_H - MARGIN && y > MARGIN) newPage();
+      if (y + lineH > PAGE_H - MB && y > MT) newPage();
       const width = slice.reduce((s, g) => s + g.w, 0);
       let offset = 0;
       const align = para.align || "left";
@@ -308,7 +335,7 @@ export function layoutDoc(doc: Doc, ctx: CanvasRenderingContext2D): Layout {
         hard,
         glyphs: placed,
         marker: hard ? marker : undefined,
-        markerX: MARGIN + (para.ind || 0) * 36 + (para.lv || 0) * 18,
+        markerX: ML + (para.ind || 0) * 36 + (para.lv || 0) * 18,
       });
       y += lineH;
     };
@@ -345,15 +372,15 @@ export function layoutDoc(doc: Doc, ctx: CanvasRenderingContext2D): Layout {
   if (!lines.length) {
     lines.push({
       page: 0,
-      x: MARGIN,
-      y: MARGIN,
+      x: ML,
+      y: MT,
       h: 20,
-      baseline: MARGIN + 16,
+      baseline: MT + 16,
       start: 0,
       end: doc.text.length,
       hard: true,
       glyphs: [],
-      markerX: MARGIN,
+      markerX: ML,
     });
   }
   return { lines, pages: page + 1 };
@@ -390,7 +417,7 @@ export function hitTest(doc: Doc, layout: Layout, page: number, x: number, y: nu
 }
 
 export function caretBox(layout: Layout, index: number): { page: number; x: number; y: number; h: number } {
-  let fallback = { page: 0, x: MARGIN, y: MARGIN, h: 20 };
+  let fallback = { page: 0, x: ML, y: MT, h: 20 };
   for (const line of layout.lines) {
     fallback = { page: line.page, x: line.x, y: line.y, h: line.h };
     if (line.table) {
@@ -483,6 +510,62 @@ function drawImage(ctx: CanvasRenderingContext2D, doc: Doc, glyph: Glyph, line: 
   }
 }
 
+export interface PaintOpts {
+  spell?: { start: number; end: number }[];
+  invisibles?: boolean;
+}
+
+function paintExtras(ctx: CanvasRenderingContext2D, doc: Doc, line: LineBox, opts: PaintOpts | undefined): void {
+  if (!opts) return;
+  if (opts.invisibles) {
+    ctx.fillStyle = "#5b7c99";
+    ctx.font = `12px "Roboto", sans-serif`;
+    ctx.textBaseline = "alphabetic";
+    for (const g of line.glyphs) {
+      const ch = doc.text[g.i];
+      if (ch === " ") {
+        ctx.beginPath();
+        ctx.arc(g.x + Math.max(1, g.w / 2), line.baseline - 3, 1.15, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (ch === "\t") ctx.fillText("→", g.x, line.baseline);
+    }
+    if (line.hard) {
+      const last = line.glyphs[line.glyphs.length - 1];
+      const x = last ? last.x + last.w + 2 : line.x;
+      ctx.fillText(doc.text[Math.max(0, line.end - 1)] === "\f" ? "↵" : "¶", x, line.baseline);
+    }
+  }
+  if (!opts.spell?.length) return;
+  ctx.strokeStyle = "#d32f2f";
+  ctx.lineWidth = 0.8;
+  for (const span of opts.spell) {
+    const gs = line.glyphs.filter((g) => g.i >= span.start && g.i < span.end && /[A-Za-z']/.test(doc.text[g.i] || ""));
+    let run: Glyph[] = [];
+    const wave = () => {
+      if (!run.length) return;
+      const x1 = run[0].x;
+      const x2 = run[run.length - 1].x + run[run.length - 1].w;
+      const y = line.baseline + 3;
+      ctx.beginPath();
+      let n = 0;
+      for (let x = x1; x <= x2; x += 2.5) {
+        const yy = y + (n % 2 === 0 ? 0 : 2);
+        if (n === 0) ctx.moveTo(x, yy);
+        else ctx.lineTo(x, yy);
+        n++;
+      }
+      ctx.stroke();
+      run = [];
+    };
+    for (const g of gs) {
+      const prev = run[run.length - 1];
+      if (prev && (g.i !== prev.i + 1 || g.x > prev.x + prev.w + 2)) wave();
+      run.push(g);
+    }
+    wave();
+  }
+}
+
 export function drawPage(
   ctx: CanvasRenderingContext2D,
   doc: Doc,
@@ -490,6 +573,7 @@ export function drawPage(
   page: number,
   ranges: { start: number; end: number; color: string }[],
   colors: Record<string, string>,
+  opts?: PaintOpts,
 ): void {
   ctx.clearRect(0, 0, PAGE_W, PAGE_H);
   ctx.fillStyle = "#ffffff";
@@ -502,8 +586,8 @@ export function drawPage(
       ctx.strokeStyle = "#80868b";
       ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.moveTo(MARGIN, line.y + line.h / 2);
-      ctx.lineTo(PAGE_W - MARGIN, line.y + line.h / 2);
+      ctx.moveTo(ML, line.y + line.h / 2);
+      ctx.lineTo(PAGE_W - MR, line.y + line.h / 2);
       ctx.stroke();
       continue;
     }
@@ -625,6 +709,7 @@ export function drawPage(
       runStart = runEnd;
     }
     if (clipCells?.length) ctx.restore();
+    paintExtras(ctx, doc, line, opts);
   }
 }
 

@@ -92,6 +92,7 @@ const server = createServer(async (req, res) => {
       const title = ("Copy of " + room.title).slice(0, 200);
       store.create(id, title);
       store.replaceSnapshot(id, room.server.doc);
+      store.setPage(id, room.page, Date.now());
       for (const thread of room.threads.values()) store.saveThread(id, thread);
       sendJson(res, 201, { id, title });
       return;

@@ -55,6 +55,7 @@
           <button type="button" data-act="download-md">Markdown (.md)</button>
           <button type="button" data-act="download-txt">Plain text (.txt)</button>
           <button type="button" data-act="import">Open / Import</button>
+          <button type="button" data-act="page-setup">Page setup</button>
           <button type="button" data-act="print">Print</button>
         </div>
       </div>
@@ -66,6 +67,8 @@
           <button type="button" data-act="cut">Cut</button>
           <button type="button" data-act="copy">Copy</button>
           <button type="button" data-act="paste">Paste</button>
+          <button type="button" data-act="paste-plain">Paste without formatting</button>
+          <button type="button" data-act="delete">Delete</button>
           <button type="button" data-act="select-all">Select all</button>
           <button type="button" data-act="find">Find</button>
           <button type="button" data-act="replace">Find and replace</button>
@@ -78,6 +81,11 @@
           <button type="button" data-act="zoom-out">Zoom out</button>
           <button type="button" data-act="zoom-100">100%</button>
           <button type="button" data-act="zoom-fit">Fit width</button>
+          <button type="button" class="tog" data-act="ruler" aria-pressed="true">Show ruler</button>
+          <button type="button" class="tog" data-act="outline" aria-pressed="false">Show outline</button>
+          <button type="button" class="tog" data-act="invisibles" aria-pressed="false">Show non-printing characters</button>
+          <button type="button" data-act="fullscreen">Full screen</button>
+          <button type="button" class="tog" data-act="compact" aria-pressed="false">Hide the menus</button>
         </div>
       </div>
       <div class="menu">
@@ -121,7 +129,23 @@
       <div class="menu">
         <button type="button" class="menu-btn" data-menu="tools">Tools</button>
         <div class="menu-pop" data-pop="tools" hidden>
+          <button type="button" data-act="spelling">Spelling</button>
+          <button type="button" data-act="dictionary">Personal dictionary</button>
           <button type="button" data-act="wordcount">Word count</button>
+          <button type="button" data-act="preferences">Preferences</button>
+          <button type="button" data-act="shortcuts">Keyboard shortcuts</button>
+        </div>
+      </div>
+      <div class="menu">
+        <button type="button" class="menu-btn" data-menu="extensions">Extensions</button>
+        <div class="menu-pop" data-pop="extensions" hidden>
+          <button type="button" data-act="addons">Add-ons</button>
+        </div>
+      </div>
+      <div class="menu">
+        <button type="button" class="menu-btn" data-menu="help">Help</button>
+        <div class="menu-pop" data-pop="help" hidden>
+          <button type="button" data-act="menu-search">Search the menus</button>
           <button type="button" data-act="shortcuts">Keyboard shortcuts</button>
         </div>
       </div>
@@ -242,6 +266,14 @@
       </div>
     </div>
     <div id="input" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Document body" spellcheck="true"></div>
+    <aside id="outline" hidden>
+      <header>
+        <h2>Outline</h2>
+        <button type="button" id="outline-close" class="icon" title="Close"><span class="material-symbols-outlined">close</span></button>
+      </header>
+      <ul id="outline-list"></ul>
+    </aside>
+    <div id="context" hidden role="menu"></div>
     <aside id="history" hidden>
       <header>
         <h2>Version history</h2>

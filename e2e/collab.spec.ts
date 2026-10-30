@@ -29,6 +29,11 @@ declare global {
       styleAt: (index: number) => { b?: boolean };
       toggleBold: () => void;
       dirty: () => boolean;
+      headings: () => { text: string; level: number }[];
+      misspelled: () => string[];
+      showOutline: () => void;
+      setHeading: (h: string) => void;
+      page: () => { paper: string; ml: number };
     };
   }
 }
@@ -258,4 +263,28 @@ test("offline edits sync after reconnect", async ({ browser, request }) => {
 
   await a.close();
   await b.close();
+});
+
+test("outline, spelling underline, and the editing menu", async ({ browser, request }) => {
+  const created = await request.post("/api/docs", { data: { title: "Parity" } });
+  expect(created.ok()).toBeTruthy();
+  const { id } = (await created.json()) as { id: string };
+  const a = await browser.newContext();
+  const pa = await a.newPage();
+  await openDoc(pa, id, "Avery");
+  await pa.evaluate(() => {
+    window.__editor!.insertText("Chapter one");
+    window.__editor!.setSelection(0, "Chapter one".length);
+    window.__editor!.setHeading("h1");
+    window.__editor!.setSelection(window.__editor!.getText().length, window.__editor!.getText().length);
+    window.__editor!.insertText(" zzqxword");
+    window.__editor!.showOutline();
+  });
+  await expect(pa.locator("#outline")).toBeVisible();
+  await expect(pa.locator("#outline-list")).toContainText("Chapter one");
+  await expect.poll(() => pa.evaluate(() => window.__editor!.misspelled().includes("zzqxword"))).toBe(true);
+  expect(await pa.evaluate(() => window.__editor!.page().paper)).toBe("letter");
+  await pa.locator(".page").click({ button: "right", position: { x: 120, y: 80 } });
+  await expect(pa.locator("#context")).toContainText("Paste without formatting");
+  await a.close();
 });

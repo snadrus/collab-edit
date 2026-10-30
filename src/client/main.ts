@@ -18,10 +18,13 @@ import {
   toText,
 } from "../shared/io.ts";
 import { hexAlpha } from "../shared/palette.ts";
+import { type PageSpec } from "../shared/page.ts";
+import { DEFAULT_SUBS } from "../shared/spell.ts";
 import type { Thread } from "../shared/threads.ts";
 import { mountChrome, type Chrome } from "./chrome.ts";
+import { loadWordText } from "./dict.ts";
 import { loadQueue, saveQueue } from "./offline.ts";
-import { PAGE_W, RULER_H } from "./layout.ts";
+import { ML, MR, PAGE_W, RULER_H, applyPage, currentPage } from "./layout.ts";
 import { Editor, decodeCommands, encodeCommands, type RemoteCaret } from "./editor.ts";
 
 interface InitMsg {
@@ -32,6 +35,7 @@ interface InitMsg {
   self: { sid: string; name: string; color: string };
   presence: RemoteCaret[];
   threads?: Thread[];
+  page?: PageSpec;
   resume?: boolean;
   catchup?: { rev: number; sid: string; reqId: number; commands: Command[] }[];
 }
@@ -102,9 +106,19 @@ function drawRuler(): void {
     if (inch && x > 0) ctx.fillText(String(x / 96), x + 3, 2);
   }
   ctx.fillStyle = "rgba(11,87,208,0.18)";
-  ctx.fillRect(0, 0, 96, RULER_H);
-  ctx.fillRect(PAGE_W - 96, 0, 96, RULER_H);
+  ctx.fillRect(0, 0, ML, RULER_H);
+  ctx.fillRect(PAGE_W - MR, 0, MR, RULER_H);
+  const mark = ML + rulerIndentPx;
+  ctx.fillStyle = "#202124";
+  ctx.beginPath();
+  ctx.moveTo(mark, RULER_H - 2);
+  ctx.lineTo(mark - 5, RULER_H - 12);
+  ctx.lineTo(mark + 5, RULER_H - 12);
+  ctx.closePath();
+  ctx.fill();
 }
+
+let rulerIndentPx = 0;
 
 async function mountHome(): Promise<void> {
   (document.querySelector("#home") as HTMLElement).hidden = false;
@@ -151,6 +165,9 @@ function mountEditor(id: string): void {
   const nameBtn = document.querySelector("#name-btn") as HTMLButtonElement;
   let zoom = 1;
   let editor!: Editor;
+  let showRuler = true;
+  let showOutline = false;
+  let spellAt = 0;
   let ws: WebSocket | null = null;
   let chrome: Chrome;
   const people = () => [{ sid: session, name: displayName(), color: editor.color }, ...editor.remotes.values()];
@@ -204,6 +221,11 @@ function mountEditor(id: string): void {
     styleAt: (index: number) => editor.styleAt(index),
     toggleBold: () => editor.toggleMark("b"),
     dirty: () => editor.dirty(),
+    headings: () => editor.headings(),
+    misspelled: () => editor.misspelledWords(),
+    showOutline: () => setOutline(true),
+    page: () => currentPage(),
+    setHeading: (h: Heading) => editor.setHeading(h),
   };
   (window as unknown as { __editor: typeof api }).__editor = api;
 
@@ -255,7 +277,14 @@ function mountEditor(id: string): void {
       sendSel();
       chrome?.refresh();
     },
-    onPaint: () => chrome?.refresh(),
+    onPaint: () => {
+      rulerIndentPx = editor.leftIndent() * 36;
+      (document.querySelector("#ruler") as HTMLElement).classList.toggle("off", !showRuler);
+      if (showRuler) drawRuler();
+      renderOutline();
+      chrome?.refresh();
+    },
+    onContext: (x, y, index) => openContext(x, y, index),
     onCommand: (name) => {
       if (name === "find") chrome.openFind(false);
       else if (name === "replace") chrome.openFind(true);
@@ -264,6 +293,10 @@ function mountEditor(id: string): void {
       else if (name === "wordcount") chrome.openWordCount();
       else if (name === "shortcuts") chrome.openShortcuts();
       else if (name === "saved") toast("All changes saved");
+      else if (name === "paste-plain") void pastePlain();
+      else if (name === "import") (document.querySelector("#import-file") as HTMLInputElement).click();
+      else if (name === "print") window.print();
+      else if (name === "menu-search") openMenuSearch();
     },
     onAt: (query) => chrome.syncAt(query),
     atKey: (e) => chrome.atKey(e),
@@ -365,6 +398,32 @@ function mountEditor(id: string): void {
     "download-pdf": () => saveFile(safeName(title.value, ".pdf"), new Blob([toPdf(editor.doc, title.value)], { type: "application/pdf" })),
     import: () => (document.querySelector("#import-file") as HTMLInputElement).click(),
     print: () => window.print(),
+    "page-setup": () => openPageSetup(),
+    "paste-plain": () => void pastePlain(),
+    delete: () => editor.insertText(""),
+    ruler: () => {
+      showRuler = !showRuler;
+      syncView();
+    },
+    outline: () => setOutline(!showOutline),
+    invisibles: () => {
+      editor.invisibles = !editor.invisibles;
+      editor.render();
+      syncView();
+    },
+    fullscreen: () => {
+      if (document.fullscreenElement) void document.exitFullscreen();
+      else void document.documentElement.requestFullscreen();
+    },
+    compact: () => {
+      document.body.classList.toggle("compact");
+      syncView();
+    },
+    spelling: () => openSpelling(),
+    dictionary: () => openDictionary(),
+    preferences: () => openPreferences(),
+    addons: () => openDialog("Add-ons", "Felarumi does not run third-party add-ons or scripts."),
+    "menu-search": () => openMenuSearch(),
     undo: () => editor.undo(),
     redo: () => editor.redo(),
     cut: () => {
@@ -626,6 +685,9 @@ function mountEditor(id: string): void {
           previewWait();
           previewWait = null;
         }
+      } else if (msg.t === "page") {
+        applyPage(msg.page);
+        editor.render();
       } else if (msg.t === "named") {
         if (nameWait) {
           nameWait(Number(msg.rev));
@@ -660,6 +722,7 @@ function mountEditor(id: string): void {
   }
 
   function onInit(msg: InitMsg): void {
+    if (msg.page) applyPage(msg.page);
     const resume = msg.resume === true && editor.dirty() && !editor.sync.transformed;
     if (resume) {
       try {
@@ -714,6 +777,363 @@ function mountEditor(id: string): void {
     else editor.replaceDocument(fromPlain(await file.text()));
     editor.focus();
   }
+
+  function escapeHtml(value: string): string {
+    return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  function openDialog(title: string, node: string | HTMLElement): void {
+    (document.querySelector("#dialog-title") as HTMLElement).textContent = title;
+    const body = document.querySelector("#dialog-body") as HTMLElement;
+    body.replaceChildren();
+    if (typeof node === "string") {
+      const p = document.createElement("p");
+      p.textContent = node;
+      body.appendChild(p);
+    } else body.appendChild(node);
+    (document.querySelector("#dialog") as HTMLElement).hidden = false;
+  }
+
+  function closeDialog(): void {
+    (document.querySelector("#dialog") as HTMLElement).hidden = true;
+  }
+
+  async function pastePlain(): Promise<void> {
+    try {
+      editor.pastePlain(await navigator.clipboard.readText());
+    } catch {
+      toast("Allow clipboard access to paste");
+    }
+  }
+
+  function syncView(): void {
+    const set = (act: string, on: boolean) => document.querySelector(`[data-act="${act}"]`)?.setAttribute("aria-pressed", on ? "true" : "false");
+    set("ruler", showRuler);
+    set("outline", showOutline);
+    set("invisibles", editor.invisibles);
+    set("compact", document.body.classList.contains("compact"));
+    (document.querySelector("#ruler") as HTMLElement).classList.toggle("off", !showRuler);
+  }
+
+  function setOutline(on: boolean): void {
+    showOutline = on;
+    document.body.classList.toggle("outline-open", on);
+    syncView();
+    renderOutline();
+  }
+
+  function renderOutline(): void {
+    const aside = document.querySelector("#outline") as HTMLElement;
+    aside.hidden = !showOutline;
+    if (!showOutline) return;
+    const list = document.querySelector("#outline-list") as HTMLElement;
+    const heads = editor.headings();
+    const sig = heads.map((h) => h.level + ":" + h.text).join("|");
+    if (list.dataset.sig === sig) return;
+    list.dataset.sig = sig;
+    list.replaceChildren();
+    if (!heads.length) {
+      const li = document.createElement("li");
+      li.className = "empty";
+      li.textContent = "Headings you apply show up here.";
+      list.appendChild(li);
+      return;
+    }
+    for (const heading of heads) {
+      const li = document.createElement("li");
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = heading.text;
+      btn.style.paddingLeft = 8 + heading.level * 14 + "px";
+      btn.addEventListener("click", () => editor.jumpTo(heading.index));
+      li.appendChild(btn);
+      list.appendChild(li);
+    }
+  }
+
+  function sendPage(): void {
+    send({ t: "page", page: currentPage(), ts: Date.now() });
+  }
+
+  function openPageSetup(): void {
+    const page = currentPage();
+    const wrap = document.createElement("div");
+    wrap.className = "setup";
+    const inch = (px: number) => (px / 96).toFixed(2);
+    wrap.innerHTML = `<label>Paper <select id="pg-paper"><option value="letter">Letter</option><option value="a4">A4</option><option value="legal">Legal</option></select></label>
+      <label>Orientation <select id="pg-orient"><option value="portrait">Portrait</option><option value="landscape">Landscape</option></select></label>
+      <label>Top <input id="pg-mt" type="number" min="0.4" max="3" step="0.1" value="${inch(page.mt)}"> in</label>
+      <label>Bottom <input id="pg-mb" type="number" min="0.4" max="3" step="0.1" value="${inch(page.mb)}"> in</label>
+      <label>Left <input id="pg-ml" type="number" min="0.4" max="3" step="0.1" value="${inch(page.ml)}"> in</label>
+      <label>Right <input id="pg-mr" type="number" min="0.4" max="3" step="0.1" value="${inch(page.mr)}"> in</label>
+      <button type="button" id="pg-apply">Apply</button>`;
+    openDialog("Page setup", wrap);
+    (wrap.querySelector("#pg-paper") as HTMLSelectElement).value = page.paper;
+    (wrap.querySelector("#pg-orient") as HTMLSelectElement).value = page.orient;
+    wrap.querySelector("#pg-apply")!.addEventListener("click", () => {
+      const num = (id: string) => Math.round(Number((wrap.querySelector(id) as HTMLInputElement).value) * 96);
+      applyPage({
+        paper: (wrap.querySelector("#pg-paper") as HTMLSelectElement).value,
+        orient: (wrap.querySelector("#pg-orient") as HTMLSelectElement).value,
+        mt: num("#pg-mt"),
+        mb: num("#pg-mb"),
+        ml: num("#pg-ml"),
+        mr: num("#pg-mr"),
+      });
+      editor.render();
+      sendPage();
+      closeDialog();
+    });
+  }
+
+  function openSpelling(): void {
+    const hits = editor.spellList();
+    const wrap = document.createElement("div");
+    if (!hits.length) {
+      wrap.textContent = "No spelling suggestions.";
+      openDialog("Spelling", wrap);
+      return;
+    }
+    const hit = hits[Math.min(spellAt, hits.length - 1)];
+    spellAt = Math.min(spellAt, hits.length - 1);
+    const ideas = editor.suggestionsFor(hit.word);
+    wrap.innerHTML = `<p><strong>${escapeHtml(hit.word)}</strong></p>`;
+    for (const idea of ideas) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = idea;
+      btn.addEventListener("click", () => {
+        editor.replaceRange(hit.start, hit.end, idea);
+        closeDialog();
+      });
+      wrap.appendChild(btn);
+    }
+    const ignore = document.createElement("button");
+    ignore.type = "button";
+    ignore.textContent = "Ignore";
+    ignore.addEventListener("click", () => {
+      editor.ignoreWord(hit.word);
+      closeDialog();
+    });
+    const add = document.createElement("button");
+    add.type = "button";
+    add.textContent = "Add to dictionary";
+    add.addEventListener("click", () => {
+      editor.allowWord(hit.word);
+      savePersonal();
+      closeDialog();
+    });
+    wrap.append(ignore, add);
+    editor.jumpTo(hit.start);
+    openDialog("Spelling", wrap);
+  }
+
+  function openDictionary(): void {
+    const wrap = document.createElement("div");
+    const input = document.createElement("input");
+    input.placeholder = "Word";
+    input.setAttribute("aria-label", "Dictionary word");
+    const add = document.createElement("button");
+    add.type = "button";
+    add.textContent = "Add";
+    const list = document.createElement("ul");
+    const paint = () => {
+      list.replaceChildren();
+      for (const word of [...editor.personal].sort()) {
+        const li = document.createElement("li");
+        li.textContent = word + " ";
+        const rm = document.createElement("button");
+        rm.type = "button";
+        rm.textContent = "Remove";
+        rm.addEventListener("click", () => {
+          editor.personal.delete(word);
+          editor.render();
+          savePersonal();
+          paint();
+        });
+        li.appendChild(rm);
+        list.appendChild(li);
+      }
+    };
+    add.addEventListener("click", () => {
+      editor.allowWord(input.value.trim());
+      input.value = "";
+      savePersonal();
+      paint();
+    });
+    wrap.append(input, add, list);
+    paint();
+    openDialog("Personal dictionary", wrap);
+  }
+
+  function openPreferences(): void {
+    const wrap = document.createElement("div");
+    const box = document.createElement("label");
+    const check = document.createElement("input");
+    check.type = "checkbox";
+    check.checked = editor.autocorrect;
+    box.append(check, document.createTextNode(" Autocorrect common typos"));
+    check.addEventListener("change", () => {
+      editor.autocorrect = check.checked;
+      localStorage.setItem("felarumi-auto", check.checked ? "1" : "0");
+    });
+    const note = document.createElement("p");
+    note.textContent = "Substitutions such as teh, recieve, (c), and ... apply as you type.";
+    wrap.append(box, note);
+    openDialog("Preferences", wrap);
+  }
+
+  function openMenuSearch(): void {
+    const wrap = document.createElement("div");
+    const input = document.createElement("input");
+    input.placeholder = "Search the menus";
+    input.setAttribute("aria-label", "Search the menus");
+    const list = document.createElement("div");
+    const items = [...document.querySelectorAll<HTMLButtonElement>("#menubar [data-act]")];
+    const paint = () => {
+      const q = input.value.trim().toLowerCase();
+      list.replaceChildren();
+      for (const item of items) {
+        const label = item.textContent?.trim() || "";
+        if (q && !label.toLowerCase().includes(q)) continue;
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.textContent = label;
+        btn.addEventListener("click", () => {
+          closeDialog();
+          item.click();
+        });
+        list.appendChild(btn);
+      }
+    };
+    input.addEventListener("input", paint);
+    wrap.append(input, list);
+    paint();
+    openDialog("Search the menus", wrap);
+    window.setTimeout(() => input.focus(), 0);
+  }
+
+  function openContext(x: number, y: number, index: number): void {
+    const menu = document.querySelector("#context") as HTMLElement;
+    menu.replaceChildren();
+    const word = editor.wordAt(index);
+    const bad = word && editor.spellList().some((hit) => hit.start === word.start);
+    if (word && bad) {
+      const label = document.createElement("div");
+      label.className = "menu-label";
+      label.textContent = word.word;
+      menu.appendChild(label);
+      for (const idea of editor.suggestionsFor(word.word).slice(0, 5)) {
+        addCtx(menu, idea, () => editor.replaceRange(word.start, word.end, idea));
+      }
+      addCtx(menu, "Ignore", () => editor.ignoreWord(word.word));
+      addCtx(menu, "Add to personal dictionary", () => {
+        editor.allowWord(word.word);
+        savePersonal();
+      });
+    }
+    addCtx(menu, "Cut", () => actionsCut());
+    addCtx(menu, "Copy", () => actionsCopy());
+    addCtx(menu, "Paste", () => void actionsPaste());
+    addCtx(menu, "Paste without formatting", () => void pastePlain());
+    addCtx(menu, "Comment", () => chrome.openComment());
+    addCtx(menu, "Link", () => chrome.openLink());
+    addCtx(menu, "Clear formatting", () => editor.clearFormatting());
+    menu.hidden = false;
+    const width = 240;
+    menu.style.left = Math.max(8, Math.min(x, window.innerWidth - width - 8)) + "px";
+    menu.style.top = Math.max(8, Math.min(y, window.innerHeight - 280)) + "px";
+  }
+
+  function addCtx(menu: HTMLElement, label: string, run: () => void): void {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = label;
+    btn.addEventListener("click", () => {
+      menu.hidden = true;
+      run();
+    });
+    menu.appendChild(btn);
+  }
+
+  function actionsCut(): void {
+    void navigator.clipboard.writeText(editor.selectedPlain()).catch(() => undefined);
+    editor.insertText("");
+  }
+
+  function actionsCopy(): void {
+    void navigator.clipboard.writeText(editor.selectedPlain()).then(() => toast("Copied")).catch(() => toast("Allow clipboard access to copy"));
+  }
+
+  async function actionsPaste(): Promise<void> {
+    try {
+      editor.paste("", await navigator.clipboard.readText());
+    } catch {
+      toast("Allow clipboard access to paste");
+    }
+  }
+
+  function savePersonal(): void {
+    localStorage.setItem("felarumi-dict", JSON.stringify([...editor.personal]));
+  }
+
+  function loadPrefs(): void {
+    try {
+      const words = JSON.parse(localStorage.getItem("felarumi-dict") || "[]") as unknown[];
+      for (const word of words) if (typeof word === "string") editor.personal.add(word.toLowerCase());
+      if (localStorage.getItem("felarumi-auto") === "0") editor.autocorrect = false;
+      editor.subs = { ...DEFAULT_SUBS };
+    } catch {
+      editor.subs = { ...DEFAULT_SUBS };
+    }
+  }
+
+  const ruler = document.querySelector("#ruler") as HTMLCanvasElement;
+  let rulerDrag: "l" | "r" | "i" | null = null;
+  const rulerPoint = (ev: PointerEvent) => {
+    const rect = ruler.getBoundingClientRect();
+    return ((ev.clientX - rect.left) / Math.max(1, rect.width)) * PAGE_W;
+  };
+  ruler.addEventListener("pointerdown", (ev) => {
+    const x = rulerPoint(ev);
+    if (Math.abs(x - ML) < 10) rulerDrag = "l";
+    else if (Math.abs(x - (PAGE_W - MR)) < 10) rulerDrag = "r";
+    else if (Math.abs(x - (ML + rulerIndentPx)) < 10) rulerDrag = "i";
+    else return;
+    ruler.setPointerCapture(ev.pointerId);
+  });
+  ruler.addEventListener("pointermove", (ev) => {
+    if (!rulerDrag) return;
+    const x = Math.max(36, Math.min(PAGE_W - 36, rulerPoint(ev)));
+    if (rulerDrag === "i") {
+      const steps = Math.max(0, Math.min(8, Math.round((x - ML) / 36)));
+      editor.setParagraph({ ind: steps });
+      return;
+    }
+    const page = currentPage();
+    if (rulerDrag === "l") applyPage({ ...page, ml: Math.min(x, PAGE_W - page.mr - 120) });
+    else applyPage({ ...page, mr: Math.min(PAGE_W - x, PAGE_W - page.ml - 120) });
+    editor.render();
+  });
+  ruler.addEventListener("pointerup", () => {
+    if (rulerDrag === "l" || rulerDrag === "r") sendPage();
+    rulerDrag = null;
+  });
+
+  document.querySelector("#outline-close")!.addEventListener("click", () => setOutline(false));
+  document.addEventListener("mousedown", (ev) => {
+    const menu = document.querySelector("#context") as HTMLElement;
+    if (!menu.hidden && !(ev.target as HTMLElement).closest("#context")) menu.hidden = true;
+  });
+
+  loadPrefs();
+  void fetch("/words.txt")
+    .then((res) => res.text())
+    .then((text) => {
+      loadWordText(text);
+      editor.render();
+    })
+    .catch(() => undefined);
 
   document.fonts.ready.then(() => editor.render()).catch(() => undefined);
   window.addEventListener("offline", () => {
