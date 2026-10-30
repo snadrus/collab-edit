@@ -33,7 +33,13 @@ declare global {
       misspelled: () => string[];
       showOutline: () => void;
       setHeading: (h: string) => void;
-      page: () => { paper: string; ml: number };
+      page: () => { paper: string; ml: number; pageless?: boolean; footer?: string };
+      setMode: (mode: "edit" | "suggest" | "view") => void;
+      mode: () => string;
+      suggestions: () => { id: string; kind: string; quote: string }[];
+      acceptSuggestion: (id: string) => void;
+      setPageless: (on: boolean) => void;
+      insertFootnote: (text: string) => void;
     };
   }
 }
@@ -286,5 +292,39 @@ test("outline, spelling underline, and the editing menu", async ({ browser, requ
   expect(await pa.evaluate(() => window.__editor!.page().paper)).toBe("letter");
   await pa.locator(".page").click({ button: "right", position: { x: 120, y: 80 } });
   await expect(pa.locator("#context")).toContainText("Paste without formatting");
+  await a.close();
+});
+
+test("suggesting mode, heading 4, footnote, and pageless", async ({ browser, request }) => {
+  const created = await request.post("/api/docs", { data: { title: "Suggest" } });
+  expect(created.ok()).toBeTruthy();
+  const { id } = (await created.json()) as { id: string };
+  const a = await browser.newContext();
+  const pa = await a.newPage();
+  await openDoc(pa, id, "Avery");
+  await pa.evaluate(() => {
+    window.__editor!.setMode("suggest");
+    window.__editor!.insertText("Noted");
+  });
+  await expect(pa.locator(".suggest")).toContainText("Noted");
+  const sugId = await pa.evaluate(() => window.__editor!.suggestions()[0].id);
+  await pa.evaluate((sid) => window.__editor!.acceptSuggestion(sid), sugId);
+  await expect.poll(() => pa.evaluate(() => window.__editor!.suggestions().length)).toBe(0);
+  await expect.poll(() => pa.evaluate(() => window.__editor!.getText())).toContain("Noted");
+  await pa.evaluate(() => {
+    window.__editor!.setMode("edit");
+    window.__editor!.insertText("\nDeep topic");
+    const text = window.__editor!.getText();
+    const at = text.indexOf("Deep topic");
+    window.__editor!.setSelection(at, at + "Deep topic".length);
+    window.__editor!.setHeading("h4");
+    window.__editor!.showOutline();
+    window.__editor!.setSelection(text.length, text.length);
+    window.__editor!.insertFootnote("A source");
+    window.__editor!.setPageless(true);
+  });
+  await expect(pa.locator("#outline-list")).toContainText("Deep topic");
+  await expect(pa.locator("body")).toHaveClass(/pageless/);
+  expect(await pa.evaluate(() => window.__editor!.page().pageless)).toBe(true);
   await a.close();
 });

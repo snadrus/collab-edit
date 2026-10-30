@@ -22,7 +22,7 @@ export const ROW = "\u001e";
 
 export const TEXT_KEYS = ["b", "i", "u", "strike", "sup", "sub", "font", "size", "color", "hl", "link", "cmt"] as const;
 export const EMBED_KEYS = ["embed", "emoji", "label", "iso", "opts", "val", "src", "iw", "ih", "alt"] as const;
-export const PARA_KEYS = ["h", "align", "list", "lv", "lh", "ind", "hr", "check", "cols"] as const;
+export const PARA_KEYS = ["h", "align", "list", "lv", "lh", "ind", "hr", "check", "cols", "bm", "sb", "sa", "toc"] as const;
 
 const TEXT_SET = new Set<string>(TEXT_KEYS);
 const EMBED_SET = new Set<string>(EMBED_KEYS);
@@ -34,6 +34,7 @@ export function isBreak(ch: string): boolean {
 
 /** Which attribute keys a character is allowed to carry. Vote ballots are `v.<sessionId>`. */
 export function allowsAttr(ch: string, key: string): boolean {
+  if ((key === "sug" || key === "del") && ch !== CELL) return true;
   if (isBreak(ch)) return PARA_SET.has(key);
   if (ch === EMBED) return EMBED_SET.has(key) || key.startsWith("v.");
   if (ch === CELL) return false;

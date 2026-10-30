@@ -85,6 +85,7 @@
           <button type="button" class="tog" data-act="outline" aria-pressed="false">Show outline</button>
           <button type="button" class="tog" data-act="invisibles" aria-pressed="false">Show non-printing characters</button>
           <button type="button" data-act="fullscreen">Full screen</button>
+          <button type="button" class="tog" data-act="pageless" aria-pressed="false">Pageless</button>
           <button type="button" class="tog" data-act="compact" aria-pressed="false">Hide the menus</button>
         </div>
       </div>
@@ -92,6 +93,14 @@
         <button type="button" class="menu-btn" data-menu="insert">Insert</button>
         <div class="menu-pop" data-pop="insert" hidden>
           <button type="button" data-act="page-break">Page break</button>
+          <button type="button" data-act="header">Header</button>
+          <button type="button" data-act="footer">Footer</button>
+          <button type="button" data-act="page-number">Page number</button>
+          <button type="button" data-act="footnote">Footnote</button>
+          <button type="button" data-act="toc">Table of contents</button>
+          <button type="button" data-act="toc-update">Update table of contents</button>
+          <button type="button" data-act="bookmark">Bookmark</button>
+          <button type="button" data-act="heading-link">Link to heading</button>
           <button type="button" data-act="rule">Horizontal line</button>
           <button type="button" data-act="table">Table</button>
           <button type="button" data-act="image">Image</button>
@@ -114,6 +123,11 @@
           <button type="button" data-act="sub">Subscript</button>
           <button type="button" data-act="h1">Heading 1</button>
           <button type="button" data-act="h2">Heading 2</button>
+          <button type="button" data-act="h3">Heading 3</button>
+          <button type="button" data-act="h4">Heading 4</button>
+          <button type="button" data-act="h5">Heading 5</button>
+          <button type="button" data-act="h6">Heading 6</button>
+          <button type="button" data-act="spacing">Line and paragraph spacing</button>
           <button type="button" data-act="normal">Normal text</button>
           <button type="button" data-act="align-left">Align left</button>
           <button type="button" data-act="align-center">Align center</button>
@@ -170,6 +184,9 @@
         <option value="h1">Heading 1</option>
         <option value="h2">Heading 2</option>
         <option value="h3">Heading 3</option>
+        <option value="h4">Heading 4</option>
+        <option value="h5">Heading 5</option>
+        <option value="h6">Heading 6</option>
       </select>
       <select id="font" aria-label="Font">
         <option>Open Sans</option>
@@ -217,8 +234,15 @@
         <option value="1.15" selected>1.15</option>
         <option value="1.5">1.5</option>
         <option value="2">2.0</option>
+        <option value="custom">Custom</option>
+      </select>
+      <select id="mode" aria-label="Mode">
+        <option value="edit">Editing</option>
+        <option value="suggest">Suggesting</option>
+        <option value="view">Viewing</option>
       </select>
     </div>
+    <div id="mode-banner" hidden></div>
     <div id="findbar" hidden>
       <input id="find-q" aria-label="Find" placeholder="Find">
       <span id="find-count"></span>

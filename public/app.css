@@ -253,6 +253,8 @@ body.outline-open #stack { margin-left: 248px; margin-right: auto; }
 .mention { background: #e8f0fe; border-radius: 8px; padding: 0 4px; }
 .note-reply { margin-top: 6px; }
 .reply-box, .composer textarea, .note textarea { width: 100%; border: 1px solid var(--line); border-radius: 4px; font: inherit; padding: 6px; }
+.note.suggest .accept { color: #137333; font-weight: 650; }
+.note.suggest .reject { color: #c5221f; }
 .note-actions button, .resolved-toggle, .mention-list button, .at-item {
   border: 0;
   background: transparent;
@@ -315,6 +317,21 @@ body.outline-open #stack { margin-left: 248px; margin-right: auto; }
 }
 .page canvas { display: block; }
 #overlay { position: absolute; left: 0; top: 0; right: 0; bottom: 0; pointer-events: none; }
+.image-frame { position: absolute; border: 1px solid #1a73e8; box-sizing: border-box; pointer-events: none; }
+.image-handle {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  background: #1a73e8;
+  border: 1px solid #fff;
+  pointer-events: auto;
+  z-index: 4;
+}
+#mode { margin-left: 8px; }
+#mode-banner { text-align: center; font-size: 13px; padding: 4px 12px; background: #e6f4ea; color: #137333; }
+#mode-banner.viewing { background: #f1f3f4; color: #3c4043; }
+.setup .hint { color: var(--muted); font-size: 12px; margin: 4px 0 8px; }
+.setup textarea { width: 100%; font: inherit; padding: 6px; border: 1px solid var(--line); border-radius: 4px; }
 .local-caret, .remote-caret {
   position: absolute;
   width: 2px;

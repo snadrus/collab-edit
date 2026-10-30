@@ -21,6 +21,7 @@ import { hexAlpha } from "../shared/palette.ts";
 import { type PageSpec } from "../shared/page.ts";
 import { DEFAULT_SUBS } from "../shared/spell.ts";
 import type { Thread } from "../shared/threads.ts";
+import type { SuggestionMeta } from "../shared/suggest.ts";
 import { mountChrome, type Chrome } from "./chrome.ts";
 import { loadWordText } from "./dict.ts";
 import { loadQueue, saveQueue } from "./offline.ts";
@@ -35,6 +36,7 @@ interface InitMsg {
   self: { sid: string; name: string; color: string };
   presence: RemoteCaret[];
   threads?: Thread[];
+  suggestions?: SuggestionMeta[];
   page?: PageSpec;
   resume?: boolean;
   catchup?: { rev: number; sid: string; reqId: number; commands: Command[] }[];
@@ -226,6 +228,13 @@ function mountEditor(id: string): void {
     showOutline: () => setOutline(true),
     page: () => currentPage(),
     setHeading: (h: Heading) => editor.setHeading(h),
+    setMode: (mode: "edit" | "suggest" | "view") => editor.setMode(mode),
+    mode: () => editor.mode,
+    suggestions: () => editor.suggestionCards().map((card) => ({ id: card.id, kind: card.kind, quote: card.quote })),
+    acceptSuggestion: (id: string) => editor.acceptSuggestion(id),
+    setPageless: (on: boolean) => setPageless(on),
+    insertFootnote: (text: string) => editor.insertFootnote(text),
+    spacing: () => editor.paragraphSpacing(),
   };
   (window as unknown as { __editor: typeof api }).__editor = api;
 
@@ -257,12 +266,15 @@ function mountEditor(id: string): void {
     press("list-check", state.list === "check");
     press("strike", state.strike);
     setSelect("style", state.heading);
-    setSelect("spacing", String(state.lh));
+    const spacing = document.querySelector("#spacing") as HTMLSelectElement;
+    const lh = String(state.lh);
+    spacing.value = [...spacing.options].some((o) => o.value === lh) ? lh : "custom";
     setSelect("font", state.font);
     const size = document.querySelector("#size") as HTMLSelectElement;
     const sizeText = String(state.size);
     if ([...size.options].some((o) => o.value === sizeText)) size.value = sizeText;
     document.title = (title.value || "Untitled document") + " - Felarumi";
+    syncMode();
   };
 
   editor = new Editor(session, pages, overlay, input, "#f44336", {
@@ -297,10 +309,18 @@ function mountEditor(id: string): void {
       else if (name === "import") (document.querySelector("#import-file") as HTMLInputElement).click();
       else if (name === "print") window.print();
       else if (name === "menu-search") openMenuSearch();
+      else if (name === "footnote") openFootnoteInsert();
     },
     onAt: (query) => chrome.syncAt(query),
     atKey: (e) => chrome.atKey(e),
-    onEmbed: (index) => chrome.showDropdown(index),
+    onEmbed: (index) => {
+      const st = editor.styleAt(index);
+      if (st.embed === "drop") chrome.showDropdown(index);
+      else if (st.embed === "fn") openFootnote(index);
+      else if (st.embed === "img") openAlt(index);
+    },
+    onSuggestion: (meta) => send({ t: "suggest", suggestion: meta }),
+    onMargin: (which) => openMargin(which),
   });
   editor.name = displayName();
   chrome = mountChrome(editor, {
@@ -475,6 +495,20 @@ function mountEditor(id: string): void {
     underline: () => editor.toggleMark("u"),
     h1: () => editor.setHeading("h1"),
     h2: () => editor.setHeading("h2"),
+    h3: () => editor.setHeading("h3"),
+    h4: () => editor.setHeading("h4"),
+    h5: () => editor.setHeading("h5"),
+    h6: () => editor.setHeading("h6"),
+    spacing: () => openSpacing(),
+    header: () => openMargin("header"),
+    footer: () => openMargin("footer"),
+    "page-number": () => insertPageNumber(),
+    footnote: () => openFootnoteInsert(),
+    toc: () => editor.insertToc(),
+    "toc-update": () => editor.updateToc(),
+    bookmark: () => toast("Bookmark " + editor.addBookmark()),
+    "heading-link": () => openHeadingLink(),
+    pageless: () => setPageless(!currentPage().pageless),
     normal: () => editor.setHeading("normal"),
     "align-left": () => editor.setAlign("left"),
     "align-center": () => editor.setAlign("center"),
@@ -504,7 +538,13 @@ function mountEditor(id: string): void {
   document.querySelector("#indent")!.addEventListener("click", () => editor.indent(1));
   document.querySelector("#outdent")!.addEventListener("click", () => editor.indent(-1));
   (document.querySelector("#spacing") as HTMLSelectElement).addEventListener("change", (ev) => {
-    editor.setLineSpacing(Number((ev.target as HTMLSelectElement).value));
+    const value = (ev.target as HTMLSelectElement).value;
+    if (value === "custom") openSpacing();
+    else editor.setLineSpacing(Number(value));
+    editor.focus();
+  });
+  (document.querySelector("#mode") as HTMLSelectElement).addEventListener("change", (ev) => {
+    editor.setMode((ev.target as HTMLSelectElement).value as "edit" | "suggest" | "view");
     editor.focus();
   });
   (document.querySelector("#highlight") as HTMLInputElement).addEventListener("input", (ev) => {
@@ -686,8 +726,10 @@ function mountEditor(id: string): void {
           previewWait = null;
         }
       } else if (msg.t === "page") {
-        applyPage(msg.page);
+        usePage(msg.page);
         editor.render();
+      } else if (msg.t === "suggest") {
+        editor.upsertSuggestion(msg.suggestion as SuggestionMeta);
       } else if (msg.t === "named") {
         if (nameWait) {
           nameWait(Number(msg.rev));
@@ -710,6 +752,7 @@ function mountEditor(id: string): void {
     editor.color = msg.self.color;
     editor.name = msg.self.name || displayName();
     chrome.setThreads(msg.threads || []);
+    editor.setSuggestions(msg.suggestions || []);
     title.value = msg.title;
     editor.remotes.clear();
     for (const person of msg.presence) {
@@ -722,7 +765,7 @@ function mountEditor(id: string): void {
   }
 
   function onInit(msg: InitMsg): void {
-    if (msg.page) applyPage(msg.page);
+    if (msg.page) usePage(msg.page);
     const resume = msg.resume === true && editor.dirty() && !editor.sync.transformed;
     if (resume) {
       try {
@@ -812,7 +855,35 @@ function mountEditor(id: string): void {
     set("outline", showOutline);
     set("invisibles", editor.invisibles);
     set("compact", document.body.classList.contains("compact"));
+    set("pageless", currentPage().pageless);
     (document.querySelector("#ruler") as HTMLElement).classList.toggle("off", !showRuler);
+  }
+
+  function usePage(input: unknown) {
+    const page = applyPage(input);
+    document.body.classList.toggle("pageless", page.pageless);
+    return page;
+  }
+
+  function setPageless(on: boolean): void {
+    usePage({ ...currentPage(), pageless: on });
+    editor.render();
+    sendPage();
+    syncView();
+  }
+
+  function syncMode(): void {
+    const mode = editor.mode;
+    const select = document.querySelector("#mode") as HTMLSelectElement | null;
+    if (select && select.value !== mode) select.value = mode;
+    const banner = document.querySelector("#mode-banner") as HTMLElement | null;
+    if (!banner) return;
+    banner.hidden = mode === "edit";
+    banner.classList.toggle("viewing", mode === "view");
+    banner.textContent =
+      mode === "suggest"
+        ? "Suggesting. Insertions and deletions stay marked until someone accepts them."
+        : "Viewing. This document is read-only until you switch back to Editing.";
   }
 
   function setOutline(on: boolean): void {
@@ -855,6 +926,129 @@ function mountEditor(id: string): void {
     send({ t: "page", page: currentPage(), ts: Date.now() });
   }
 
+  function openSpacing(): void {
+    const cur = editor.paragraphSpacing();
+    const wrap = document.createElement("div");
+    wrap.className = "setup";
+    wrap.innerHTML = `<label>Line spacing <input id="sp-lh" type="number" min="0.5" max="3" step="0.05" value="${cur.lh}"></label>
+      <label>Before <input id="sp-sb" type="number" min="0" max="72" step="1" value="${cur.sb}"> pt</label>
+      <label>After <input id="sp-sa" type="number" min="0" max="72" step="1" value="${cur.sa}"> pt</label>
+      <button type="button" id="sp-apply">Apply</button>`;
+    openDialog("Line and paragraph spacing", wrap);
+    wrap.querySelector("#sp-apply")!.addEventListener("click", () => {
+      const num = (id: string) => Number((wrap.querySelector(id) as HTMLInputElement).value);
+      editor.setSpacing(num("#sp-lh"), num("#sp-sb"), num("#sp-sa"));
+      closeDialog();
+      editor.focus();
+    });
+  }
+
+  function openMargin(which: "header" | "footer"): void {
+    const page = currentPage();
+    const wrap = document.createElement("div");
+    wrap.className = "setup";
+    const main = which === "header" ? page.header : page.footer;
+    const first = which === "header" ? page.headerFirst : page.footerFirst;
+    wrap.innerHTML = `<label>${which === "header" ? "Header" : "Footer"} <input id="hf-main" value="${escapeAttr(main)}"></label>
+      <label><input id="hf-diff" type="checkbox"> Different first page</label>
+      <label>First page <input id="hf-first" value="${escapeAttr(first)}"></label>
+      <p class="hint">Use {page} and {pages} for page numbers.</p>
+      <button type="button" id="hf-apply">Apply</button>`;
+    openDialog(which === "header" ? "Header" : "Footer", wrap);
+    (wrap.querySelector("#hf-diff") as HTMLInputElement).checked = page.differentFirst;
+    wrap.querySelector("#hf-apply")!.addEventListener("click", () => {
+      const text = (wrap.querySelector("#hf-main") as HTMLInputElement).value;
+      const firstText = (wrap.querySelector("#hf-first") as HTMLInputElement).value;
+      const differentFirst = (wrap.querySelector("#hf-diff") as HTMLInputElement).checked;
+      const next = { ...currentPage(), differentFirst };
+      if (which === "header") {
+        next.header = text;
+        next.headerFirst = firstText;
+      } else {
+        next.footer = text;
+        next.footerFirst = firstText;
+      }
+      usePage(next);
+      editor.render();
+      sendPage();
+      closeDialog();
+    });
+  }
+
+  function insertPageNumber(): void {
+    const page = currentPage();
+    const footer = page.footer.includes("{page}") ? page.footer : (page.footer ? page.footer + " " : "") + "{page}";
+    usePage({ ...page, footer });
+    editor.render();
+    sendPage();
+    toast("Page number added to the footer");
+  }
+
+  function openFootnoteInsert(): void {
+    const wrap = document.createElement("div");
+    wrap.className = "setup";
+    wrap.innerHTML = `<label>Footnote <textarea id="fn-text" rows="3"></textarea></label><button type="button" id="fn-apply">Insert</button>`;
+    openDialog("Footnote", wrap);
+    const area = wrap.querySelector("#fn-text") as HTMLTextAreaElement;
+    wrap.querySelector("#fn-apply")!.addEventListener("click", () => {
+      editor.insertFootnote(area.value);
+      closeDialog();
+      editor.focus();
+    });
+    window.setTimeout(() => area.focus(), 0);
+  }
+
+  function openFootnote(index: number): void {
+    const wrap = document.createElement("div");
+    wrap.className = "setup";
+    const label = editor.styleAt(index).label || "";
+    wrap.innerHTML = `<label>Footnote <textarea id="fn-text" rows="3"></textarea></label><button type="button" id="fn-apply">Apply</button>`;
+    openDialog("Footnote", wrap);
+    const area = wrap.querySelector("#fn-text") as HTMLTextAreaElement;
+    area.value = label;
+    wrap.querySelector("#fn-apply")!.addEventListener("click", () => {
+      editor.setFootnote(index, area.value);
+      closeDialog();
+    });
+  }
+
+  function openAlt(index: number): void {
+    const wrap = document.createElement("div");
+    wrap.className = "setup";
+    wrap.innerHTML = `<label>Description <input id="alt-text" value="${escapeAttr(editor.styleAt(index).alt || "")}"></label><button type="button" id="alt-apply">Apply</button>`;
+    openDialog("Alt text", wrap);
+    wrap.querySelector("#alt-apply")!.addEventListener("click", () => {
+      editor.setAltText(index, (wrap.querySelector("#alt-text") as HTMLInputElement).value);
+      closeDialog();
+    });
+  }
+
+  function openHeadingLink(): void {
+    editor.ensureHeadingMarks();
+    const heads = editor.headings().filter((h) => h.bm);
+    const wrap = document.createElement("div");
+    if (!heads.length) {
+      wrap.textContent = "Apply a heading, then link to it.";
+      openDialog("Link to heading", wrap);
+      return;
+    }
+    const list = document.createElement("div");
+    list.className = "mention-list";
+    for (const head of heads) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = head.text;
+      btn.addEventListener("click", () => {
+        editor.linkHeading(head.bm, head.text);
+        closeDialog();
+        editor.focus();
+      });
+      list.appendChild(btn);
+    }
+    wrap.appendChild(list);
+    openDialog("Link to heading", wrap);
+  }
+
   function openPageSetup(): void {
     const page = currentPage();
     const wrap = document.createElement("div");
@@ -872,7 +1066,8 @@ function mountEditor(id: string): void {
     (wrap.querySelector("#pg-orient") as HTMLSelectElement).value = page.orient;
     wrap.querySelector("#pg-apply")!.addEventListener("click", () => {
       const num = (id: string) => Math.round(Number((wrap.querySelector(id) as HTMLInputElement).value) * 96);
-      applyPage({
+      usePage({
+        ...currentPage(),
         paper: (wrap.querySelector("#pg-paper") as HTMLSelectElement).value,
         orient: (wrap.querySelector("#pg-orient") as HTMLSelectElement).value,
         mt: num("#pg-mt"),
@@ -1036,6 +1231,8 @@ function mountEditor(id: string): void {
     addCtx(menu, "Copy", () => actionsCopy());
     addCtx(menu, "Paste", () => void actionsPaste());
     addCtx(menu, "Paste without formatting", () => void pastePlain());
+    const style = editor.styleAt(index);
+    if (style.embed === "img") addCtx(menu, "Alt text", () => openAlt(index));
     addCtx(menu, "Comment", () => chrome.openComment());
     addCtx(menu, "Link", () => chrome.openLink());
     addCtx(menu, "Clear formatting", () => editor.clearFormatting());
@@ -1111,8 +1308,8 @@ function mountEditor(id: string): void {
       return;
     }
     const page = currentPage();
-    if (rulerDrag === "l") applyPage({ ...page, ml: Math.min(x, PAGE_W - page.mr - 120) });
-    else applyPage({ ...page, mr: Math.min(PAGE_W - x, PAGE_W - page.ml - 120) });
+    if (rulerDrag === "l") usePage({ ...page, ml: Math.min(x, PAGE_W - page.mr - 120) });
+    else usePage({ ...page, mr: Math.min(PAGE_W - x, PAGE_W - page.ml - 120) });
     editor.render();
   });
   ruler.addEventListener("pointerup", () => {
@@ -1151,6 +1348,10 @@ function mountEditor(id: string): void {
     }
     connect();
   });
+}
+
+function escapeAttr(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
 }
 
 function press(id: string, on: boolean): void {

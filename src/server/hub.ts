@@ -6,6 +6,7 @@ import { ServerDoc } from "../shared/engine.ts";
 import { assignColor } from "../shared/palette.ts";
 import { type PageSpec, normalizePage } from "../shared/page.ts";
 import { type Reply, type Thread, sanitizeThread, validId } from "../shared/threads.ts";
+import { type SuggestionMeta, sanitizeSuggestion } from "../shared/suggest.ts";
 import { Store, type LoadedDoc } from "./store.ts";
 
 export function colorFor(used: Iterable<string>, sid: string): string {
@@ -28,6 +29,7 @@ interface Room {
   server: ServerDoc;
   conns: Set<Conn>;
   threads: Map<string, Thread>;
+  suggestions: Map<string, SuggestionMeta>;
   page: PageSpec;
   pageTs: number;
 }
@@ -74,6 +76,8 @@ export class Hub {
     for (const ack of loaded.acks) server.acks.set(ack.sid + ":" + ack.reqId, ack.assigned);
     const threads = new Map<string, Thread>();
     for (const thread of this.store.loadThreads(loaded.id)) threads.set(thread.id, thread);
+    const suggestions = new Map<string, SuggestionMeta>();
+    for (const suggestion of this.store.loadSuggestions(loaded.id)) suggestions.set(suggestion.id, suggestion);
     const page = this.store.loadPage(loaded.id);
     return {
       id: loaded.id,
@@ -82,6 +86,7 @@ export class Hub {
       server,
       conns: new Set(),
       threads,
+      suggestions,
       page: page.page,
       pageTs: page.ts,
     };
@@ -128,6 +133,7 @@ export class Hub {
       self: { sid: conn.sid, name: conn.name, color: conn.color },
       presence: this.presence(room),
       threads: [...room.threads.values()],
+      suggestions: [...room.suggestions.values()],
       page: room.page,
       resume: resume && since != null && catchup.length === room.server.rev - since,
       catchup,
@@ -172,6 +178,7 @@ export class Hub {
     else if (t === "preview") this.onPreview(room, conn, msg);
     else if (t === "namever") this.onNameVersion(room, conn, msg);
     else if (t === "page") this.onPage(room, msg);
+    else if (t === "suggest") this.onSuggest(room, conn, msg);
   }
 
   onOp(room: Room, conn: Conn, msg: Record<string, unknown>): void {
@@ -291,6 +298,17 @@ export class Hub {
     void conn;
     thread.resolved = msg.resolved;
     this.publishThread(room, thread);
+  }
+
+  onSuggest(room: Room, conn: Conn, msg: Record<string, unknown>): void {
+    const clean = sanitizeSuggestion(msg.suggestion);
+    if (!clean) return;
+    clean.sid = conn.sid;
+    clean.name = conn.name;
+    clean.color = conn.color;
+    room.suggestions.set(clean.id, clean);
+    this.store.saveSuggestion(room.id, clean);
+    this.broadcast(room, { t: "suggest", suggestion: clean }, null);
   }
 
   onPage(room: Room, msg: Record<string, unknown>): void {

@@ -55,6 +55,27 @@ export function mountChrome(editor: Editor, opts: { send: (msg: unknown) => void
   let showResolved = false;
   let composerFor: string | null = null;
 
+  notes.addEventListener("keydown", (ev) => {
+    const target = ev.target as HTMLElement;
+    if (target.closest("textarea, input")) return;
+    const key = ev.key.toLowerCase();
+    if (!["j", "k", "r", "e"].includes(key) || ev.metaKey || ev.ctrlKey || ev.altKey) return;
+    const cards = [...notes.querySelectorAll<HTMLElement>(".note")];
+    const cur = cards.findIndex((card) => card === document.activeElement || card.contains(document.activeElement));
+    if (cur < 0) return;
+    const card = cards[cur];
+    if (key === "j" || key === "k") {
+      ev.preventDefault();
+      cards[key === "j" ? Math.min(cards.length - 1, cur + 1) : Math.max(0, cur - 1)]?.focus();
+    } else if (key === "r") {
+      ev.preventDefault();
+      card.querySelector<HTMLButtonElement>(".reply-btn")?.click();
+    } else if (key === "e") {
+      ev.preventDefault();
+      card.querySelector<HTMLButtonElement>(".resolve-btn")?.click();
+    }
+  });
+
   const paintPressed = () => {
     document.querySelector("#paint")?.setAttribute("aria-pressed", editor.formatPaint ? "true" : "false");
   };
@@ -71,16 +92,42 @@ export function mountChrome(editor: Editor, opts: { send: (msg: unknown) => void
 
   function renderNotes(): void {
     notes.innerHTML = "";
+    let floor = 0;
+    for (const card of editor.suggestionCards()) {
+      let top = editor.anchorPoint(card.start).y;
+      if (top < floor) top = floor;
+      const node = el("article", "note suggest");
+      node.tabIndex = 0;
+      node.dataset.suggest = card.id;
+      node.style.top = top + "px";
+      node.style.borderTop = "3px solid " + card.color;
+      const quote = el("div", "note-quote", (card.kind === "del" ? "Delete: " : "Add: ") + card.quote);
+      const head = el("div", "note-head");
+      const who = el("span", "note-name", card.name);
+      who.style.color = card.color;
+      head.append(who, el("span", "", card.kind === "del" ? "Deletion" : "Insertion"));
+      const actions = el("div", "note-actions");
+      const accept = el("button", "accept", "Accept");
+      accept.type = "button";
+      accept.addEventListener("click", () => editor.acceptSuggestion(card.id));
+      const reject = el("button", "reject", "Reject");
+      reject.type = "button";
+      reject.addEventListener("click", () => editor.rejectSuggestion(card.id));
+      actions.append(accept, reject);
+      node.append(quote, head, actions);
+      notes.append(node);
+      floor = top + node.offsetHeight + 8;
+    }
     const open = editor.threads.filter((t) => !t.resolved);
     const done = editor.threads.filter((t) => t.resolved);
     const cards = showResolved ? editor.threads : open;
-    let floor = 0;
     for (const thread of cards) {
       const span = editor.commentSpans(thread.id)[0];
       let top = span ? editor.anchorPoint(span.start).y : 72;
       if (top < floor) top = floor;
       floor = top + 8;
       const card = el("article", "note" + (thread.resolved ? " resolved" : ""));
+      card.tabIndex = 0;
       card.style.top = top + "px";
       card.dataset.thread = thread.id;
       const quote = el("div", "note-quote", thread.quote || "Comment");
@@ -98,7 +145,7 @@ export function mountChrome(editor: Editor, opts: { send: (msg: unknown) => void
       if (composerFor === thread.id && !thread.resolved) card.append(replyBox(thread));
       const actions = el("div", "note-actions");
       if (!thread.resolved) {
-        const reply = el("button", "", "Reply");
+        const reply = el("button", "reply-btn", "Reply");
         reply.type = "button";
         reply.addEventListener("click", () => {
           composerFor = thread.id;
@@ -106,7 +153,7 @@ export function mountChrome(editor: Editor, opts: { send: (msg: unknown) => void
         });
         actions.append(reply);
       }
-      const toggle = el("button", "", thread.resolved ? "Reopen" : "Resolve");
+      const toggle = el("button", "resolve-btn", thread.resolved ? "Reopen" : "Resolve");
       toggle.type = "button";
       toggle.addEventListener("click", () => {
         opts.send({ t: "resolve", id: thread.id, resolved: !thread.resolved });
@@ -125,6 +172,7 @@ export function mountChrome(editor: Editor, opts: { send: (msg: unknown) => void
       });
       notes.append(toggle);
     }
+    notes.dataset.sug = editor.suggestionCards().map((card) => card.id + ":" + card.kind + ":" + card.quote).join("|");
   }
 
   function renderText(text: string): HTMLElement {
@@ -340,7 +388,11 @@ export function mountChrome(editor: Editor, opts: { send: (msg: unknown) => void
       ["Clear formatting", "Ctrl+\\"],
       ["Copy / paste formatting", "Ctrl+Alt+C / Ctrl+Alt+V"],
       ["Indent / outdent", "Ctrl+] / Ctrl+["],
-      ["Headings", "Ctrl+Alt+1…3"],
+      ["Headings", "Ctrl+Alt+1…6"],
+      ["Suggesting mode", "Ctrl+Alt+Shift+X"],
+      ["Footnote", "Ctrl+Alt+F"],
+      ["Next / previous comment", "J / K"],
+      ["Reply / resolve comment", "R / E"],
       ["Lists", "Ctrl+Shift+7 / 8 / 9"],
       ["Align", "Ctrl+Shift+L E R J"],
       ["Page break", "Ctrl+Enter"],
@@ -414,7 +466,7 @@ export function mountChrome(editor: Editor, opts: { send: (msg: unknown) => void
   });
   document.querySelector("#link-open")!.addEventListener("click", () => {
     const url = linkUrl.value.trim() || editor.currentLink();
-    if (url) window.open(url, "_blank", "noopener");
+    if (url) editor.followLink(url);
   });
   document.querySelector("#image-insert")!.addEventListener("click", () => {
     const src = imageUrl.value.trim();
@@ -507,6 +559,8 @@ export function mountChrome(editor: Editor, opts: { send: (msg: unknown) => void
     },
     showDropdown,
     refresh() {
+      const sig = editor.suggestionCards().map((card) => card.id + ":" + card.kind + ":" + card.quote).join("|");
+      if (notes.dataset.sug !== sig) renderNotes();
       placeAdd();
       let floor = 0;
       for (const card of notes.querySelectorAll<HTMLElement>(".note[data-thread]")) {

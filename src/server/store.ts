@@ -5,6 +5,7 @@ import { type Delta } from "../shared/delta.ts";
 import { type Doc, type Snapshot, emptyDoc, snapshotDoc } from "../shared/doc.ts";
 import { type PageSpec, normalizePage } from "../shared/page.ts";
 import { type Thread, sanitizeThread } from "../shared/threads.ts";
+import { type SuggestionMeta, sanitizeSuggestion } from "../shared/suggest.ts";
 
 export interface OpRow {
   rev: number;
@@ -61,6 +62,12 @@ export class Store {
         PRIMARY KEY (doc_id, sid, req_id)
       );
       CREATE TABLE IF NOT EXISTS threads (
+        doc_id TEXT NOT NULL,
+        id TEXT NOT NULL,
+        data TEXT NOT NULL,
+        PRIMARY KEY (doc_id, id)
+      );
+      CREATE TABLE IF NOT EXISTS suggestions (
         doc_id TEXT NOT NULL,
         id TEXT NOT NULL,
         data TEXT NOT NULL,
@@ -226,6 +233,22 @@ export class Store {
     if (!current || ts < current.page_ts) return false;
     this.db.prepare("UPDATE docs SET page = ?, page_ts = ?, updated = ? WHERE id = ?").run(JSON.stringify(page), ts, Date.now(), id);
     return true;
+  }
+
+  loadSuggestions(id: string): SuggestionMeta[] {
+    const rows = this.db.prepare("SELECT data FROM suggestions WHERE doc_id = ?").all(id) as { data: string }[];
+    const out: SuggestionMeta[] = [];
+    for (const row of rows) {
+      const suggestion = sanitizeSuggestion(JSON.parse(row.data) as unknown);
+      if (suggestion) out.push(suggestion);
+    }
+    return out.sort((a, b) => a.ts - b.ts);
+  }
+
+  saveSuggestion(docId: string, suggestion: SuggestionMeta): void {
+    this.db
+      .prepare("INSERT INTO suggestions (doc_id, id, data) VALUES (?, ?, ?) ON CONFLICT(doc_id, id) DO UPDATE SET data = excluded.data")
+      .run(docId, suggestion.id, JSON.stringify(suggestion));
   }
 
   saveThread(docId: string, thread: Thread): void {

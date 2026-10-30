@@ -171,6 +171,9 @@ export function toMarkdown(doc: Doc): string {
     if (h === "title" || h === "h1") body = "# " + body;
     else if (h === "subtitle" || h === "h2") body = "## " + body;
     else if (h === "h3") body = "### " + body;
+    else if (h === "h4") body = "#### " + body;
+    else if (h === "h5") body = "##### " + body;
+    else if (h === "h6") body = "###### " + body;
     if (para.para.list === "bullet") body = "- " + body;
     else if (para.para.list === "numbered") body = "1. " + body;
     else if (para.para.list === "check") body = "- [ ] " + body;
@@ -199,7 +202,7 @@ export function toHtml(doc: Doc, title: string): string {
       inner += t;
     }
     const h = para.para.h;
-    const tag = h === "title" || h === "h1" ? "h1" : h === "subtitle" || h === "h2" ? "h2" : h === "h3" ? "h3" : para.para.list ? "li" : "p";
+    const tag = h === "title" || h === "h1" ? "h1" : h === "subtitle" || h === "h2" ? "h2" : h === "h3" ? "h3" : h === "h4" ? "h4" : h === "h5" ? "h5" : h === "h6" ? "h6" : para.para.list ? "li" : "p";
     blocks.push(`<${tag}>${inner}</${tag}>`);
   }
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${xml(title)}</title></head><body>\n${blocks.join("\n")}\n</body></html>`;
@@ -247,9 +250,10 @@ export function fromMarkdown(text: string): Doc {
     }
     let rest = line;
     const para: Attrs = { h: "normal", align: "left" };
-    const heading = /^(#{1,3})\s+(.*)$/.exec(rest);
+    const heading = /^(#{1,6})\s+(.*)$/.exec(rest);
     if (heading) {
-      para.h = heading[1].length === 1 ? "h1" : heading[1].length === 2 ? "h2" : "h3";
+      const level = heading[1].length;
+      para.h = level === 1 ? "h1" : level === 2 ? "h2" : level === 3 ? "h3" : level === 4 ? "h4" : level === 5 ? "h5" : "h6";
       rest = heading[2];
     }
     const check = /^[-*]\s+\[(?: |x|X)\]\s+(.*)$/.exec(rest);
@@ -274,13 +278,16 @@ export function fromMarkdown(text: string): Doc {
 export function fromHtml(html: string): Doc {
   const body = html.replace(/<script[\s\S]*?<\/script>/gi, "").replace(/<style[\s\S]*?<\/style>/gi, "");
   const paras: Para[] = [];
-  const chunks = body.split(/<(p|h1|h2|h3|li|div|blockquote|pre)\b[^>]*>/i).slice(1);
+  const chunks = body.split(/<(p|h1|h2|h3|h4|h5|h6|li|div|blockquote|pre)\b[^>]*>/i).slice(1);
   const take = chunks.length ? chunks : ["p", body];
   for (let i = 0; i < take.length; i += 2) {
     const tag = (take[i] || "p").toLowerCase();
-    const inner = (take[i + 1] || "").split(/<\/(p|h1|h2|h3|li|div|blockquote|pre)>/i)[0];
+    const inner = (take[i + 1] || "").split(/<\/(p|h1|h2|h3|h4|h5|h6|li|div|blockquote|pre)>/i)[0];
     if (/^\s*$/.test(inner.replace(/<[^>]+>/g, ""))) continue;
-    const para: Attrs = { h: tag === "h1" ? "h1" : tag === "h2" ? "h2" : tag === "h3" ? "h3" : "normal", align: "left" };
+    const para: Attrs = {
+      h: tag === "h1" ? "h1" : tag === "h2" ? "h2" : tag === "h3" ? "h3" : tag === "h4" ? "h4" : tag === "h5" ? "h5" : tag === "h6" ? "h6" : "normal",
+      align: "left",
+    };
     if (tag === "li") para.list = "bullet";
     const runs: Run[] = [];
     const re = /<(strong|b|em|i|u|s|strike|sup|sub|a)\b([^>]*)>|<\/(strong|b|em|i|u|s|strike|sup|sub|a)>|([^<]+)/gi;
@@ -316,6 +323,9 @@ function headingOf(h: unknown): string {
   if (h === "title" || h === "h1") return "Heading1";
   if (h === "subtitle" || h === "h2") return "Heading2";
   if (h === "h3") return "Heading3";
+  if (h === "h4") return "Heading4";
+  if (h === "h5") return "Heading5";
+  if (h === "h6") return "Heading6";
   return "";
 }
 
@@ -380,6 +390,9 @@ export async function fromDocx(data: Uint8Array): Promise<Doc> {
     if (/Heading1/.test(body)) para.h = "h1";
     else if (/Heading2/.test(body)) para.h = "h2";
     else if (/Heading3/.test(body)) para.h = "h3";
+    else if (/Heading4/.test(body)) para.h = "h4";
+    else if (/Heading5/.test(body)) para.h = "h5";
+    else if (/Heading6/.test(body)) para.h = "h6";
     const runs: Run[] = [];
     if (/<w:br[^>]*w:type="page"/.test(body)) runs.push({ text: "\f" });
     for (const raw of body.split(/<w:r[\s>]/).slice(1)) {

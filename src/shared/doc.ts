@@ -8,10 +8,10 @@ import {
   isNoop,
 } from "./delta.ts";
 
-export type Heading = "normal" | "title" | "subtitle" | "h1" | "h2" | "h3";
+export type Heading = "normal" | "title" | "subtitle" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6";
 export type Align = "left" | "center" | "right" | "justify";
 export type ListKind = "bullet" | "numbered" | "check";
-export type EmbedKind = "vote" | "person" | "date" | "drop" | "img";
+export type EmbedKind = "vote" | "person" | "date" | "drop" | "img" | "fn";
 
 export interface CharStyle {
   b?: true;
@@ -27,6 +27,10 @@ export interface CharStyle {
   link?: string;
   /** Comment thread id anchored to this character. */
   cmt?: string;
+  /** Suggestion id for an insertion that is still pending. */
+  sug?: string;
+  /** Suggestion id for a deletion that is still pending. */
+  del?: string;
   embed?: EmbedKind;
   emoji?: string;
   label?: string;
@@ -48,6 +52,14 @@ export interface CharStyle {
   check?: true;
   /** Column count. Meaningful on a table-row break. */
   cols?: number;
+  /** Bookmark id on a paragraph break. */
+  bm?: string;
+  /** Space before, in points. Absent uses the heading default. */
+  sb?: number;
+  /** Space after, in points. Absent means none. */
+  sa?: number;
+  /** Paragraph was generated as a table-of-contents line. */
+  toc?: true;
 }
 
 export interface Doc {
@@ -301,6 +313,7 @@ export function chipLabel(style: CharStyle | undefined): string {
   if (style.embed === "date") return style.iso || "Date";
   if (style.embed === "drop") return style.val || "Choose";
   if (style.embed === "img") return style.alt || "Image";
+  if (style.embed === "fn") return style.label || "Footnote";
   return "";
 }
 

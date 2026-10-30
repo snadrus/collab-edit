@@ -53,7 +53,10 @@ function paraFromEl(el: HTMLElement): Attrs {
   const tag = el.tagName;
   if (tag === "H1") attrs.h = "h1";
   else if (tag === "H2") attrs.h = "h2";
-  else if (tag === "H3" || tag === "H4" || tag === "H5" || tag === "H6") attrs.h = "h3";
+  else if (tag === "H3") attrs.h = "h3";
+  else if (tag === "H4") attrs.h = "h4";
+  else if (tag === "H5") attrs.h = "h5";
+  else if (tag === "H6") attrs.h = "h6";
   const align = el.style.textAlign;
   if (align === "center" || align === "right" || align === "justify" || align === "left") attrs.align = align;
   if (tag === "LI") {

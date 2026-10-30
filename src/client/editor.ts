@@ -22,9 +22,11 @@ import { moveParagraphDelta, moveSliceDelta } from "../shared/edit.ts";
 import { replaceDelta, styleToAttrs } from "../shared/replace.ts";
 import { DEFAULT_SUBS, autocorrectSpan } from "../shared/spell.ts";
 import { type Thread } from "../shared/threads.ts";
+import { acceptDelta, deletionDelta, deltaSets, rejectDelta, suggestionSpans, type SuggestionMeta, withSuggestion } from "../shared/suggest.ts";
+import { assignBookmarks, bookmarkAt, bookmarkId, headingsOf, insertTocDelta, updateTocDelta } from "../shared/toc.ts";
 import { addColumnDelta, addRowDelta, insertTableDelta, removeColumnDelta, removeRowDelta, tableAt, tableRowAt } from "../shared/table.ts";
 import { spellHits, spellSuggestions, dictReady } from "./dict.ts";
-import { caretBox, drawPage, hitTest, layoutDoc, markerHit, onNeedPaint, PAGE_GAP, PAGE_H, PAGE_W, RULER_H, stackOffset, type Layout } from "./layout.ts";
+import { caretBox, contentWidth, drawPage, hitTest, imageBox, layoutDoc, markerHit, onNeedPaint, pageSize, PAGE_H, PAGE_W, setImageDraft, stackOffset, type Layout } from "./layout.ts";
 import { clipboardToDelta } from "./paste.ts";
 
 export interface RemoteCaret {
@@ -45,7 +47,11 @@ export interface EditorHooks {
   onEmbed?: (index: number) => void;
   onPaint?: () => void;
   onContext?: (clientX: number, clientY: number, index: number) => void;
+  onSuggestion?: (meta: SuggestionMeta) => void;
+  onMargin?: (which: "header" | "footer") => void;
 }
+
+export type EditMode = "edit" | "suggest" | "view";
 
 const TYPE_KEYS = ["b", "i", "u", "strike", "sup", "sub", "font", "size", "color", "hl"] as const;
 type MarkKey = "b" | "i" | "u" | "strike" | "sup" | "sub";
@@ -69,6 +75,8 @@ export class Editor {
   zoom = 1;
   name = "Guest";
   threads: Thread[] = [];
+  suggestions: SuggestionMeta[] = [];
+  mode: EditMode = "edit";
   formatPaint: Attrs | null = null;
   atMark: number | null = null;
   findQuery = "";
@@ -93,6 +101,8 @@ export class Editor {
   private dropCaret!: HTMLElement;
   private spellKey = "";
   private spellCache: { start: number; end: number; word: string }[] = [];
+  private openSug: string | null = null;
+  private resize: { index: number; x: number; y: number; w: number; h: number; corner: string } | null = null;
 
   constructor(sid: string, pagesEl: HTMLElement, overlay: HTMLElement, input: HTMLElement, color: string, hooks: EditorHooks) {
     this.sync = new ClientSync(sid);
@@ -238,6 +248,7 @@ export class Editor {
   }
 
   undo(): void {
+    if (!this.canEdit()) return;
     if (!this.sync.undo()) return;
     if (this.sync.lastDelta) this.shiftOwn(this.sync.lastDelta);
     this.clampCarets();
@@ -246,6 +257,7 @@ export class Editor {
   }
 
   redo(): void {
+    if (!this.canEdit()) return;
     if (!this.sync.redo()) return;
     if (this.sync.lastDelta) this.shiftOwn(this.sync.lastDelta);
     this.clampCarets();
@@ -254,6 +266,7 @@ export class Editor {
   }
 
   insertText(text: string): void {
+    if (!this.canEdit()) return;
     const lo = Math.min(this.anchor, this.head);
     const hi = Math.max(this.anchor, this.head);
     if (!text) {
@@ -278,9 +291,11 @@ export class Editor {
   }
 
   paste(html: string, plain: string): void {
+    if (!this.canEdit()) return;
     const lo = Math.min(this.anchor, this.head);
     const hi = Math.max(this.anchor, this.head);
-    const delta = clipboardToDelta(html, plain, lo, hi, this.doc.text.length);
+    let delta = clipboardToDelta(html, plain, lo, hi, this.doc.text.length);
+    if (this.mode === "suggest") delta = withSuggestion(delta, this.ensureOpenSug());
     this.sync.local(delta);
     const at = this.clamp(lo + insertedLength(delta.ops));
     this.anchor = at;
@@ -320,6 +335,7 @@ export class Editor {
   }
 
   setParagraph(patch: Attrs): void {
+    if (!this.canEdit()) return;
     const indices = this.paragraphBreaks();
     if (!indices.length) return;
     const delta = this.patchIndices(indices, patch);
@@ -345,7 +361,7 @@ export class Editor {
   clearFormatting(): void {
     const wipe: Attrs = { b: null, i: null, u: null, strike: null, sup: null, sub: null, font: null, size: null, color: null, hl: null, link: null };
     if (this.anchor !== this.head) this.applyText(wipe);
-    this.setParagraph({ h: "normal", align: "left", list: null, lv: null, lh: null, ind: null, hr: null, check: null });
+    this.setParagraph({ h: "normal", align: "left", list: null, lv: null, lh: null, sb: null, sa: null, ind: null, hr: null, check: null });
     this.typing = {};
   }
 
@@ -441,19 +457,21 @@ export class Editor {
     for (let p = 0; p < pages; p++) {
       const page = this.pagesEl.children[p] as HTMLElement;
       page.dataset.page = String(p);
-      page.style.width = PAGE_W + "px";
-      page.style.height = PAGE_H + "px";
+      const box = pageSize();
+      page.style.width = box.w + "px";
+      page.style.height = box.h + "px";
       const canvas = page.querySelector("canvas") as HTMLCanvasElement;
-      canvas.width = Math.floor(PAGE_W * dpr);
-      canvas.height = Math.floor(PAGE_H * dpr);
-      canvas.style.width = PAGE_W + "px";
-      canvas.style.height = PAGE_H + "px";
+      canvas.width = Math.floor(box.w * dpr);
+      canvas.height = Math.floor(box.h * dpr);
+      canvas.style.width = box.w + "px";
+      canvas.style.height = box.h + "px";
       const ctx = canvas.getContext("2d");
       if (!ctx) continue;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       drawPage(ctx, doc, this.layout, p, ranges, this.colorMap(), {
         spell: this.preview ? [] : this.spellSpans(doc),
         invisibles: this.invisibles && !this.preview,
+        suggest: this.suggestColors(),
       });
     }
     this.placeCarets();
@@ -499,7 +517,7 @@ export class Editor {
   private placeCarets(): void {
     const local = caretBox(this.layout, this.head);
     this.localCaret.style.left = local.x + "px";
-    this.localCaret.style.top = stackTop(local.page, local.y) + "px";
+    this.localCaret.style.top = stackOffset(local.page, local.y) + "px";
     this.localCaret.style.height = local.h + "px";
     this.localCaret.style.background = this.color;
     this.localCaret.style.opacity = this.preview ? "0" : "";
@@ -508,7 +526,7 @@ export class Editor {
       const drop = caretBox(this.layout, this.dropAt);
       this.dropCaret.hidden = false;
       this.dropCaret.style.left = drop.x + "px";
-      this.dropCaret.style.top = stackTop(drop.page, drop.y) + "px";
+      this.dropCaret.style.top = stackOffset(drop.page, drop.y) + "px";
       this.dropCaret.style.height = drop.h + "px";
       this.dropCaret.style.background = this.color;
     }
@@ -521,7 +539,7 @@ export class Editor {
       flag.dataset.sid = remote.sid;
       if (remote.sid === this.hoverSid || remote.sid === this.flashSid) flag.classList.add("show-flag");
       flag.style.left = box.x + "px";
-      flag.style.top = stackTop(box.page, box.y) + "px";
+      flag.style.top = stackOffset(box.page, box.y) + "px";
       flag.style.height = box.h + "px";
       flag.style.background = remote.color;
       const name = document.createElement("div");
@@ -538,8 +556,9 @@ export class Editor {
         if (this.hoverSid === remote.sid) this.hoverSid = null;
         this.syncFlags();
       });
-      this.overlay.appendChild(flag);
+        this.overlay.appendChild(flag);
     }
+    this.placeImageFrame();
   }
 
   private bindInput(): void {
@@ -550,7 +569,10 @@ export class Editor {
         input.textContent = "";
         return;
       }
-      if (this.ignoreInput || this.composing) return;
+      if (this.ignoreInput || this.composing || !this.canEdit()) {
+        input.textContent = "";
+        return;
+      }
       const text = input.textContent || "";
       if (!text) return;
       this.ignoreInput = true;
@@ -570,7 +592,7 @@ export class Editor {
       if (text) this.insertText(text);
     });
     input.addEventListener("paste", (ev) => {
-      if (this.preview) {
+      if (this.preview || !this.canEdit()) {
         ev.preventDefault();
         return;
       }
@@ -613,13 +635,40 @@ export class Editor {
       this.focus();
       const page = Number(pageEl.dataset.page || 0);
       const point = this.pointFromEvent(ev as MouseEvent, pageEl);
+      const box = pageSize();
+      if (point.y < 52) {
+        this.hooks.onMargin?.("header");
+        return;
+      }
+      if (point.y > box.h - 40) {
+        this.hooks.onMargin?.("footer");
+        return;
+      }
       const marker = markerHit(this.layout, page, point.x, point.y);
       if (marker != null && paragraphStyle(this.doc, marker).list === "check") {
         this.toggleCheck(marker);
         return;
       }
+      const img = this.imageAt(page, point.x, point.y);
+      if (img != null && !(ev as MouseEvent).shiftKey) {
+        this.anchor = img;
+        this.head = img;
+        this.dragging = false;
+        this.render();
+        this.hooks.onSelection();
+        if ((ev as MouseEvent).detail >= 2) this.hooks.onEmbed?.(img);
+        return;
+      }
       const idx = this.clamp(hitTest(this.doc, this.layout, page, point.x, point.y));
       const st = this.doc.styles[idx];
+      if (this.doc.text[idx] === EMBED && st?.embed === "fn") {
+        this.anchor = idx;
+        this.head = idx;
+        this.render();
+        this.hooks.onSelection();
+        this.hooks.onEmbed?.(idx);
+        return;
+      }
       if (this.doc.text[idx] === EMBED && st?.embed === "vote") {
         this.toggleVote(idx);
         return;
@@ -632,7 +681,7 @@ export class Editor {
         return;
       }
       if (((ev as MouseEvent).metaKey || (ev as MouseEvent).ctrlKey) && st?.link) {
-        window.open(st.link, "_blank", "noopener");
+        this.followLink(st.link);
         return;
       }
       if (this.atMark != null) this.closeAt();
@@ -677,6 +726,21 @@ export class Editor {
       this.hooks.onContext?.((ev as MouseEvent).clientX, (ev as MouseEvent).clientY, idx);
     });
     window.addEventListener("mousemove", (ev) => {
+      if (this.resize) {
+        const pageEl = this.pagesEl.querySelector(".page") as HTMLElement | null;
+        const rect = pageEl?.querySelector("canvas")?.getBoundingClientRect();
+        const scale = rect && rect.width ? rect.width / PAGE_W : 1;
+        const dx = (ev.clientX - this.resize.x) / scale;
+        const dy = (ev.clientY - this.resize.y) / scale;
+        const sx = this.resize.corner.includes("w") ? -1 : 1;
+        const sy = this.resize.corner.includes("n") ? -1 : 1;
+        const w = Math.max(24, Math.min(contentWidth(), Math.round(this.resize.w + dx * sx)));
+        const h = Math.max(24, Math.min(800, Math.round(this.resize.h + dy * sy)));
+        this.resize = { ...this.resize, x: ev.clientX, y: ev.clientY, w, h };
+        setImageDraft({ index: this.resize.index, w, h });
+        this.render();
+        return;
+      }
       if (this.dragOrigin) {
         const dx = ev.clientX - this.dragOrigin.x;
         const dy = ev.clientY - this.dragOrigin.y;
@@ -696,6 +760,13 @@ export class Editor {
       this.render();
     });
     window.addEventListener("mouseup", () => {
+      if (this.resize) {
+        const { index, w, h } = this.resize;
+        this.resize = null;
+        setImageDraft(null);
+        this.setImageSize(index, w, h);
+        return;
+      }
       if (this.dragOrigin) {
         const origin = this.dragOrigin;
         const dest = this.dropAt;
@@ -816,13 +887,14 @@ export class Editor {
       const y = key === "ArrowUp" ? box.y - 4 : box.y + box.h + 4;
       let page = box.page;
       if (y < 0 && page > 0) page -= 1;
-      if (y > PAGE_H && page < this.layout.pages - 1) page += 1;
+      const limit = pageSize().h;
+      if (y > limit && page < this.layout.pages - 1) page += 1;
       const pageEl = this.pagesEl.children[page] as HTMLElement | undefined;
       if (pageEl) {
         const canvas = pageEl.querySelector("canvas") as HTMLCanvasElement;
         const rect = canvas.getBoundingClientRect();
-        const scale = rect.height / PAGE_H || 1;
-        const clientY = rect.top + (key === "ArrowUp" ? Math.max(0, y) : Math.min(PAGE_H - 1, y)) * scale;
+        const scale = rect.height / limit || 1;
+        const clientY = rect.top + (key === "ArrowUp" ? Math.max(0, y) : Math.min(limit - 1, y)) * scale;
         next = this.indexFromEvent({ clientX: rect.left + box.x * (rect.width / PAGE_W), clientY } as MouseEvent, pageEl, page);
       }
     }
@@ -865,6 +937,21 @@ export class Editor {
   }
 
   private deleteRange(start: number, end: number): void {
+    if (!this.canEdit()) return;
+    if (this.mode === "suggest") {
+      const id = ("s" + Math.random().toString(36).slice(2, 10)).slice(0, 40);
+      const delta = deletionDelta(this.doc, start, end, id, this.ownSuggestionIds());
+      if (!delta) return;
+      this.sync.local(delta);
+      const at = this.clamp(start);
+      this.anchor = at;
+      this.head = at;
+      this.openSug = null;
+      if (deltaSets(delta, "del", id)) this.noteSuggestion(id);
+      this.sampleTyping();
+      this.afterEdit();
+      return;
+    }
     const delta = splice(start, end, [], this.doc.text.length);
     this.sync.local(delta);
     const at = this.clamp(start);
@@ -894,6 +981,7 @@ export class Editor {
 
   /** Enter keeps the heading on the first half and starts the next paragraph in normal text. */
   insertParagraphBreak(): void {
+    if (!this.canEdit()) return;
     if (tableRowAt(this.doc, this.head)) {
       this.addRow();
       return;
@@ -902,7 +990,9 @@ export class Editor {
     const hi = Math.max(this.anchor, this.head);
     const para = paragraphStyle(this.doc, lo);
     const end = paraBounds(this.doc, lo).end;
-    let delta = splice(lo, hi, [{ t: "i", s: "\n", a: this.paraAttrs() }], this.doc.text.length);
+    const breakAttrs = this.paraAttrs();
+    if (this.mode === "suggest") breakAttrs.sug = this.ensureOpenSug();
+    let delta = splice(lo, hi, [{ t: "i", s: "\n", a: breakAttrs }], this.doc.text.length);
     if (para.h && para.h !== "normal" && end >= hi) {
       const newBreak = end - (hi - lo) + 1;
       const patch: Delta = { ops: [] };
@@ -925,7 +1015,10 @@ export class Editor {
     const ops: { t: "i"; s: string; a?: Attrs }[] = [];
     for (const part of parts) {
       if (!part) continue;
-      if (part === "\n" || part === "\f") ops.push({ t: "i", s: part, a: para });
+      if (part === "\n" || part === "\f") {
+        const attrs = this.mode === "suggest" ? { ...para, sug: this.ensureOpenSug() } : para;
+        ops.push({ t: "i", s: part, a: attrs });
+      }
       else ops.push(Object.keys(textAttrs).length ? { t: "i", s: part, a: textAttrs } : { t: "i", s: part });
     }
     return ops;
@@ -942,6 +1035,7 @@ export class Editor {
       const here = this.doc.styles[this.head]?.cmt;
       if (prev && prev === here) attrs.cmt = prev;
     }
+    if (this.mode === "suggest") attrs.sug = this.ensureOpenSug();
     return attrs;
   }
 
@@ -952,10 +1046,13 @@ export class Editor {
     if (para.lv) attrs.lv = para.lv;
     if (para.ind) attrs.ind = para.ind;
     if (para.lh) attrs.lh = para.lh;
+    if (para.sb != null) attrs.sb = para.sb;
+    if (para.sa != null) attrs.sa = para.sa;
     return attrs;
   }
 
   private applyText(attrs: Attrs): void {
+    if (!this.canEdit()) return;
     const lo = Math.min(this.anchor, this.head);
     const hi = Math.max(this.anchor, this.head);
     if (hi <= lo) return;
@@ -1070,7 +1167,8 @@ export class Editor {
   private pointFromEvent(ev: MouseEvent, pageEl: HTMLElement): { x: number; y: number } {
     const canvas = pageEl.querySelector("canvas") as HTMLCanvasElement;
     const rect = canvas.getBoundingClientRect();
-    return { x: ((ev.clientX - rect.left) / rect.width) * PAGE_W, y: ((ev.clientY - rect.top) / rect.height) * PAGE_H };
+    const box = pageSize();
+    return { x: ((ev.clientX - rect.left) / rect.width) * box.w, y: ((ev.clientY - rect.top) / rect.height) * box.h };
   }
 
   private indexFromEvent(ev: MouseEvent, pageEl: HTMLElement, page: number): number {
@@ -1404,6 +1502,7 @@ export class Editor {
   }
 
   private localDelta(delta: Delta, caret: number): void {
+    if (!this.canEdit()) return;
     this.sync.local(delta);
     const at = this.clamp(caret);
     this.anchor = at;
@@ -1447,6 +1546,17 @@ export class Editor {
     const meta = e.metaKey || e.ctrlKey;
     const key = e.key.toLowerCase();
     const code = e.code;
+    if (meta && e.altKey && e.shiftKey && key === "x") {
+      e.preventDefault();
+      const order: EditMode[] = ["edit", "suggest", "view"];
+      this.setMode(order[(Math.max(0, order.indexOf(this.mode)) + 1) % 3]);
+      return true;
+    }
+    if (meta && e.altKey && !e.shiftKey && key === "f") {
+      e.preventDefault();
+      this.hooks.onCommand?.("footnote");
+      return true;
+    }
     if (meta && e.altKey && key === "m") {
       e.preventDefault();
       this.hooks.onCommand?.("comment");
@@ -1457,7 +1567,7 @@ export class Editor {
       this.hooks.onCommand?.("link");
       return true;
     }
-    if (meta && key === "f") {
+    if (meta && key === "f" && !e.altKey) {
       e.preventDefault();
       this.hooks.onCommand?.("find");
       return true;
@@ -1535,6 +1645,21 @@ export class Editor {
     if (meta && e.altKey && code === "Digit3") {
       e.preventDefault();
       this.setHeading("h3");
+      return true;
+    }
+    if (meta && e.altKey && code === "Digit4") {
+      e.preventDefault();
+      this.setHeading("h4");
+      return true;
+    }
+    if (meta && e.altKey && code === "Digit5") {
+      e.preventDefault();
+      this.setHeading("h5");
+      return true;
+    }
+    if (meta && e.altKey && code === "Digit6") {
+      e.preventDefault();
+      this.setHeading("h6");
       return true;
     }
     if (meta && code === "BracketRight") {
@@ -1634,20 +1759,8 @@ export class Editor {
     return false;
   }
 
-  headings(): { index: number; level: number; text: string }[] {
-    const out: { index: number; level: number; text: string }[] = [];
-    const rank: Record<string, number> = { title: 0, h1: 1, h2: 2, h3: 3 };
-    let start = 0;
-    for (let i = 0; i < this.doc.text.length; i++) {
-      if (!isBreak(this.doc.text[i])) continue;
-      const h = paragraphStyle(this.doc, start).h || "normal";
-      if (h in rank) {
-        const text = this.doc.text.slice(start, i).replace(/\uFFFC/g, "").replace(/\s+/g, " ").trim();
-        if (text) out.push({ index: start, level: rank[h], text });
-      }
-      start = i + 1;
-    }
-    return out;
+  headings(): { index: number; level: number; text: string; bm: string }[] {
+    return headingsOf(this.doc).map((h) => ({ index: h.index, level: h.level, text: h.text, bm: h.bm }));
   }
 
   moveParagraph(dir: -1 | 1): void {
@@ -1722,6 +1835,226 @@ export class Editor {
     return this.spellCache;
   }
 
+  setMode(mode: EditMode): void {
+    this.mode = mode;
+    this.openSug = null;
+    this.hooks.onChange();
+    this.render();
+  }
+
+  setSpacing(lh: number, sb: number, sa: number): void {
+    this.setParagraph({
+      lh: Math.max(0.5, Math.min(3, lh)),
+      sb: Math.max(0, Math.min(72, sb)),
+      sa: Math.max(0, Math.min(72, sa)),
+    });
+  }
+
+  paragraphSpacing(): { lh: number; sb: number; sa: number } {
+    const para = paragraphStyle(this.doc, this.head);
+    return { lh: para.lh || 1.15, sb: para.sb ?? 0, sa: para.sa ?? 0 };
+  }
+
+  setSuggestions(list: SuggestionMeta[]): void {
+    this.suggestions = list.slice();
+    this.render();
+  }
+
+  upsertSuggestion(meta: SuggestionMeta): void {
+    const i = this.suggestions.findIndex((s) => s.id === meta.id);
+    if (i >= 0) this.suggestions[i] = meta;
+    else this.suggestions.push(meta);
+    this.render();
+  }
+
+  suggestionCards(): { id: string; kind: "ins" | "del"; quote: string; start: number; name: string; color: string }[] {
+    const spans = suggestionSpans(this.doc);
+    const out: { id: string; kind: "ins" | "del"; quote: string; start: number; name: string; color: string }[] = [];
+    for (const span of spans) {
+      if (out.some((card) => card.id === span.id && card.kind === span.kind)) continue;
+      const meta = this.suggestions.find((s) => s.id === span.id);
+      out.push({
+        id: span.id,
+        kind: span.kind,
+        quote: span.quote,
+        start: span.start,
+        name: meta?.name || "Suggestion",
+        color: meta?.color || (span.kind === "del" ? "#c5221f" : "#188038"),
+      });
+    }
+    return out;
+  }
+
+  acceptSuggestion(id: string): void {
+    const delta = acceptDelta(this.doc, id);
+    if (delta) this.localDelta(delta, this.head);
+  }
+
+  rejectSuggestion(id: string): void {
+    const delta = rejectDelta(this.doc, id);
+    if (delta) this.localDelta(delta, this.head);
+  }
+
+  insertFootnote(text: string): void {
+    const attrs: Attrs = { embed: "fn", label: text.trim().slice(0, 500) || "Footnote" };
+    if (this.mode === "suggest") attrs.sug = this.ensureOpenSug();
+    this.insertEmbed(attrs);
+  }
+
+  setFootnote(index: number, text: string): void {
+    if (this.doc.styles[index]?.embed !== "fn") return;
+    this.localDelta(this.patchIndices([index], { label: text.trim().slice(0, 500) || "Footnote" }), index);
+  }
+
+  setImageSize(index: number, w: number, h: number): void {
+    if (this.doc.styles[index]?.embed !== "img") return;
+    const iw = Math.max(24, Math.min(contentWidth(), Math.round(w)));
+    const ih = Math.max(24, Math.min(800, Math.round(h)));
+    this.localDelta(this.patchIndices([index], { iw, ih }), index);
+  }
+
+  setAltText(index: number, alt: string): void {
+    if (this.doc.styles[index]?.embed !== "img") return;
+    this.localDelta(this.patchIndices([index], { alt: alt.trim().slice(0, 200) || "Image" }), index);
+  }
+
+  selectedImage(): number | null {
+    if (this.anchor !== this.head) return null;
+    return this.doc.styles[this.head]?.embed === "img" ? this.head : null;
+  }
+
+  addBookmark(): string {
+    const end = paraBounds(this.doc, this.head).end;
+    const existing = this.doc.styles[end]?.bm;
+    if (typeof existing === "string" && existing) return existing;
+    const id = bookmarkId();
+    this.localDelta(this.patchIndices([end], { bm: id }), this.head);
+    return id;
+  }
+
+  insertToc(): void {
+    const at = Math.min(this.anchor, this.head);
+    this.localDelta(insertTocDelta(this.doc, at), at);
+  }
+
+  updateToc(): void {
+    const delta = updateTocDelta(this.doc);
+    if (delta) this.localDelta(delta, this.head);
+  }
+
+  linkHeading(bm: string, label: string): void {
+    if (!bm) return;
+    const href = "#" + bm;
+    if (this.anchor === this.head) {
+      const attrs = this.textAttrs();
+      attrs.link = href;
+      const lo = this.head;
+      this.localDelta(splice(lo, lo, [{ t: "i", s: label || href, a: attrs }], this.doc.text.length), lo + (label || href).length);
+      return;
+    }
+    this.applyText({ link: href });
+  }
+
+  ensureHeadingMarks(): void {
+    const delta = assignBookmarks(this.doc);
+    if (!delta) return;
+    const anchor = this.anchor;
+    const head = this.head;
+    this.localDelta(delta, head);
+    this.anchor = this.clamp(anchor);
+    this.head = this.clamp(head);
+    this.render();
+  }
+
+  followLink(url: string): void {
+    if (url.startsWith("#")) {
+      const at = bookmarkAt(this.doc, url.slice(1));
+      if (at != null) {
+        this.setSelection(at, at);
+        this.scrollHeadIntoView();
+      }
+      return;
+    }
+    window.open(url, "_blank", "noopener");
+  }
+
+  private suggestColors(): Record<string, string> {
+    const colors: Record<string, string> = {};
+    for (const card of this.suggestionCards()) colors[card.id] = card.color;
+    return colors;
+  }
+
+  private canEdit(): boolean {
+    return this.mode !== "view" && !this.preview;
+  }
+
+  private ownSuggestionIds(): Set<string> {
+    const own = new Set(this.suggestions.filter((s) => s.sid === this.sync.sid).map((s) => s.id));
+    if (this.openSug) own.add(this.openSug);
+    return own;
+  }
+
+  private noteSuggestion(id: string): void {
+    if (this.suggestions.some((s) => s.id === id)) return;
+    const meta: SuggestionMeta = { id, sid: this.sync.sid, name: this.name || "Guest", color: this.color, ts: Date.now() };
+    this.upsertSuggestion(meta);
+    this.hooks.onSuggestion?.(meta);
+  }
+
+  private ensureOpenSug(): string {
+    const prev = this.head > 0 ? this.doc.styles[this.head - 1]?.sug : undefined;
+    if (typeof prev === "string" && this.ownSuggestionIds().has(prev)) {
+      this.openSug = prev;
+      return prev;
+    }
+    const id = ("s" + Math.random().toString(36).slice(2, 10)).slice(0, 40);
+    this.openSug = id;
+    this.noteSuggestion(id);
+    return id;
+  }
+
+  private imageAt(page: number, x: number, y: number): number | null {
+    for (let i = 0; i < this.doc.text.length; i++) {
+      if (this.doc.styles[i]?.embed !== "img") continue;
+      const box = imageBox(this.layout, i);
+      if (!box || box.page !== page) continue;
+      if (x >= box.x && x <= box.x + box.w && y >= box.y && y <= box.y + box.h) return i;
+    }
+    return null;
+  }
+
+  private placeImageFrame(): void {
+    for (const el of [...this.overlay.querySelectorAll(".image-frame, .image-handle")]) el.remove();
+    if (this.preview || this.mode === "view") return;
+    const index = this.selectedImage();
+    if (index == null) return;
+    const box = imageBox(this.layout, index);
+    if (!box) return;
+    const frame = document.createElement("div");
+    frame.className = "image-frame";
+    frame.style.left = box.x + "px";
+    frame.style.top = stackOffset(box.page, box.y) + "px";
+    frame.style.width = box.w + "px";
+    frame.style.height = box.h + "px";
+    this.overlay.appendChild(frame);
+    for (const corner of ["nw", "ne", "sw", "se"]) {
+      const handle = document.createElement("div");
+      handle.className = "image-handle";
+      handle.dataset.corner = corner;
+      const left = corner.includes("w") ? box.x - 4 : box.x + box.w - 4;
+      const top = corner.includes("n") ? box.y - 4 : box.y + box.h - 4;
+      handle.style.left = left + "px";
+      handle.style.top = stackOffset(box.page, top) + "px";
+      handle.addEventListener("mousedown", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const st = this.doc.styles[index];
+        this.resize = { index, corner, x: ev.clientX, y: ev.clientY, w: st?.iw || box.w, h: st?.ih || box.h };
+      });
+      this.overlay.appendChild(handle);
+    }
+  }
+
   private maybeAutocorrect(): void {
     if (!this.autocorrect) return;
     const hit = autocorrectSpan(this.doc.text, this.head, this.subs);
@@ -1738,12 +2071,8 @@ export class Editor {
   }
 }
 
-function stackTop(page: number, y: number): number {
-  return RULER_H + page * (PAGE_H + PAGE_GAP) + y;
-}
-
 function headPt(h: Heading): number {
-  return { title: 26, subtitle: 15, h1: 20, h2: 16, h3: 14, normal: 11 }[h] || 11;
+  return { title: 26, subtitle: 15, h1: 20, h2: 16, h3: 14, h4: 12, h5: 11, h6: 11, normal: 11 }[h] || 11;
 }
 
 function wordBounds(doc: Doc, index: number): [number, number] {

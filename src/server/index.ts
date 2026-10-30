@@ -94,6 +94,7 @@ const server = createServer(async (req, res) => {
       store.replaceSnapshot(id, room.server.doc);
       store.setPage(id, room.page, Date.now());
       for (const thread of room.threads.values()) store.saveThread(id, thread);
+      for (const suggestion of room.suggestions.values()) store.saveSuggestion(id, suggestion);
       sendJson(res, 201, { id, title });
       return;
     }
