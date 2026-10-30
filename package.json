@@ -1,0 +1,25 @@
+{
+  "name": "folio",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning --experimental-strip-types src/server/index.ts",
+    "dev": "DEV=1 node --disable-warning=ExperimentalWarning --watch-path=src/server --watch-path=src/shared --experimental-strip-types src/server/index.ts",
+    "test": "node --disable-warning=ExperimentalWarning --experimental-strip-types --test tests/*.test.ts",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "esbuild": "^0.25.0",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "@types/ws": "^8.18.1",
+    "playwright": "^1.55.0",
+    "typescript": "^5.9.2"
+  }
+}
