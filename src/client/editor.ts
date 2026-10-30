@@ -21,7 +21,7 @@ import {
   type Snapshot,
 } from "../shared/doc.ts";
 import { ClientSync } from "../shared/engine.ts";
-import { hexAlpha } from "../shared/palette.ts";
+import { hexAlpha, LOCAL_CARET, LOCAL_SELECTION } from "../shared/palette.ts";
 import { moveParagraphDelta, moveSliceDelta } from "../shared/edit.ts";
 import { replaceDelta, styleToAttrs } from "../shared/replace.ts";
 import { DEFAULT_SUBS, autocorrectSpan } from "../shared/spell.ts";
@@ -523,7 +523,7 @@ export class Editor {
       });
     }
     if (this.anchor !== this.head) {
-      ranges.push({ start: Math.min(this.anchor, this.head), end: Math.max(this.anchor, this.head), color: hexAlpha(this.color, 0.28) });
+      ranges.push({ start: Math.min(this.anchor, this.head), end: Math.max(this.anchor, this.head), color: LOCAL_SELECTION });
     }
     return ranges;
   }
@@ -533,7 +533,7 @@ export class Editor {
     this.localCaret.style.left = local.x + "px";
     this.localCaret.style.top = stackOffset(local.page, local.y) + "px";
     this.localCaret.style.height = local.h + "px";
-    this.localCaret.style.background = this.color;
+    this.localCaret.style.background = LOCAL_CARET;
     this.localCaret.style.opacity = this.preview ? "0" : "";
     if (this.dropAt == null || this.preview) this.dropCaret.hidden = true;
     else {
@@ -542,7 +542,7 @@ export class Editor {
       this.dropCaret.style.left = drop.x + "px";
       this.dropCaret.style.top = stackOffset(drop.page, drop.y) + "px";
       this.dropCaret.style.height = drop.h + "px";
-      this.dropCaret.style.background = this.color;
+      this.dropCaret.style.background = LOCAL_CARET;
     }
     for (const el of [...this.overlay.querySelectorAll(".remote-caret")]) el.remove();
     if (this.preview) return;

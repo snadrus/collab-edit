@@ -354,7 +354,8 @@ body.outline-open #stack { margin-left: 248px; margin-right: auto; }
   width: 2px;
   pointer-events: none;
 }
-.local-caret { animation: blink 1s steps(1) infinite; }
+.local-caret { background: #000; animation: blink 1s steps(1) infinite; }
+.avatar.self { background: #f1f3f4; color: #202124; box-shadow: none; }
 @keyframes blink { 50% { opacity: 0; } }
 .remote-caret { z-index: 2; pointer-events: auto; }
 .remote-caret::before {

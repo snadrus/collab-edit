@@ -1,3 +1,7 @@
+/** The local caret and selection. Assigned colors are only for other people. */
+export const LOCAL_CARET = "#000000";
+export const LOCAL_SELECTION = "#a8c7fa";
+
 /** Material Design 500 shades. Assigned in order so active sessions do not share a color. */
 export const COLLAB_PALETTE = [
   "#f44336",

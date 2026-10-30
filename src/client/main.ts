@@ -1701,10 +1701,11 @@ function paintAvatars(editor: Editor, selfSid: string): void {
   const people = [{ sid: selfSid, name: displayName(), color: editor.color }, ...editor.remotes.values()];
   for (const person of people) {
     const el = document.createElement("div");
-    el.className = "avatar";
-    el.style.background = hexAlpha(person.color, 0.16);
-    el.style.color = person.color;
-    el.style.boxShadow = `0 0 0 2px ${person.color}`;
+    const mine = person.sid === selfSid;
+    el.className = mine ? "avatar self" : "avatar";
+    el.style.background = mine ? "#f1f3f4" : hexAlpha(person.color, 0.16);
+    el.style.color = mine ? "#202124" : person.color;
+    el.style.boxShadow = mine ? "none" : `0 0 0 2px ${person.color}`;
     el.title = person.name;
     el.dataset.sid = person.sid;
     el.textContent = (person.name.trim()[0] || "?").toUpperCase();
