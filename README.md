@@ -1,8 +1,12 @@
-# Folio
+# Felarumi
 
-Folio is a real-time collaborative rich-text editor. Several people can edit one document at once, with each other's carets and selections shown on the page.
+Felarumi is a real-time collaborative rich-text editor. Several people can edit one document at once. Remote carets stay on the page; a person's name shows when you hover their caret, their selection, or their avatar.
 
-![Folio editor with two collaborators](docs/screenshot.png)
+![Felarumi editor with two collaborators](docs/screenshot.png)
+
+## Roadmap
+
+Felarumi is the writing app. A Sheets-style sibling, Felanumio, is planned as a separate collaborative spreadsheet and is not part of this editor.
 
 ## Run
 

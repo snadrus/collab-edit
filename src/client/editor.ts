@@ -18,6 +18,7 @@ import {
 } from "../shared/doc.ts";
 import { ClientSync } from "../shared/engine.ts";
 import { hexAlpha } from "../shared/palette.ts";
+import { replaceDelta } from "../shared/replace.ts";
 import { type Thread } from "../shared/threads.ts";
 import { addColumnDelta, addRowDelta, insertTableDelta, removeColumnDelta, removeRowDelta, tableAt, tableRowAt } from "../shared/table.ts";
 import { caretBox, drawPage, hitTest, layoutDoc, markerHit, onNeedPaint, PAGE_GAP, PAGE_H, PAGE_W, RULER_H, stackOffset, type Layout } from "./layout.ts";
@@ -69,6 +70,10 @@ export class Editor {
   findQuery = "";
   findIndex = 0;
   findMatches: { start: number; end: number }[] = [];
+  hoverSid: string | null = null;
+  flashSid: string | null = null;
+  preview: Doc | null = null;
+  previewMarks: { start: number; end: number; color: string }[] = [];
   private composing = false;
   private ignoreInput = false;
   private dragging = false;
@@ -107,6 +112,8 @@ export class Editor {
   }
 
   load(snapshot: Snapshot, rev: number): void {
+    this.preview = null;
+    this.previewMarks = [];
     this.sync.reset(restoreDoc(snapshot), rev);
     this.anchor = 0;
     this.head = 0;
@@ -114,6 +121,55 @@ export class Editor {
     this.sampleTyping();
     this.ready = true;
     this.paint();
+  }
+
+  showPreview(doc: Doc, marks: { start: number; end: number; color: string }[]): void {
+    this.preview = doc;
+    this.previewMarks = marks;
+    this.paint();
+  }
+
+  exitPreview(): void {
+    if (!this.preview) return;
+    this.preview = null;
+    this.previewMarks = [];
+    this.paint();
+  }
+
+  /** Replace the live document with `target` as one undoable forward revision. */
+  replaceDocument(target: Doc): void {
+    const live = this.doc;
+    this.exitPreview();
+    const delta = replaceDelta(live, target);
+    this.localDelta(delta, 0);
+  }
+
+  reveal(sid: string): void {
+    const remote = this.remotes.get(sid);
+    const index = this.clamp(remote ? remote.head : this.head);
+    this.flashSid = sid;
+    window.setTimeout(() => {
+      if (this.flashSid === sid) {
+        this.flashSid = null;
+        this.syncFlags();
+      }
+    }, 2200);
+    const box = caretBox(this.layout, index);
+    const top = stackOffset(box.page, box.y);
+    const scroller = this.pagesEl.closest("#scroll") as HTMLElement | null;
+    if (scroller) scroller.scrollTop = Math.max(0, top - 120);
+    this.syncFlags();
+  }
+
+  syncFlags(): void {
+    for (const el of this.overlay.querySelectorAll<HTMLElement>(".remote-caret")) {
+      const on = el.dataset.sid === this.hoverSid || el.dataset.sid === this.flashSid;
+      el.classList.toggle("show-flag", on);
+    }
+  }
+
+  styleAt(index: number): CharStyle {
+    return this.doc.styles[Math.max(0, Math.min(index, this.doc.styles.length - 1))] || {};
   }
 
   setRemote(c: RemoteCaret): void {
@@ -341,7 +397,7 @@ export class Editor {
   }
 
   private paint(): void {
-    const doc = this.doc;
+    const doc = this.preview ?? this.doc;
     this.layout = layoutDoc(doc, this.measure);
     const pages = this.layout.pages;
     while (this.pagesEl.childElementCount < pages) {
@@ -382,6 +438,10 @@ export class Editor {
 
   private selectionRanges(): { start: number; end: number; color: string }[] {
     const ranges: { start: number; end: number; color: string }[] = [];
+    if (this.preview) {
+      for (const mark of this.previewMarks) ranges.push({ start: mark.start, end: mark.end, color: hexAlpha(mark.color, 0.38) });
+      return ranges;
+    }
     this.findMatches.forEach((m, n) => {
       ranges.push({ start: m.start, end: m.end, color: n === this.findIndex ? "rgba(255,167,38,0.55)" : "rgba(255,235,59,0.45)" });
     });
@@ -411,11 +471,15 @@ export class Editor {
     this.localCaret.style.top = stackTop(local.page, local.y) + "px";
     this.localCaret.style.height = local.h + "px";
     this.localCaret.style.background = this.color;
+    this.localCaret.style.opacity = this.preview ? "0" : "";
     for (const el of [...this.overlay.querySelectorAll(".remote-caret")]) el.remove();
+    if (this.preview) return;
     for (const remote of this.remotes.values()) {
       const box = caretBox(this.layout, this.clamp(remote.head));
       const flag = document.createElement("div");
       flag.className = "remote-caret";
+      flag.dataset.sid = remote.sid;
+      if (remote.sid === this.hoverSid || remote.sid === this.flashSid) flag.classList.add("show-flag");
       flag.style.left = box.x + "px";
       flag.style.top = stackTop(box.page, box.y) + "px";
       flag.style.height = box.h + "px";
@@ -426,6 +490,14 @@ export class Editor {
       name.style.background = remote.color;
       flag.appendChild(name);
       if (remote.anchor !== remote.head) flag.dataset.selection = "1";
+      flag.addEventListener("mouseenter", () => {
+        this.hoverSid = remote.sid;
+        this.syncFlags();
+      });
+      flag.addEventListener("mouseleave", () => {
+        if (this.hoverSid === remote.sid) this.hoverSid = null;
+        this.syncFlags();
+      });
       this.overlay.appendChild(flag);
     }
   }
@@ -434,6 +506,10 @@ export class Editor {
     const input = this.input;
     input.addEventListener("keydown", (ev) => this.onKey(ev as KeyboardEvent));
     input.addEventListener("input", () => {
+      if (this.preview) {
+        input.textContent = "";
+        return;
+      }
       if (this.ignoreInput || this.composing) return;
       const text = input.textContent || "";
       if (!text) return;
@@ -454,6 +530,10 @@ export class Editor {
       if (text) this.insertText(text);
     });
     input.addEventListener("paste", (ev) => {
+      if (this.preview) {
+        ev.preventDefault();
+        return;
+      }
       const e = ev as ClipboardEvent;
       e.preventDefault();
       const html = e.clipboardData?.getData("text/html") || "";
@@ -465,7 +545,27 @@ export class Editor {
   }
 
   private bindPointer(): void {
+    this.pagesEl.addEventListener("mousemove", (ev) => {
+      if (this.preview) return;
+      const pageEl = (ev.target as HTMLElement).closest(".page") as HTMLElement | null;
+      if (!pageEl) return;
+      const page = Number(pageEl.dataset.page || 0);
+      const point = this.pointFromEvent(ev as MouseEvent, pageEl);
+      let sid: string | null = null;
+      for (const remote of this.remotes.values()) {
+        if (remote.anchor === remote.head) continue;
+        const lo = Math.min(remote.anchor, remote.head);
+        const hi = Math.max(remote.anchor, remote.head);
+        const idx = hitTest(this.doc, this.layout, page, point.x, point.y);
+        if (idx >= lo && idx < hi) sid = remote.sid;
+      }
+      if (sid !== this.hoverSid) {
+        this.hoverSid = sid;
+        this.syncFlags();
+      }
+    });
     this.pagesEl.addEventListener("mousedown", (ev) => {
+      if (this.preview) return;
       if ((ev as MouseEvent).button !== 0) return;
       const pageEl = (ev.target as HTMLElement).closest(".page") as HTMLElement | null;
       if (!pageEl) return;
@@ -536,6 +636,10 @@ export class Editor {
   }
 
   private onKey(e: KeyboardEvent): void {
+    if (this.preview) {
+      e.preventDefault();
+      return;
+    }
     if (e.isComposing || this.composing) return;
     if (this.atMark != null && this.hooks.atKey?.(e)) {
       e.preventDefault();

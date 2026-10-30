@@ -1,8 +1,26 @@
 import type { Command } from "../shared/commands.ts";
 import type { Heading } from "../shared/doc.ts";
+import { restoreDoc } from "../shared/doc.ts";
+import {
+  base64ToBytes,
+  bytesToBase64,
+  fromDocx,
+  fromFelarumi,
+  fromHtml,
+  fromMarkdown,
+  fromPlain,
+  toDocx,
+  toFelarumi,
+  toHtml,
+  toMarkdown,
+  toOdt,
+  toPdf,
+  toText,
+} from "../shared/io.ts";
 import { hexAlpha } from "../shared/palette.ts";
 import type { Thread } from "../shared/threads.ts";
 import { mountChrome, type Chrome } from "./chrome.ts";
+import { loadQueue, saveQueue } from "./offline.ts";
 import { PAGE_W, RULER_H } from "./layout.ts";
 import { Editor, decodeCommands, encodeCommands, type RemoteCaret } from "./editor.ts";
 
@@ -14,21 +32,30 @@ interface InitMsg {
   self: { sid: string; name: string; color: string };
   presence: RemoteCaret[];
   threads?: Thread[];
+  resume?: boolean;
+  catchup?: { rev: number; sid: string; reqId: number; commands: Command[] }[];
+}
+
+interface VersionRow {
+  rev: number;
+  ts: number;
+  sid: string;
+  name: string;
+  color: string;
+  label: string;
 }
 
 const ZOOMS = [0.5, 0.75, 1, 1.25, 1.5, 2];
 
 function sid(): string {
-  let id = sessionStorage.getItem("folio-sid");
-  if (!id) {
-    id = crypto.randomUUID();
-    sessionStorage.setItem("folio-sid", id);
-  }
+  let id = sessionStorage.getItem("felarumi-sid") || sessionStorage.getItem("folio-sid");
+  if (!id) id = crypto.randomUUID();
+  sessionStorage.setItem("felarumi-sid", id);
   return id;
 }
 
 function displayName(): string {
-  return sessionStorage.getItem("folio-name") || "Guest";
+  return sessionStorage.getItem("felarumi-name") || sessionStorage.getItem("folio-name") || "Guest";
 }
 
 function docIdFromPath(): string | null {
@@ -81,7 +108,7 @@ function drawRuler(): void {
 
 async function mountHome(): Promise<void> {
   (document.querySelector("#home") as HTMLElement).hidden = false;
-  document.title = "Folio";
+  document.title = "Felarumi";
   const recent = document.querySelector("#recent") as HTMLElement;
   const blank = document.querySelector("#blank") as HTMLButtonElement;
   blank.addEventListener("click", async () => {
@@ -153,6 +180,30 @@ function mountEditor(id: string): void {
     threads: () => editor.threads.map((t) => ({ id: t.id, text: t.text, resolved: t.resolved, replies: t.replies.map((r) => r.text), name: t.name })),
     insertTable: (rows: number, cols: number) => editor.insertTable(rows, cols),
     tableRows: () => editor.tableRowCount(),
+    nameVersion: (label: string) =>
+      new Promise<number>((resolve) => {
+        nameWait = resolve;
+        send({ t: "namever", label });
+      }),
+    versions: () => historyRows.slice(),
+    previewVersion: (rev: number) =>
+      new Promise<void>((resolve) => {
+        previewWait = resolve;
+        openHistory();
+        send({ t: "preview", rev });
+      }),
+    restorePreview: () => {
+      const target = editor.preview;
+      if (target) editor.replaceDocument(target);
+      closeHistory();
+    },
+    exportFelarumi: () => toFelarumi(title.value, editor.doc, editor.threads),
+    importFelarumi: (raw: string) => importBundle(fromFelarumi(raw)),
+    exportDocx: async () => bytesToBase64(await toDocx(editor.doc)),
+    importDocx: async (b64: string) => editor.replaceDocument(await fromDocx(base64ToBytes(b64))),
+    styleAt: (index: number) => editor.styleAt(index),
+    toggleBold: () => editor.toggleMark("b"),
+    dirty: () => editor.dirty(),
   };
   (window as unknown as { __editor: typeof api }).__editor = api;
 
@@ -169,7 +220,8 @@ function mountEditor(id: string): void {
   };
 
   const refreshChrome = () => {
-    status.textContent = editor.dirty() ? "Saving…" : "All changes saved";
+    const live = navigator.onLine && !!ws && ws.readyState === WebSocket.OPEN;
+    status.textContent = live ? (editor.dirty() ? "Saving…" : "All changes saved") : "Offline, changes will sync";
     const state = editor.markState();
     press("bold", state.b);
     press("italic", state.i);
@@ -188,7 +240,7 @@ function mountEditor(id: string): void {
     const size = document.querySelector("#size") as HTMLSelectElement;
     const sizeText = String(state.size);
     if ([...size.options].some((o) => o.value === sizeText)) size.value = sizeText;
-    document.title = (title.value || "Untitled document") + " - Folio";
+    document.title = (title.value || "Untitled document") + " - Felarumi";
   };
 
   editor = new Editor(session, pages, overlay, input, "#f44336", {
@@ -196,6 +248,7 @@ function mountEditor(id: string): void {
     onChange: () => {
       refreshChrome();
       chrome?.refresh();
+      void persistQueue();
     },
     onSelection: () => {
       refreshChrome();
@@ -236,7 +289,7 @@ function mountEditor(id: string): void {
   nameBtn.addEventListener("click", () => {
     const next = window.prompt("Name shown on your cursor", displayName());
     if (!next) return;
-    sessionStorage.setItem("folio-name", next.trim().slice(0, 40) || "Guest");
+    sessionStorage.setItem("felarumi-name", next.trim().slice(0, 40) || "Guest");
     nameBtn.textContent = displayName();
     editor.name = displayName();
     ws?.send(JSON.stringify({ t: "name", name: displayName() }));
@@ -245,7 +298,7 @@ function mountEditor(id: string): void {
 
   title.addEventListener("change", () => sendTitle());
   title.addEventListener("input", () => {
-    document.title = title.value + " - Folio";
+    document.title = title.value + " - Felarumi";
   });
   let titleTimer = 0;
   title.addEventListener("input", () => {
@@ -293,7 +346,24 @@ function mountEditor(id: string): void {
         });
     },
     rename: () => title.focus(),
-    download: () => download(title.value, editor.getText()),
+    history: () => openHistory(),
+    "name-version": () => {
+      const label = window.prompt("Name this version");
+      if (label && label.trim()) send({ t: "namever", label: label.trim() });
+    },
+    makecopy: () => {
+      void fetch("/api/docs/" + encodeURIComponent(id) + "/copy", { method: "POST" })
+        .then((r) => r.json())
+        .then((body: { id: string }) => window.open("/d/" + body.id, "_blank", "noopener"));
+    },
+    "download-felarumi": () => saveFile(safeName(title.value, ".felarumi"), new Blob([toFelarumi(title.value, editor.doc, editor.threads)], { type: "application/json" })),
+    "download-docx": () => void toDocx(editor.doc).then((buf) => saveFile(safeName(title.value, ".docx"), new Blob([buf]))),
+    "download-odt": () => void toOdt(editor.doc).then((buf) => saveFile(safeName(title.value, ".odt"), new Blob([buf]))),
+    "download-html": () => saveFile(safeName(title.value, ".html"), new Blob([toHtml(editor.doc, title.value)], { type: "text/html" })),
+    "download-txt": () => saveFile(safeName(title.value, ".txt"), new Blob([toText(editor.doc)], { type: "text/plain" })),
+    "download-md": () => saveFile(safeName(title.value, ".md"), new Blob([toMarkdown(editor.doc)], { type: "text/markdown" })),
+    "download-pdf": () => saveFile(safeName(title.value, ".pdf"), new Blob([toPdf(editor.doc, title.value)], { type: "application/pdf" })),
+    import: () => (document.querySelector("#import-file") as HTMLInputElement).click(),
     print: () => window.print(),
     undo: () => editor.undo(),
     redo: () => editor.redo(),
@@ -405,11 +475,105 @@ function mountEditor(id: string): void {
     editor.setTextAttr({ color: value });
   });
 
+  let historyRows: VersionRow[] = [];
+  let nameWait: ((rev: number) => void) | null = null;
+  let previewWait: (() => void) | null = null;
+
+  function send(msg: unknown): void {
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+  }
+
+  function persistQueue(): Promise<void> {
+    const queued = editor.sync.exportQueue();
+    if (!queued) return saveQueue(id, null);
+    return saveQueue(id, { docId: id, ...queued });
+  }
+
+  function safeName(value: string, ext: string): string {
+    return (value || "document").replace(/[^\w.-]+/g, "_") + ext;
+  }
+
+  function saveFile(filename: string, blob: Blob): void {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  function importBundle(parsed: { doc: import("../shared/doc.ts").Doc; threads: Thread[] }): void {
+    editor.replaceDocument(parsed.doc);
+    for (const thread of parsed.threads) {
+      chrome.upsert(thread);
+      send({ t: "thread", id: thread.id, text: thread.text, quote: thread.quote });
+      for (const reply of thread.replies) send({ t: "reply", id: thread.id, replyId: reply.id, text: reply.text });
+    }
+  }
+
+  function openHistory(): void {
+    (document.querySelector("#history") as HTMLElement).hidden = false;
+    send({ t: "history" });
+  }
+
+  function closeHistory(): void {
+    (document.querySelector("#history") as HTMLElement).hidden = true;
+    editor.exitPreview();
+    (document.querySelector("#history-banner") as HTMLElement).hidden = true;
+    (document.querySelector("#history-restore") as HTMLButtonElement).hidden = true;
+  }
+
+  function renderHistory(rows: VersionRow[]): void {
+    historyRows = rows;
+    const list = document.querySelector("#history-list") as HTMLElement;
+    list.innerHTML = "";
+    if (!rows.length) {
+      list.innerHTML = "<li class='empty'>Versions appear as you edit.</li>";
+      return;
+    }
+    let day = "";
+    for (const row of rows) {
+      const label = dayLabel(row.ts);
+      if (label !== day) {
+        day = label;
+        const head = document.createElement("li");
+        head.className = "history-day";
+        head.textContent = label;
+        list.appendChild(head);
+      }
+      const li = document.createElement("li");
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "history-item";
+      const title = document.createElement("strong");
+      title.textContent = row.label || row.name;
+      const meta = document.createElement("span");
+      meta.textContent = (row.label ? row.name + " · " : "") + new Date(row.ts).toLocaleTimeString();
+      const swatch = document.createElement("i");
+      swatch.style.background = row.color;
+      btn.append(swatch, title, meta);
+      btn.addEventListener("click", () => send({ t: "preview", rev: row.rev }));
+      li.appendChild(btn);
+      list.appendChild(li);
+    }
+  }
+
+  function dayLabel(ts: number): string {
+    const d = new Date(ts);
+    const today = new Date();
+    const start = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+    const diff = Math.round((start(today) - start(d)) / 86400000);
+    if (diff === 0) return "Today";
+    if (diff === 1) return "Yesterday";
+    return d.toLocaleDateString();
+  }
+
   const connect = () => {
     const proto = location.protocol === "https:" ? "wss" : "ws";
     ws = new WebSocket(`${proto}://${location.host}/ws?doc=${encodeURIComponent(id)}`);
     ws.onopen = () => {
-      ws?.send(JSON.stringify({ t: "hello", sid: session, name: displayName() }));
+      const queued = editor.sync.exportQueue();
+      const resume = !!(queued && !queued.transformed);
+      ws?.send(JSON.stringify({ t: "hello", sid: session, name: displayName(), resume, since: resume ? queued!.baseRev : undefined }));
     };
     ws.onmessage = (ev) => {
       const msg = JSON.parse(ev.data as string) as Record<string, unknown>;
@@ -449,23 +613,43 @@ function mountEditor(id: string): void {
         refreshChrome();
       } else if (msg.t === "thread") {
         chrome.upsert(msg.thread as Thread);
+      } else if (msg.t === "history") {
+        renderHistory((msg.versions as VersionRow[]) || []);
+      } else if (msg.t === "preview") {
+        const snap = msg.snapshot as InitMsg["snapshot"];
+        editor.showPreview(restoreDoc(snap as never), (msg.marks as { start: number; end: number; color: string }[]) || []);
+        const banner = document.querySelector("#history-banner") as HTMLElement;
+        banner.hidden = false;
+        banner.textContent = "Previewing " + (msg.label || msg.name || "this version") + ". Edits are highlighted.";
+        (document.querySelector("#history-restore") as HTMLButtonElement).hidden = false;
+        if (previewWait) {
+          previewWait();
+          previewWait = null;
+        }
+      } else if (msg.t === "named") {
+        if (nameWait) {
+          nameWait(Number(msg.rev));
+          nameWait = null;
+        }
+        toast("Named this version");
+        if (!(document.querySelector("#history") as HTMLElement).hidden) send({ t: "history" });
       } else if (msg.t === "reject") {
         console.warn("op rejected", msg.error);
       }
       refreshChrome();
     };
     ws.onclose = () => {
-      status.textContent = "Reconnecting…";
+      status.textContent = "Offline, changes will sync";
       window.setTimeout(connect, 800);
     };
   };
 
-  function onInit(msg: InitMsg): void {
+  function applyPresence(msg: InitMsg): void {
     editor.color = msg.self.color;
     editor.name = msg.self.name || displayName();
-    editor.load(msg.snapshot as InitMsg["snapshot"] & { runs: { n: number; s: never }[] }, msg.rev);
     chrome.setThreads(msg.threads || []);
     title.value = msg.title;
+    editor.remotes.clear();
     for (const person of msg.presence) {
       if (person.sid !== session) editor.setRemote(person);
     }
@@ -473,6 +657,30 @@ function mountEditor(id: string): void {
     paintAvatars(editor, session);
     refreshChrome();
     editor.focus();
+  }
+
+  function onInit(msg: InitMsg): void {
+    const resume = msg.resume === true && editor.dirty() && !editor.sync.transformed;
+    if (resume) {
+      try {
+        for (const op of msg.catchup || []) editor.applyRemote(decodeCommands(op.commands), op.sid, op.rev, op.reqId);
+      } catch (err) {
+        console.error(err);
+        editor.load(msg.snapshot as InitMsg["snapshot"] & { runs: { n: number; s: never }[] }, msg.rev);
+        void saveQueue(id, null);
+        applyPresence(msg);
+        pump();
+        return;
+      }
+      applyPresence(msg);
+      editor.sync.resend();
+      pump();
+      void persistQueue();
+      return;
+    }
+    editor.load(msg.snapshot as InitMsg["snapshot"] & { runs: { n: number; s: never }[] }, msg.rev);
+    void saveQueue(id, null);
+    applyPresence(msg);
     pump();
   }
 
@@ -483,8 +691,46 @@ function mountEditor(id: string): void {
     }
   }, 1500);
 
+  document.querySelector("#history-close")!.addEventListener("click", () => closeHistory());
+  document.querySelector("#history-restore")!.addEventListener("click", () => {
+    const target = editor.preview;
+    if (target) editor.replaceDocument(target);
+    closeHistory();
+  });
+  (document.querySelector("#import-file") as HTMLInputElement).addEventListener("change", () => {
+    const input = document.querySelector("#import-file") as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file) return;
+    void importFile(file);
+  });
+
+  async function importFile(file: File): Promise<void> {
+    const name = file.name.toLowerCase();
+    if (name.endsWith(".felarumi") || name.endsWith(".json")) importBundle(fromFelarumi(await file.text()));
+    else if (name.endsWith(".docx")) editor.replaceDocument(await fromDocx(new Uint8Array(await file.arrayBuffer())));
+    else if (name.endsWith(".md") || name.endsWith(".markdown")) editor.replaceDocument(fromMarkdown(await file.text()));
+    else if (name.endsWith(".html") || name.endsWith(".htm")) editor.replaceDocument(fromHtml(await file.text()));
+    else editor.replaceDocument(fromPlain(await file.text()));
+    editor.focus();
+  }
+
   document.fonts.ready.then(() => editor.render()).catch(() => undefined);
-  connect();
+  window.addEventListener("offline", () => {
+    status.textContent = "Offline, changes will sync";
+  });
+  window.addEventListener("online", () => refreshChrome());
+  window.addEventListener("pagehide", () => void persistQueue());
+  void loadQueue(id).then((saved) => {
+    if (saved && !saved.transformed && saved.baseSnap && (saved.inflight || saved.pending)) {
+      editor.sync.restoreUnacked(restoreDoc(saved.baseSnap), saved.baseRev, saved.inflight, saved.pending);
+      editor.ready = true;
+      editor.paint();
+      api.ready = true;
+      refreshChrome();
+    }
+    connect();
+  });
 }
 
 function press(id: string, on: boolean): void {
@@ -517,18 +763,19 @@ function paintAvatars(editor: Editor, selfSid: string): void {
     el.style.color = person.color;
     el.style.boxShadow = `0 0 0 2px ${person.color}`;
     el.title = person.name;
+    el.dataset.sid = person.sid;
     el.textContent = (person.name.trim()[0] || "?").toUpperCase();
+    el.addEventListener("mouseenter", () => {
+      editor.hoverSid = person.sid;
+      editor.syncFlags();
+    });
+    el.addEventListener("mouseleave", () => {
+      if (editor.hoverSid === person.sid) editor.hoverSid = null;
+      editor.syncFlags();
+    });
+    el.addEventListener("click", () => editor.reveal(person.sid));
     root.appendChild(el);
   }
-}
-
-function download(title: string, text: string): void {
-  const blob = new Blob([text], { type: "text/plain" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = (title || "document").replace(/[^\w.-]+/g, "_") + ".txt";
-  a.click();
-  URL.revokeObjectURL(a.href);
 }
 
 function bindMenus(editor: Editor, actions: Record<string, () => void>): void {

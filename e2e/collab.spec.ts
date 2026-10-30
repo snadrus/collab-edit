@@ -17,12 +17,24 @@ declare global {
       threads: () => { id: string; text: string; replies: string[]; name: string }[];
       insertTable: (rows: number, cols: number) => void;
       tableRows: () => number;
+      nameVersion: (label: string) => Promise<number>;
+      versions: () => { rev: number; label: string; name: string }[];
+      previewVersion: (rev: number) => Promise<void>;
+      restorePreview: () => void;
+      undo: () => void;
+      exportFelarumi: () => string;
+      importFelarumi: (raw: string) => void;
+      exportDocx: () => Promise<string>;
+      importDocx: (b64: string) => Promise<void>;
+      styleAt: (index: number) => { b?: boolean };
+      toggleBold: () => void;
+      dirty: () => boolean;
     };
   }
 }
 
 async function openDoc(page: Page, id: string, name: string): Promise<void> {
-  await page.addInitScript((n) => sessionStorage.setItem("folio-name", n), name);
+  await page.addInitScript((n) => sessionStorage.setItem("felarumi-name", n), name);
   await page.goto("/d/" + id);
   await page.waitForFunction(() => window.__editor?.ready === true);
   await page.locator(".page").first().waitFor();
@@ -123,6 +135,126 @@ test("votes, comment thread, and table insert", async ({ browser, request }) => 
   await pa.evaluate(() => window.__editor!.insertTable(2, 3));
   await expect.poll(() => pb.evaluate(() => window.__editor!.tableRows())).toBe(2);
   await expect.poll(() => pa.evaluate(() => window.__editor!.tableRows())).toBe(2);
+
+  await a.close();
+  await b.close();
+});
+
+async function saved(page: Page): Promise<void> {
+  await expect.poll(() => page.evaluate(() => window.__editor!.dirty())).toBe(false);
+}
+
+test("restoring an old version converges and can be undone", async ({ browser, request }) => {
+  const created = await request.post("/api/docs", { data: { title: "History" } });
+  expect(created.ok()).toBeTruthy();
+  const { id } = (await created.json()) as { id: string };
+
+  const a = await browser.newContext();
+  const b = await browser.newContext();
+  const pa = await a.newPage();
+  const pb = await b.newPage();
+  await openDoc(pa, id, "Avery");
+  await openDoc(pb, id, "Blair");
+
+  await pa.evaluate(() => window.__editor!.insertText("First draft"));
+  await expect.poll(() => pb.evaluate(() => window.__editor!.getText())).toBe("First draft");
+  await saved(pa);
+  const rev = await pa.evaluate(() => window.__editor!.nameVersion("First"));
+  await pa.evaluate(() => window.__editor!.insertText(" MORE"));
+  await expect.poll(() => pb.evaluate(() => window.__editor!.getText())).toBe("First draft MORE");
+  await expect.poll(() => pa.evaluate(() => window.__editor!.getText())).toBe("First draft MORE");
+  await saved(pa);
+
+  await pa.evaluate((n) => window.__editor!.previewVersion(n), rev);
+  await expect(pa.locator("#history")).toBeVisible();
+  await expect(pa.locator("#history-banner")).toContainText("Previewing");
+  await pa.evaluate(() => window.__editor!.restorePreview());
+  await expect.poll(() => pa.evaluate(() => window.__editor!.getText())).toBe("First draft");
+  await expect.poll(() => pb.evaluate(() => window.__editor!.getText())).toBe("First draft");
+
+  await pa.locator("#input").focus();
+  await pa.keyboard.press("Control+z");
+  await expect.poll(() => pa.evaluate(() => window.__editor!.getText())).toBe("First draft MORE");
+  await expect.poll(() => pb.evaluate(() => window.__editor!.getText())).toBe("First draft MORE");
+
+  await a.close();
+  await b.close();
+});
+
+test("felarumi and docx round-trip through a live document", async ({ browser, request }) => {
+  const created = await request.post("/api/docs", { data: { title: "Round trip" } });
+  expect(created.ok()).toBeTruthy();
+  const { id } = (await created.json()) as { id: string };
+
+  const a = await browser.newContext();
+  const b = await browser.newContext();
+  const pa = await a.newPage();
+  const pb = await b.newPage();
+  await openDoc(pa, id, "Avery");
+  await openDoc(pb, id, "Blair");
+
+  await pa.evaluate(() => window.__editor!.insertText("Keep this"));
+  await expect.poll(() => pb.evaluate(() => window.__editor!.getText())).toBe("Keep this");
+  await pa.evaluate(() => {
+    const text = window.__editor!.getText();
+    const at = text.indexOf("Keep");
+    window.__editor!.setSelection(at, at + "Keep".length);
+    window.__editor!.addComment("Please check the wording");
+  });
+  await expect.poll(() => pb.evaluate(() => window.__editor!.threads().length)).toBe(1);
+  const file = await pa.evaluate(() => window.__editor!.exportFelarumi());
+  await pa.evaluate(() => window.__editor!.insertText(" extra"));
+  await expect.poll(() => pb.evaluate(() => window.__editor!.getText())).toContain("extra");
+  await pa.evaluate((raw) => window.__editor!.importFelarumi(raw), file);
+  await expect.poll(() => pa.evaluate(() => window.__editor!.getText())).toBe("Keep this");
+  await expect.poll(() => pb.evaluate(() => window.__editor!.getText())).toBe("Keep this");
+  await expect.poll(() => pb.evaluate(() => window.__editor!.threads().length)).toBe(1);
+  await expect.poll(() => pa.evaluate(() => window.__editor!.threads()[0]?.text || "")).toBe("Please check the wording");
+
+  await pa.evaluate(() => {
+    window.__editor!.setSelection(0, window.__editor!.getText().length);
+    window.__editor!.insertText("Hello");
+    window.__editor!.setSelection(0, 5);
+    window.__editor!.toggleBold();
+  });
+  await saved(pa);
+  const docx = await pa.evaluate(() => window.__editor!.exportDocx());
+  await pa.evaluate(() => window.__editor!.insertText(" extra"));
+  await pa.evaluate((b64) => window.__editor!.importDocx(b64), docx);
+  await expect.poll(() => pb.evaluate(() => window.__editor!.getText())).toBe("Hello");
+  await expect.poll(() => pa.evaluate(() => window.__editor!.styleAt(0).b)).toBe(true);
+  await expect.poll(() => pb.evaluate(() => window.__editor!.styleAt(0).b)).toBe(true);
+
+  await a.close();
+  await b.close();
+});
+
+test("offline edits sync after reconnect", async ({ browser, request }) => {
+  const created = await request.post("/api/docs", { data: { title: "Offline" } });
+  expect(created.ok()).toBeTruthy();
+  const { id } = (await created.json()) as { id: string };
+
+  const a = await browser.newContext();
+  const b = await browser.newContext();
+  const pa = await a.newPage();
+  const pb = await b.newPage();
+  await openDoc(pa, id, "Avery");
+  await openDoc(pb, id, "Blair");
+
+  await a.setOffline(true);
+  await expect(pa.locator("#status")).toHaveText("Offline, changes will sync");
+  await pa.evaluate(() => window.__editor!.insertText("Queued offline"));
+  await expect.poll(() => pa.evaluate(() => window.__editor!.getText())).toBe("Queued offline");
+  await a.setOffline(false);
+  await expect.poll(() => pb.evaluate(() => window.__editor!.getText())).toBe("Queued offline");
+  await expect.poll(() => pa.evaluate(() => window.__editor!.getText())).toBe("Queued offline");
+  await saved(pa);
+  await expect(pa.locator("#status")).toHaveText("All changes saved");
+
+  await pa.reload();
+  await pa.waitForFunction(() => window.__editor?.ready === true);
+  await expect.poll(() => pa.evaluate(() => window.__editor!.getText())).toBe("Queued offline");
+  await expect.poll(() => pb.evaluate(() => window.__editor!.getText())).toBe("Queued offline");
 
   await a.close();
   await b.close();

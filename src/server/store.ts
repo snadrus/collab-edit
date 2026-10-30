@@ -27,7 +27,7 @@ export class Store {
 
   constructor(dir: string) {
     mkdirSync(dir, { recursive: true });
-    this.db = new DatabaseSync(path.join(dir, "folio.sqlite"));
+    this.db = new DatabaseSync(path.join(dir, "felarumi.sqlite"));
     this.db.exec(`
       PRAGMA journal_mode = WAL;
       PRAGMA synchronous = NORMAL;
@@ -64,6 +64,16 @@ export class Store {
         id TEXT NOT NULL,
         data TEXT NOT NULL,
         PRIMARY KEY (doc_id, id)
+      );
+      CREATE TABLE IF NOT EXISTS versions (
+        doc_id TEXT NOT NULL,
+        rev INTEGER NOT NULL,
+        ts INTEGER NOT NULL,
+        sid TEXT NOT NULL,
+        name TEXT NOT NULL,
+        color TEXT NOT NULL,
+        label TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (doc_id, rev)
       );
     `);
   }
@@ -147,6 +157,54 @@ export class Store {
       if (thread) out.push(thread);
     }
     return out.sort((a, b) => a.ts - b.ts);
+  }
+
+  replaceSnapshot(id: string, doc: Doc): void {
+    this.db.prepare("INSERT OR REPLACE INTO snaps (doc_id, rev, data) VALUES (?, 0, ?)").run(id, JSON.stringify(snapshotDoc(doc)));
+  }
+
+  snapAt(id: string, rev: number): { rev: number; snap: Snapshot } {
+    const row = this.db
+      .prepare("SELECT rev, data FROM snaps WHERE doc_id = ? AND rev <= ? ORDER BY rev DESC LIMIT 1")
+      .get(id, rev) as { rev: number; data: string } | undefined;
+    if (!row) return { rev: 0, snap: snapshotDoc(emptyDoc()) };
+    return { rev: row.rev, snap: JSON.parse(row.data) as Snapshot };
+  }
+
+  noteVersion(docId: string, rev: number, ts: number, sid: string, name: string, color: string): void {
+    const last = this.db
+      .prepare("SELECT rev, ts, sid, label FROM versions WHERE doc_id = ? ORDER BY rev DESC LIMIT 1")
+      .get(docId) as { rev: number; ts: number; sid: string; label: string } | undefined;
+    const windowMs = 5 * 60 * 1000;
+    if (last && !last.label && last.sid === sid && ts - last.ts < windowMs && rev > last.rev) {
+      this.db.prepare("DELETE FROM versions WHERE doc_id = ? AND rev = ?").run(docId, last.rev);
+      this.db
+        .prepare("INSERT INTO versions (doc_id, rev, ts, sid, name, color, label) VALUES (?, ?, ?, ?, ?, ?, '')")
+        .run(docId, rev, last.ts, sid, name, color);
+      return;
+    }
+    if (last && last.rev === rev) return;
+    this.db
+      .prepare("INSERT OR REPLACE INTO versions (doc_id, rev, ts, sid, name, color, label) VALUES (?, ?, ?, ?, ?, ?, '')")
+      .run(docId, rev, ts, sid, name, color);
+  }
+
+  nameVersion(docId: string, rev: number, ts: number, sid: string, name: string, color: string, label: string): void {
+    const clean = label.trim().slice(0, 80);
+    if (!clean) return;
+    const row = this.db.prepare("SELECT rev FROM versions WHERE doc_id = ? AND rev = ?").get(docId, rev) as { rev: number } | undefined;
+    if (row) this.db.prepare("UPDATE versions SET label = ? WHERE doc_id = ? AND rev = ?").run(clean, docId, rev);
+    else {
+      this.db
+        .prepare("INSERT INTO versions (doc_id, rev, ts, sid, name, color, label) VALUES (?, ?, ?, ?, ?, ?, ?)")
+        .run(docId, rev, ts, sid, name, color, clean);
+    }
+  }
+
+  versions(docId: string): { rev: number; ts: number; sid: string; name: string; color: string; label: string }[] {
+    return this.db
+      .prepare("SELECT rev, ts, sid, name, color, label FROM versions WHERE doc_id = ? ORDER BY rev DESC")
+      .all(docId) as { rev: number; ts: number; sid: string; name: string; color: string; label: string }[];
   }
 
   saveThread(docId: string, thread: Thread): void {

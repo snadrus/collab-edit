@@ -1,6 +1,6 @@
 import { canon } from "./commands.ts";
 import { type Delta, compose, isNoop, transform } from "./delta.ts";
-import { type Doc, applyDoc, docEqual, emptyDoc, invert } from "./doc.ts";
+import { type Doc, type Snapshot, applyDoc, docEqual, emptyDoc, invert, snapshotDoc } from "./doc.ts";
 
 export interface SubmitResult {
   duplicate: boolean;
@@ -131,6 +131,12 @@ export class ClientSync {
   sid: string;
   /** Delta most recently applied by a local edit, undo, or redo. */
   lastDelta: Delta | null = null;
+  /** Server document at the base revision of the unacked queue. */
+  baseSnap: Snapshot | null = null;
+  /** Local document after the in-flight op and remote catch-up, before pending. */
+  pendingBase: Doc | null = null;
+  /** A remote op arrived while this client still had unacked edits. */
+  transformed = false;
 
   constructor(
     sid: string,
@@ -195,6 +201,8 @@ export class ClientSync {
   }
 
   applyLocal(delta: Delta): void {
+    if (!this.inflight) this.baseSnap = snapshotDoc(this.doc);
+    else if (!this.pending) this.pendingBase = structuredClone(this.doc);
     this.lastDelta = delta;
     this.doc = applyDoc(this.doc, delta);
     if (this.inflight) this.pending = this.pending ? compose(this.pending, delta) : delta;
@@ -233,11 +241,13 @@ export class ClientSync {
     }
     let d = delta;
     const win = this.sid < sid;
+    if (this.inflight || this.pending) this.transformed = true;
     if (this.inflight) {
       const inf = this.inflight.delta;
       this.inflight = { ...this.inflight, delta: transform(inf, d, win) };
       d = transform(d, inf, !win);
     }
+    if (this.pendingBase) this.pendingBase = applyDoc(this.pendingBase, d);
     if (this.pending) {
       const p = this.pending;
       this.pending = transform(p, d, win);
@@ -255,13 +265,19 @@ export class ClientSync {
     if (assignedRev != null && assignedRev > this.rev + 1) {
       throw new Error(`ack gap: have ${this.rev}, assigned ${assignedRev}`);
     }
+    const pending = this.pending;
+    const pendingBase = this.pendingBase;
     this.inflight = null;
+    this.pending = null;
+    this.pendingBase = null;
     if (assignedRev != null) this.rev = assignedRev;
     if (serverRev < this.rev) throw new Error("server rev behind client");
-    if (this.pending) {
-      const p = this.pending;
-      this.pending = null;
-      this.submit(p);
+    if (pending) {
+      this.baseSnap = snapshotDoc(pendingBase ?? this.doc);
+      this.submit(pending);
+    } else {
+      this.baseSnap = snapshotDoc(this.doc);
+      this.transformed = false;
     }
   }
 
@@ -280,5 +296,43 @@ export class ClientSync {
     this.undoStack = [];
     this.redoStack = [];
     this.hist = [];
+    this.baseSnap = snapshotDoc(doc);
+    this.pendingBase = null;
+    this.transformed = false;
+  }
+
+  /** Unacked local work, based on `baseRev`, or null when everything is saved. */
+  exportQueue(): {
+    baseRev: number;
+    baseSnap: Snapshot;
+    inflight: { reqId: number; delta: Delta } | null;
+    pending: Delta | null;
+    transformed: boolean;
+  } | null {
+    if (!this.inflight && !this.pending) return null;
+    if (!this.baseSnap) return null;
+    return {
+      baseRev: this.inflight ? this.inflight.wire.baseRev : this.rev,
+      baseSnap: this.baseSnap,
+      inflight: this.inflight ? { reqId: this.inflight.reqId, delta: structuredClone(this.inflight.wire.delta) } : null,
+      pending: this.pending ? structuredClone(this.pending) : null,
+      transformed: this.transformed,
+    };
+  }
+
+  /** Rebuild unacked work after a reload. Catch-up ops rebase it before it is resent. */
+  restoreUnacked(base: Doc, baseRev: number, inflight: { reqId: number; delta: Delta } | null, pending: Delta | null): void {
+    this.reset(base, baseRev);
+    if (!inflight) return;
+    const delta = canon(inflight.delta);
+    this.doc = applyDoc(this.doc, delta);
+    this.inflight = { reqId: inflight.reqId, delta, wire: { reqId: inflight.reqId, baseRev, delta } };
+    this.nextReq = Math.max(this.nextReq, inflight.reqId + 1);
+    if (pending && !isNoop(canon(pending))) {
+      const queued = canon(pending);
+      this.pendingBase = structuredClone(this.doc);
+      this.doc = applyDoc(this.doc, queued);
+      this.pending = queued;
+    }
   }
 }

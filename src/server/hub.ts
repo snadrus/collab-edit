@@ -1,6 +1,7 @@
 import type { WebSocket } from "ws";
 import { deltaToCommands, commandsToDelta, type Command } from "../shared/commands.ts";
-import { applyDoc, snapshotDoc, restoreDoc, type Snapshot } from "../shared/doc.ts";
+import { applyDoc, snapshotDoc, restoreDoc, type Doc, type Snapshot } from "../shared/doc.ts";
+import { insertedRanges } from "../shared/replace.ts";
 import { ServerDoc } from "../shared/engine.ts";
 import { assignColor } from "../shared/palette.ts";
 import { type Reply, type Thread, sanitizeThread, validId } from "../shared/threads.ts";
@@ -87,17 +88,25 @@ export class Hub {
     }));
   }
 
-  connect(room: Room, ws: WebSocket, sid: string, name: string): Conn {
+  connect(room: Room, ws: WebSocket, sid: string, name: string, since: number | null, resume: boolean): Conn {
     const same = [...room.conns].find((c) => c.sid === sid);
     const color = same ? same.color : colorFor([...room.conns].map((c) => c.color), sid);
     const conn: Conn = { ws, sid, name: name.slice(0, 40) || "Guest", color, anchor: 0, head: 0 };
     room.conns.add(conn);
-    this.pushInit(room, conn);
+    this.pushInit(room, conn, since, resume);
     this.broadcast(room, { t: "join", sid: conn.sid, name: conn.name, color: conn.color }, conn);
     return conn;
   }
 
-  pushInit(room: Room, conn: Conn): void {
+  pushInit(room: Room, conn: Conn, since: number | null = null, resume = false): void {
+    const catchup = [];
+    if (since != null && since >= 0 && since < room.server.rev) {
+      for (let rev = since + 1; rev <= room.server.rev; rev++) {
+        const entry = room.server.log[rev - 1];
+        if (!entry) break;
+        catchup.push({ rev, sid: entry.sid, reqId: entry.reqId, commands: deltaToCommands(entry.delta) });
+      }
+    }
     send(conn.ws, {
       t: "init",
       rev: room.server.rev,
@@ -106,7 +115,21 @@ export class Hub {
       self: { sid: conn.sid, name: conn.name, color: conn.color },
       presence: this.presence(room),
       threads: [...room.threads.values()],
+      resume: resume && since != null && catchup.length === room.server.rev - since,
+      catchup,
     });
+  }
+
+  docAt(room: Room, rev: number): Doc {
+    if (rev >= room.server.rev) return room.server.doc;
+    const base = this.store.snapAt(room.id, Math.max(0, rev));
+    let doc = restoreDoc(base.snap);
+    for (let r = base.rev + 1; r <= rev; r++) {
+      const entry = room.server.log[r - 1];
+      if (!entry) break;
+      doc = applyDoc(doc, entry.delta);
+    }
+    return doc;
   }
 
   disconnect(room: Room, conn: Conn): void {
@@ -131,6 +154,9 @@ export class Hub {
     else if (t === "thread") this.onThread(room, conn, msg);
     else if (t === "reply") this.onReply(room, conn, msg);
     else if (t === "resolve") this.onResolve(room, conn, msg);
+    else if (t === "history") this.onHistory(room, conn);
+    else if (t === "preview") this.onPreview(room, conn, msg);
+    else if (t === "namever") this.onNameVersion(room, conn, msg);
   }
 
   onOp(room: Room, conn: Conn, msg: Record<string, unknown>): void {
@@ -157,6 +183,7 @@ export class Hub {
     if (!res.duplicate) {
       try {
         this.store.appendOp(room.id, res.assignedRev ?? room.server.rev, sid, reqId, res.delta, res.assignedRev, res.delta ? room.server.doc : null);
+        if (res.assignedRev != null) this.store.noteVersion(room.id, res.assignedRev, Date.now(), conn.sid, conn.name, conn.color);
       } catch (err) {
         console.error("persist failed", err);
       }
@@ -249,5 +276,28 @@ export class Hub {
     void conn;
     thread.resolved = msg.resolved;
     this.publishThread(room, thread);
+  }
+
+  onHistory(room: Room, conn: Conn): void {
+    send(conn.ws, { t: "history", versions: this.store.versions(room.id) });
+  }
+
+  onPreview(room: Room, conn: Conn, msg: Record<string, unknown>): void {
+    const rev = msg.rev;
+    if (typeof rev !== "number" || rev < 0 || rev > room.server.rev) return;
+    const versions = this.store.versions(room.id);
+    const current = versions.find((v) => v.rev === rev) || versions.find((v) => v.rev <= rev);
+    const prevRev = versions.filter((v) => v.rev < rev).reduce((m, v) => Math.max(m, v.rev), 0);
+    const doc = this.docAt(room, rev);
+    const prev = this.docAt(room, prevRev);
+    const color = current?.color || conn.color;
+    const marks = insertedRanges(prev.text, doc.text).map((span) => ({ ...span, color }));
+    send(conn.ws, { t: "preview", rev, snapshot: snapshotDoc(doc), marks, name: current?.name || "", label: current?.label || "" });
+  }
+
+  onNameVersion(room: Room, conn: Conn, msg: Record<string, unknown>): void {
+    const label = typeof msg.label === "string" ? msg.label : "";
+    this.store.nameVersion(room.id, room.server.rev, Date.now(), conn.sid, conn.name, conn.color, label);
+    send(conn.ws, { t: "named", rev: room.server.rev, label: label.trim().slice(0, 80) });
   }
 }

@@ -307,8 +307,17 @@ button { cursor: pointer; }
 }
 .local-caret { animation: blink 1s steps(1) infinite; }
 @keyframes blink { 50% { opacity: 0; } }
-.remote-caret { z-index: 2; }
+.remote-caret { z-index: 2; pointer-events: auto; }
+.remote-caret::before {
+  content: "";
+  position: absolute;
+  left: -6px;
+  top: 0;
+  width: 14px;
+  height: 100%;
+}
 .remote-flag {
+  display: none;
   position: absolute;
   left: 0;
   bottom: 100%;
@@ -319,7 +328,50 @@ button { cursor: pointer; }
   border-radius: 2px 2px 2px 0;
   white-space: nowrap;
   font-family: Roboto, sans-serif;
+  pointer-events: none;
 }
+.remote-caret:hover .remote-flag,
+.remote-caret.show-flag .remote-flag { display: block; }
+.home-logo { height: 84px; width: auto; display: block; }
+.header-logo { height: 44px; width: auto; display: block; }
+.menu-label { padding: 8px 16px 2px; font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+.avatar { cursor: pointer; }
+#history {
+  position: fixed;
+  z-index: 40;
+  top: 156px;
+  right: 16px;
+  bottom: 16px;
+  width: 300px;
+  display: flex;
+  flex-direction: column;
+  background: white;
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+#history header, #history footer { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; }
+#history h2 { margin: 0; font-size: 16px; }
+#history-banner { margin: 0 14px 8px; color: var(--muted); font-size: 13px; }
+#history-list { list-style: none; margin: 0; padding: 0 8px 12px; overflow: auto; flex: 1; }
+.history-day { padding: 10px 8px 4px; font-size: 12px; color: var(--muted); }
+.history-item {
+  display: grid;
+  grid-template-columns: 12px 1fr;
+  grid-template-rows: auto auto;
+  column-gap: 8px;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  border-radius: 8px;
+  padding: 8px;
+}
+.history-item i { grid-row: span 2; width: 10px; height: 10px; border-radius: 50%; align-self: center; }
+.history-item strong { font-size: 14px; }
+.history-item span { color: var(--muted); font-size: 12px; }
+.history-item:hover, .history-item[aria-current="true"] { background: var(--hover); }
+#history-restore { background: var(--blue); color: white; border: 0; border-radius: 16px; padding: 8px 14px; }
 
 #input {
   position: fixed;

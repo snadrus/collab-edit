@@ -3,16 +3,16 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Folio</title>
-  <link rel="icon" href="/favicon.svg">
+  <title>Felarumi</title>
+  <link rel="icon" href="/favicon.png" type="image/png">
+  <link rel="apple-touch-icon" href="/icon.png">
   <link rel="stylesheet" href="/fonts/fonts.css">
   <link rel="stylesheet" href="/app.css">
 </head>
 <body>
   <div id="home" hidden>
     <header class="home-bar">
-      <span class="mark" aria-hidden="true">F</span>
-      <span class="wordmark">Folio</span>
+      <img class="home-logo" src="/logo.png" alt="Felarumi">
     </header>
     <main class="home-main">
       <button type="button" id="blank" class="blank-card">
@@ -26,7 +26,7 @@
 
   <div id="editor" hidden>
     <header class="topbar">
-      <a class="mark-link" href="/" aria-label="Folio home"><span class="mark">F</span></a>
+      <a class="mark-link" href="/" aria-label="Felarumi home"><img class="header-logo" src="/logo.png" alt=""></a>
       <div class="title-block">
         <input id="title" aria-label="Document title" value="Untitled document" maxlength="200" autocomplete="off">
         <div id="status" class="status">All changes saved</div>
@@ -42,7 +42,19 @@
         <div class="menu-pop" data-pop="file" hidden>
           <button type="button" data-act="new">New</button>
           <button type="button" data-act="rename">Rename</button>
-          <button type="button" data-act="download">Download as plain text</button>
+          <button type="button" data-act="makecopy">Make a copy</button>
+          <div class="menu-label">Version history</div>
+          <button type="button" data-act="history">See version history</button>
+          <button type="button" data-act="name-version">Name current version</button>
+          <div class="menu-label">Download</div>
+          <button type="button" data-act="download-felarumi">Felarumi (.felarumi)</button>
+          <button type="button" data-act="download-docx">Word (.docx)</button>
+          <button type="button" data-act="download-odt">OpenDocument (.odt)</button>
+          <button type="button" data-act="download-pdf">PDF (.pdf)</button>
+          <button type="button" data-act="download-html">Web page (.html)</button>
+          <button type="button" data-act="download-md">Markdown (.md)</button>
+          <button type="button" data-act="download-txt">Plain text (.txt)</button>
+          <button type="button" data-act="import">Open / Import</button>
           <button type="button" data-act="print">Print</button>
         </div>
       </div>
@@ -230,6 +242,16 @@
       </div>
     </div>
     <div id="input" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Document body" spellcheck="true"></div>
+    <aside id="history" hidden>
+      <header>
+        <h2>Version history</h2>
+        <button type="button" id="history-close" class="icon" title="Close"><span class="material-symbols-outlined">close</span></button>
+      </header>
+      <p id="history-banner" hidden></p>
+      <ul id="history-list"></ul>
+      <footer><button type="button" id="history-restore" hidden>Restore this version</button></footer>
+    </aside>
+    <input id="import-file" type="file" accept=".felarumi,.docx,.odt,.html,.htm,.md,.txt,.json" hidden>
     <div id="toast" hidden></div>
   </div>
   <script src="/app.js"></script>

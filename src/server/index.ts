@@ -85,6 +85,17 @@ const server = createServer(async (req, res) => {
       sendJson(res, 200, store.list());
       return;
     }
+    const copy = url.pathname.match(/^\/api\/docs\/([A-Za-z0-9_-]{1,80})\/copy$/);
+    if (req.method === "POST" && copy) {
+      const room = hub.open(copy[1]);
+      const id = randomBytes(9).toString("base64url");
+      const title = ("Copy of " + room.title).slice(0, 200);
+      store.create(id, title);
+      store.replaceSnapshot(id, room.server.doc);
+      for (const thread of room.threads.values()) store.saveThread(id, thread);
+      sendJson(res, 201, { id, title });
+      return;
+    }
     if (req.method === "POST" && url.pathname === "/api/docs") {
       const raw = await readBody(req);
       let title = "Untitled document";
@@ -135,9 +146,11 @@ wss.on("connection", (ws, req) => {
     if (msg.t === "hello") {
       const sid = typeof msg.sid === "string" && msg.sid.length < 80 ? msg.sid : randomBytes(8).toString("hex");
       const name = typeof msg.name === "string" ? msg.name : "Guest";
+      const since = typeof msg.since === "number" && Number.isInteger(msg.since) ? msg.since : null;
+      const resume = msg.resume === true && since != null;
       room = hub.open(docId);
-      if (!conn) conn = hub.connect(room, ws, sid, name);
-      else hub.pushInit(room, conn);
+      if (!conn) conn = hub.connect(room, ws, sid, name, since, resume);
+      else hub.pushInit(room, conn, since, resume);
       return;
     }
     if (room && conn) hub.handle(room, conn, msg);
@@ -148,5 +161,5 @@ wss.on("connection", (ws, req) => {
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`Folio listening on http://${HOST}:${PORT}`);
+  console.log(`Felarumi listening on http://${HOST}:${PORT}`);
 });
