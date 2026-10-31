@@ -24,7 +24,8 @@ import { DEFAULT_SUBS } from "../shared/spell.ts";
 import type { Thread } from "../shared/threads.ts";
 import type { SuggestionMeta } from "../shared/suggest.ts";
 import { mountChrome, type Chrome } from "./chrome.ts";
-import { loadWordText } from "./dict.ts";
+import { loadWordText, wordKnown } from "./dict.ts";
+import { diffWords, encodeStrokes, lookupWord } from "../shared/tools.ts";
 import { loadQueue, saveQueue } from "./offline.ts";
 import { MB, ML, MR, MT, PAGE_H, PAGE_W, RULER_H, applyPage, currentPage } from "./layout.ts";
 import { Editor, decodeCommands, encodeCommands, type RemoteCaret } from "./editor.ts";
@@ -308,6 +309,17 @@ function mountEditor(id: string, shareToken = ""): void {
     insertImage: (src: string, alt: string, w: number, h: number) => editor.insertImage(src, alt, w, h),
     setImageRotation: (index: number, rot: number) => editor.setImageRotation(index, rot),
     role: () => editor.role,
+    insertCitation: (author: string, year: string, title: string) => editor.insertCitation(author, year, title),
+    insertChart: (label: string) => editor.insertChart(label),
+    insertDrawing: (src: string) => editor.insertDrawing(src),
+    insertBibliography: () => editor.insertBibliography(),
+    setWatermark: (text: string) => {
+      usePage({ ...currentPage(), watermark: text });
+      editor.render();
+      sendPage();
+    },
+    lookup: (word: string) => lookupWord(word),
+    diffWords: (before: string, after: string) => diffWords(before, after),
   };
   (window as unknown as { __editor: typeof api }).__editor = api;
 
@@ -514,6 +526,13 @@ function mountEditor(id: string, shareToken = ""): void {
     },
     spelling: () => openSpelling(),
     dictionary: () => openDictionary(),
+    lookup: () => openLookup(),
+    compare: () => openCompare(),
+    watermark: () => openWatermark(),
+    chart: () => openChart(),
+    drawing: () => openDrawing(),
+    citation: () => openCitation(),
+    bibliography: () => editor.insertBibliography(),
     preferences: () => openPreferences(),
     addons: () => openDialog("Add-ons", "Felarumi does not run third-party add-ons or scripts."),
     "menu-search": () => openMenuSearch(),
@@ -660,6 +679,7 @@ function mountEditor(id: string, shareToken = ""): void {
 
   let historyRows: VersionRow[] = [];
   let nameWait: ((rev: number) => void) | null = null;
+  let compareWait: ((body: { left: string; right: string }) => void) | null = null;
   let previewWait: (() => void) | null = null;
 
   function send(msg: unknown): void {
@@ -707,6 +727,7 @@ function mountEditor(id: string, shareToken = ""): void {
 
   function renderHistory(rows: VersionRow[]): void {
     historyRows = rows;
+    fillCompare(rows);
     const list = document.querySelector("#history-list") as HTMLElement;
     list.innerHTML = "";
     if (!rows.length) {
@@ -808,6 +829,12 @@ function mountEditor(id: string, shareToken = ""): void {
         if (previewWait) {
           previewWait();
           previewWait = null;
+        }
+      } else if (msg.t === "compare") {
+        const body = { left: String(msg.left || ""), right: String(msg.right || "") };
+        if (compareWait) {
+          compareWait(body);
+          compareWait = null;
         }
       } else if (msg.t === "page") {
         usePage(msg.page);
@@ -1337,10 +1364,12 @@ function mountEditor(id: string, shareToken = ""): void {
       <label>Bottom <input id="pg-mb" type="number" min="0.4" max="3" step="0.1" value="${inch(page.mb)}"> in</label>
       <label>Left <input id="pg-ml" type="number" min="0.4" max="3" step="0.1" value="${inch(page.ml)}"> in</label>
       <label>Right <input id="pg-mr" type="number" min="0.4" max="3" step="0.1" value="${inch(page.mr)}"> in</label>
+      <label>Watermark <input id="pg-wm" maxlength="80"></label>
       <button type="button" id="pg-apply">Apply</button>`;
     openDialog("Page setup", wrap);
     (wrap.querySelector("#pg-paper") as HTMLSelectElement).value = page.paper;
     (wrap.querySelector("#pg-orient") as HTMLSelectElement).value = page.orient;
+    (wrap.querySelector("#pg-wm") as HTMLInputElement).value = page.watermark;
     wrap.querySelector("#pg-apply")!.addEventListener("click", () => {
       const num = (id: string) => Math.round(Number((wrap.querySelector(id) as HTMLInputElement).value) * 96);
       usePage({
@@ -1351,9 +1380,192 @@ function mountEditor(id: string, shareToken = ""): void {
         mb: num("#pg-mb"),
         ml: num("#pg-ml"),
         mr: num("#pg-mr"),
+        watermark: (wrap.querySelector("#pg-wm") as HTMLInputElement).value,
       });
       editor.render();
       sendPage();
+      closeDialog();
+    });
+  }
+
+  function fillCompare(rows: VersionRow[]): void {
+    for (const id of ["cmp-a", "cmp-b"]) {
+      const sel = document.querySelector("#" + id) as HTMLSelectElement | null;
+      if (!sel) continue;
+      const cur = sel.value;
+      sel.replaceChildren();
+      for (const row of rows) {
+        const opt = document.createElement("option");
+        opt.value = String(row.rev);
+        opt.textContent = (row.label || row.name || "Version") + " · " + row.rev;
+        sel.appendChild(opt);
+      }
+      if (cur && [...sel.options].some((opt) => opt.value === cur)) sel.value = cur;
+      else if (id === "cmp-b" && rows.length > 1) sel.selectedIndex = 0;
+      else if (id === "cmp-a" && rows.length > 1) sel.selectedIndex = Math.min(1, rows.length - 1);
+    }
+  }
+
+  function openLookup(): void {
+    const wrap = document.createElement("div");
+    wrap.className = "setup";
+    wrap.innerHTML = `<label>Word <input id="lk-word" maxlength="40"></label><p id="lk-out" class="hint"></p><button type="button" id="lk-go">Look up</button>`;
+    const selected = editor.selectedPlain().trim().split(/\s+/)[0] || "";
+    openDialog("Dictionary", wrap);
+    const input = wrap.querySelector("#lk-word") as HTMLInputElement;
+    const out = wrap.querySelector("#lk-out") as HTMLElement;
+    input.value = selected.replace(/[^A-Za-z'-]/g, "");
+    const run = () => {
+      const word = input.value.trim();
+      const local = lookupWord(word);
+      out.textContent = local ? local.definition : wordKnown(word) ? "In the local word list." : "No local definition.";
+      const key = word.toLowerCase().replace(/^[^a-z]+|[^a-z]+$/g, "");
+      if (!key) return;
+      void fetch("https://api.dictionaryapi.dev/api/v2/entries/en/" + encodeURIComponent(key))
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data: { meanings?: { definitions?: { definition?: string }[] }[] }[] | null) => {
+          const definition = data?.[0]?.meanings?.[0]?.definitions?.[0]?.definition;
+          if (typeof definition === "string" && definition) out.textContent = definition;
+        })
+        .catch(() => undefined);
+    };
+    wrap.querySelector("#lk-go")!.addEventListener("click", run);
+    if (input.value) run();
+    input.focus();
+  }
+
+  function openCompare(): void {
+    send({ t: "history" });
+    const wrap = document.createElement("div");
+    wrap.className = "setup";
+    wrap.innerHTML = `<label>From <select id="cmp-a"></select></label><label>To <select id="cmp-b"></select></label><button type="button" id="cmp-go">Compare</button><div id="cmp-out" class="hint"></div>`;
+    openDialog("Compare versions", wrap);
+    fillCompare(historyRows);
+    wrap.querySelector("#cmp-go")!.addEventListener("click", () => {
+      const a = Number((wrap.querySelector("#cmp-a") as HTMLSelectElement).value);
+      const b = Number((wrap.querySelector("#cmp-b") as HTMLSelectElement).value);
+      if (!Number.isFinite(a) || !Number.isFinite(b)) return;
+      compareWait = (body) => {
+        const out = wrap.querySelector("#cmp-out");
+        if (!out) return;
+        out.replaceChildren();
+        for (const part of diffWords(body.left, body.right)) {
+          const span = document.createElement("span");
+          span.textContent = part.text;
+          if (part.kind === "add") span.style.background = "#ceead6";
+          if (part.kind === "del") {
+            span.style.background = "#fad2cf";
+            span.style.textDecoration = "line-through";
+          }
+          out.appendChild(span);
+        }
+        if (!out.childNodes.length) out.textContent = "No difference.";
+      };
+      send({ t: "compare", a, b });
+    });
+  }
+
+  function openWatermark(): void {
+    const wrap = document.createElement("div");
+    wrap.className = "setup";
+    wrap.innerHTML = `<label>Text <input id="wm-text" maxlength="80"></label><p class="hint">Shown faintly behind every page. Leave blank to remove it.</p><button type="button" id="wm-go">Apply</button>`;
+    openDialog("Watermark", wrap);
+    const input = wrap.querySelector("#wm-text") as HTMLInputElement;
+    input.value = currentPage().watermark;
+    wrap.querySelector("#wm-go")!.addEventListener("click", () => {
+      usePage({ ...currentPage(), watermark: input.value });
+      editor.render();
+      sendPage();
+      closeDialog();
+    });
+    input.focus();
+  }
+
+  function openChart(): void {
+    const wrap = document.createElement("div");
+    wrap.className = "setup";
+    wrap.innerHTML = `<label>Bars <textarea id="ch-data" rows="5" placeholder="North 10&#10;South 40"></textarea></label><button type="button" id="ch-go">Insert</button>`;
+    openDialog("Chart", wrap);
+    wrap.querySelector("#ch-go")!.addEventListener("click", () => {
+      const raw = (wrap.querySelector("#ch-data") as HTMLTextAreaElement).value;
+      const label = raw
+        .split(/\n/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .join("; ");
+      if (!label) return;
+      editor.insertChart(label);
+      closeDialog();
+    });
+  }
+
+  function openDrawing(): void {
+    const wrap = document.createElement("div");
+    wrap.className = "setup";
+    const canvas = document.createElement("canvas");
+    canvas.width = 280;
+    canvas.height = 150;
+    canvas.style.border = "1px solid #dadce0";
+    canvas.style.touchAction = "none";
+    const strokes: number[][][] = [];
+    let current: number[][] | null = null;
+    const ctx = canvas.getContext("2d");
+    const paint = () => {
+      if (!ctx) return;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.strokeStyle = "#202124";
+      ctx.lineWidth = 1.6;
+      ctx.lineCap = "round";
+      for (const stroke of strokes) {
+        ctx.beginPath();
+        stroke.forEach((point, n) => (n ? ctx.lineTo(point[0], point[1]) : ctx.moveTo(point[0], point[1])));
+        ctx.stroke();
+      }
+    };
+    const point = (ev: PointerEvent) => {
+      const rect = canvas.getBoundingClientRect();
+      return [(ev.clientX - rect.left) * (canvas.width / rect.width), (ev.clientY - rect.top) * (canvas.height / rect.height)];
+    };
+    canvas.addEventListener("pointerdown", (ev) => {
+      current = [point(ev)];
+      strokes.push(current);
+      canvas.setPointerCapture(ev.pointerId);
+    });
+    canvas.addEventListener("pointermove", (ev) => {
+      if (!current) return;
+      current.push(point(ev));
+      paint();
+    });
+    canvas.addEventListener("pointerup", () => {
+      current = null;
+    });
+    const go = document.createElement("button");
+    go.type = "button";
+    go.textContent = "Insert";
+    go.addEventListener("click", () => {
+      const norm = strokes
+        .filter((stroke) => stroke.length >= 2)
+        .map((stroke) => stroke.map((p) => [(p[0] / canvas.width) * 100, (p[1] / canvas.height) * 100]));
+      const src = encodeStrokes(norm);
+      if (!src) return;
+      editor.insertDrawing(src);
+      closeDialog();
+    });
+    wrap.append(canvas, go);
+    openDialog("Drawing", wrap);
+  }
+
+  function openCitation(): void {
+    const wrap = document.createElement("div");
+    wrap.className = "setup";
+    wrap.innerHTML = `<label>Author <input id="ct-author" maxlength="80"></label><label>Year <input id="ct-year" maxlength="16"></label><label>Title <input id="ct-title" maxlength="160"></label><button type="button" id="ct-go">Insert</button>`;
+    openDialog("Citation", wrap);
+    wrap.querySelector("#ct-go")!.addEventListener("click", () => {
+      const author = (wrap.querySelector("#ct-author") as HTMLInputElement).value;
+      const year = (wrap.querySelector("#ct-year") as HTMLInputElement).value;
+      const title = (wrap.querySelector("#ct-title") as HTMLInputElement).value;
+      if (!author.trim() && !title.trim()) return;
+      editor.insertCitation(author, year, title);
       closeDialog();
     });
   }

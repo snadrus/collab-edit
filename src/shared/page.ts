@@ -13,6 +13,7 @@ export interface PageSpec {
   footer: string;
   headerFirst: string;
   footerFirst: string;
+  watermark: string;
 }
 
 const PAPERS: Record<PageSpec["paper"], [number, number]> = {
@@ -36,6 +37,7 @@ export const DEFAULT_PAGE: PageSpec = {
   footer: "",
   headerFirst: "",
   footerFirst: "",
+  watermark: "",
 };
 
 function margin(value: unknown, fallback: number): number {
@@ -69,6 +71,7 @@ export function normalizePage(input: unknown): PageSpec {
     footer: line(raw.footer),
     headerFirst: line(raw.headerFirst),
     footerFirst: line(raw.footerFirst),
+    watermark: line(raw.watermark).slice(0, 80),
   };
 }
 
@@ -87,7 +90,8 @@ export function pageEqual(a: PageSpec, b: PageSpec): boolean {
     a.header === b.header &&
     a.footer === b.footer &&
     a.headerFirst === b.headerFirst &&
-    a.footerFirst === b.footerFirst
+    a.footerFirst === b.footerFirst &&
+    a.watermark === b.watermark
   );
 }
 

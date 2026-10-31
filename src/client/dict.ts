@@ -21,3 +21,8 @@ export function spellSuggestions(word: string): string[] {
   if (!ready) return [];
   return suggestions(word, dictionary);
 }
+
+export function wordKnown(word: string): boolean {
+  const key = word.trim().toLowerCase().replace(/^[^a-z]+|[^a-z]+$/g, "");
+  return !!key && dictionary.has(key);
+}

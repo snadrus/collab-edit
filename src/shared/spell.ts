@@ -23,18 +23,41 @@ export interface SpellHit {
   word: string;
 }
 
+function covered(text: string): Array<[number, number]> {
+  const spans: Array<[number, number]> = [];
+  const re = /https?:\/\/\S+|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text))) spans.push([match.index, match.index + match[0].length]);
+  return spans;
+}
+
+function knownWord(key: string, dictionary: Set<string>, allowed: Set<string>): boolean {
+  if (dictionary.has(key) || allowed.has(key) || EXTRA.has(key)) return true;
+  if (key.endsWith("n't")) return dictionary.has(key.slice(0, -3)) || allowed.has(key.slice(0, -3));
+  const stem = key.split("'")[0];
+  if (stem && stem !== key && (dictionary.has(stem) || allowed.has(stem))) return true;
+  return false;
+}
+
 export function misspellings(text: string, dictionary: Set<string>, allowed: Set<string>): SpellHit[] {
   const hits: SpellHit[] = [];
+  const skip = covered(text);
   const re = /[A-Za-z']+/g;
   let match: RegExpExecArray | null;
   while ((match = re.exec(text))) {
+    const start = match.index;
     const word = match[0];
+    const end = start + word.length;
+    if (skip.some(([a, b]) => start < b && end > a)) continue;
     const bare = word.replace(/^'+|'+$/g, "");
     if (bare.length < 2) continue;
+    if (/^[A-Z]{2,6}$/.test(bare)) continue;
     if (bare !== bare.toLowerCase() && bare !== bare[0].toUpperCase() + bare.slice(1).toLowerCase()) continue;
     const key = bare.toLowerCase();
-    if (dictionary.has(key) || allowed.has(key) || EXTRA.has(key)) continue;
-    hits.push({ start: match.index, end: match.index + word.length, word: bare });
+    const hyphen = text[start - 1] === "-" || text[end] === "-";
+    if (hyphen && (knownWord(key, dictionary, allowed) || key.length <= 4)) continue;
+    if (knownWord(key, dictionary, allowed)) continue;
+    hits.push({ start, end, word: bare });
   }
   return hits;
 }

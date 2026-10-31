@@ -6,6 +6,10 @@ Compared with the Docs help center: [keyboard shortcuts](https://support.google.
 
 Page setup and the horizontal ruler, the heading outline, spelling, autocorrect, the right-click menu, paste without formatting, non-printing characters, full screen, hide the menus, menu search, the Extensions stub, paragraph move and drag-and-drop, suggesting mode, headers and footers, footnotes, pageless format, table of contents, spacing, headings 4–6, comment keys, and image resize with alt text.
 
+## Shipped after columns
+
+Dictionary lookup (local glossary, with a free dictionary request when the network answers), watermarks, a bar chart, a stroke drawing, basic citations and a bibliography, word-level spellcheck that skips URLs, acronyms, contractions, and short hyphen parts, and a word diff of two saved versions.
+
 ## Shipped in this pass
 
 1. **Columns and section breaks.** Format > Columns sets one, two, or three columns on the current section. Insert > Break adds a page break or a section break (next page or continuous). Column count is a paragraph attribute, so it travels through OT. Table column counts are left alone. Short sections are balanced by estimated height; longer ones fill down the page.
@@ -25,6 +29,5 @@ Page setup and the horizontal ruler, the heading outline, spelling, autocorrect,
 1. **Grammar.** Blue underlines and accept/ignore, beyond the spelling dictionary. [Help](https://support.google.com/docs/answer/57859).
 2. **Building blocks and the rest of smart chips.** Place, calendar event, file, and task chips, plus meeting notes and email drafts. Person, date, dropdown, and voting chips are in. File chips need a drive.
 3. **Add-ons and Apps Script.** The Extensions menu is a stub. Running third-party add-ons is a platform, not an editor command.
-4. **Voice typing, translate, citations, compare documents, and dictionary lookup.** Tools menu items that call out to other services.
-5. **Watermarks, drawings, and charts.** Insert-menu items with their own editors. Equations and special characters are in.
-6. **Email from the share dialog.** The role links are in. Docs can also email collaborators.
+4. **Voice typing and translate.** Tools that call out to other services. Dictionary lookup, compare, and basic citations are in.
+5. **Email from the share dialog.** The role links are in. Docs can also email collaborators.

@@ -3,6 +3,7 @@ import { CELL, EMBED, ROW, isBreak } from "../shared/delta.ts";
 import { type EqNode, parseEquation } from "../shared/equation.ts";
 import { COLLAB_PALETTE, hexAlpha } from "../shared/palette.ts";
 import { textColumns } from "../shared/section.ts";
+import { parseChart, parseStrokes } from "../shared/tools.ts";
 
 import { type PageSpec, normalizePage, DEFAULT_PAGE, fillPage } from "../shared/page.ts";
 
@@ -20,6 +21,7 @@ let headerText = "";
 let footerText = "";
 let headerFirstText = "";
 let footerFirstText = "";
+let watermarkText = "";
 let differentFirst = false;
 export const PAGE_GAP = 20;
 export const RULER_H = 28;
@@ -61,6 +63,7 @@ export function currentPage(): PageSpec {
     footer: footerText,
     headerFirst: headerFirstText,
     footerFirst: footerFirstText,
+    watermark: watermarkText,
   };
 }
 
@@ -80,6 +83,7 @@ export function applyPage(input: unknown): PageSpec {
   footerText = next.footer;
   headerFirstText = next.headerFirst;
   footerFirstText = next.footerFirst;
+  watermarkText = next.watermark;
   if (!PAGELESS) FLOW_H = PAGE_H;
   return next;
 }
@@ -222,6 +226,7 @@ function embedWidth(ctx: CanvasRenderingContext2D, doc: Doc, index: number): num
   if (st.embed === "fn") return 16;
   if (st.embed === "eq") return Math.min(contentWidth(), Math.max(28, parseEquation(st.label || "").w * 16 + 8));
   if (st.embed === "img") return Math.min(contentWidth(), Math.max(24, imageExtent(st, index).w));
+  if (st.embed === "chart" || st.embed === "draw") return Math.min(contentWidth(), Math.max(120, st.iw || 280));
   ctx.font = `500 12px "Roboto", sans-serif`;
   if (st.embed === "vote") return Math.min(280, 46 + Object.keys(voteMap(st)).length * 18);
   return Math.min(280, ctx.measureText(chipLabel(st) || "Chip").width + 28);
@@ -272,6 +277,7 @@ function blockHeight(doc: Doc, from: number, to: number, base: number): number {
     const st = doc.styles[k];
     if (!st) continue;
     if (st.embed === "img") h = Math.max(h, imageExtent(st, k).h + 6);
+    else if (st.embed === "chart" || st.embed === "draw") h = Math.max(h, Math.max(80, st.ih || 150) + 6);
     else if (st.embed === "eq") h = Math.max(h, (parseEquation(st.label || "").h + parseEquation(st.label || "").d) * 16 + 10);
     else if (st.embed) h = Math.max(h, 26);
   }
@@ -937,6 +943,79 @@ export function imageBox(layout: Layout, index: number): { page: number; x: numb
   return null;
 }
 
+function paintWatermark(ctx: CanvasRenderingContext2D, w: number, h: number): void {
+  const text = watermarkText.trim();
+  if (!text) return;
+  ctx.save();
+  ctx.translate(w / 2, h / 2);
+  ctx.rotate(-Math.PI / 6);
+  ctx.font = `500 54px "Roboto", sans-serif`;
+  ctx.fillStyle = "rgba(95, 99, 104, 0.16)";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(text.slice(0, 80), 0, 0);
+  ctx.restore();
+}
+
+function drawChart(ctx: CanvasRenderingContext2D, doc: Doc, glyph: Glyph, line: LineBox): void {
+  const st = doc.styles[glyph.i] || {};
+  const bars = parseChart(st.label || "");
+  const w = Math.min(glyph.w, st.iw || 280);
+  const h = Math.min(line.h - 4, st.ih || 150);
+  const x = glyph.x;
+  const y = line.y + 2;
+  ctx.save();
+  ctx.strokeStyle = "#dadce0";
+  ctx.strokeRect(x + 0.5, y + 0.5, w, h);
+  ctx.font = `12px "Roboto", sans-serif`;
+  ctx.fillStyle = "#202124";
+  ctx.textBaseline = "alphabetic";
+  if (!bars.length) {
+    ctx.fillText("Chart", x + 8, y + 20);
+    ctx.restore();
+    return;
+  }
+  const max = Math.max(1, ...bars.map((bar) => Math.abs(bar.value)));
+  const gap = 8;
+  const bw = Math.max(8, (w - 16 - gap * bars.length) / bars.length);
+  bars.forEach((bar, n) => {
+    const bh = Math.max(2, (Math.abs(bar.value) / max) * (h - 28));
+    const bx = x + 8 + n * (bw + gap);
+    const by = y + h - 18 - bh;
+    ctx.fillStyle = "#1a73e8";
+    ctx.fillRect(bx, by, bw, bh);
+    ctx.fillStyle = "#5f6368";
+    ctx.fillText(bar.name.slice(0, 8), bx, y + h - 6);
+  });
+  ctx.restore();
+}
+
+function drawSketch(ctx: CanvasRenderingContext2D, doc: Doc, glyph: Glyph, line: LineBox): void {
+  const st = doc.styles[glyph.i] || {};
+  const w = Math.min(glyph.w, st.iw || 280);
+  const h = Math.min(line.h - 4, st.ih || 150);
+  const x = glyph.x;
+  const y = line.y + 2;
+  ctx.save();
+  ctx.strokeStyle = "#dadce0";
+  ctx.strokeRect(x + 0.5, y + 0.5, w, h);
+  ctx.strokeStyle = "#202124";
+  ctx.lineWidth = 1.6;
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  for (const stroke of parseStrokes(st.src || "")) {
+    ctx.beginPath();
+    stroke.forEach((point, n) => {
+      const px = x + (point[0] / 100) * w;
+      const py = y + (point[1] / 100) * h;
+      if (n === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    });
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
 export function drawPage(
   ctx: CanvasRenderingContext2D,
   doc: Doc,
@@ -950,6 +1029,7 @@ export function drawPage(
   ctx.clearRect(0, 0, box.w, box.h);
   ctx.fillStyle = "#ffffff";
   ctx.fillRect(0, 0, box.w, box.h);
+  paintWatermark(ctx, box.w, box.h);
   ctx.textAlign = "left";
   paintMargin(ctx, page, layout.pages, "header");
   paintMargin(ctx, page, layout.pages, "footer");
@@ -1041,6 +1121,8 @@ export function drawPage(
         if (st?.embed === "img") drawImage(ctx, doc, glyphs[runStart], line);
         else if (st?.embed === "fn") drawFootnoteMark(ctx, doc, glyphs[runStart], line);
         else if (st?.embed === "eq") drawEquation(ctx, doc, glyphs[runStart], line);
+        else if (st?.embed === "chart") drawChart(ctx, doc, glyphs[runStart], line);
+        else if (st?.embed === "draw") drawSketch(ctx, doc, glyphs[runStart], line);
         else drawChip(ctx, doc, glyphs[runStart], line, colors);
         runStart++;
         continue;

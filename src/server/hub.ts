@@ -1,6 +1,6 @@
 import type { WebSocket } from "ws";
 import { deltaToCommands, commandsToDelta, type Command } from "../shared/commands.ts";
-import { applyDoc, snapshotDoc, restoreDoc, type Doc, type Snapshot } from "../shared/doc.ts";
+import { applyDoc, snapshotDoc, restoreDoc, plainText, type Doc, type Snapshot } from "../shared/doc.ts";
 import { insertedRanges } from "../shared/replace.ts";
 import { ServerDoc } from "../shared/engine.ts";
 import { assignColor } from "../shared/palette.ts";
@@ -42,7 +42,7 @@ function send(ws: WebSocket, msg: unknown): void {
 
 function permits(role: Role, t: string): boolean {
   if (role === "edit") return true;
-  if (role === "view") return t === "sel" || t === "name" || t === "history" || t === "preview";
+  if (role === "view") return t === "sel" || t === "name" || t === "history" || t === "preview" || t === "compare";
   return t !== "title" && t !== "page" && t !== "namever";
 }
 
@@ -187,6 +187,7 @@ export class Hub {
     else if (t === "resolve") this.onResolve(room, conn, msg);
     else if (t === "history") this.onHistory(room, conn);
     else if (t === "preview") this.onPreview(room, conn, msg);
+    else if (t === "compare") this.onCompare(room, conn, msg);
     else if (t === "namever") this.onNameVersion(room, conn, msg);
     else if (t === "page") this.onPage(room, msg);
     else if (t === "suggest") this.onSuggest(room, conn, msg);
@@ -347,6 +348,16 @@ export class Hub {
     const color = current?.color || conn.color;
     const marks = insertedRanges(prev.text, doc.text).map((span) => ({ ...span, color }));
     send(conn.ws, { t: "preview", rev, snapshot: snapshotDoc(doc), marks, name: current?.name || "", label: current?.label || "" });
+  }
+
+  onCompare(room: Room, conn: Conn, msg: Record<string, unknown>): void {
+    const a = msg.a;
+    const b = msg.b;
+    if (typeof a !== "number" || typeof b !== "number" || a < 0 || b < 0) return;
+    const cap = room.server.rev;
+    const left = plainText(this.docAt(room, Math.min(cap, Math.floor(a))));
+    const right = plainText(this.docAt(room, Math.min(cap, Math.floor(b))));
+    send(conn.ws, { t: "compare", a, b, left, right });
   }
 
   onNameVersion(room: Room, conn: Conn, msg: Record<string, unknown>): void {

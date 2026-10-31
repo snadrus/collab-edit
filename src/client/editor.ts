@@ -28,6 +28,7 @@ import { DEFAULT_SUBS, autocorrectSpan } from "../shared/spell.ts";
 import { type Thread } from "../shared/threads.ts";
 import { acceptDelta, deletionDelta, deltaSets, rejectDelta, suggestionSpans, type SuggestionMeta, withSuggestion } from "../shared/suggest.ts";
 import { assignBookmarks, bookmarkAt, bookmarkId, headingsOf, insertTocDelta, updateTocDelta } from "../shared/toc.ts";
+import { bibliographyLines, citeLabel } from "../shared/tools.ts";
 import { addColumnDelta, addRowDelta, insertTableDelta, removeColumnDelta, removeRowDelta, tableAt, tableRowAt } from "../shared/table.ts";
 import { spellHits, spellSuggestions, dictReady } from "./dict.ts";
 import { caretBox, contentWidth, drawPage, hitTest, imageBox, layoutDoc, markerHit, onNeedPaint, pageSize, PAGE_H, PAGE_W, setImageDraft, stackOffset, type Layout } from "./layout.ts";
@@ -1335,6 +1336,25 @@ export class Editor {
 
   insertImage(src: string, alt: string, w: number, h: number): void {
     this.insertEmbed({ embed: "img", src, alt, iw: Math.round(w), ih: Math.round(h) });
+  }
+
+  insertCitation(author: string, year: string, title: string): void {
+    this.insertEmbed({ embed: "cite", label: citeLabel(author, year, title) });
+  }
+
+  insertChart(label: string): void {
+    this.insertEmbed({ embed: "chart", label: label.slice(0, 400), iw: 280, ih: 150 });
+  }
+
+  insertDrawing(src: string): void {
+    this.insertEmbed({ embed: "draw", src: src.slice(0, 2000), iw: 280, ih: 150 });
+  }
+
+  insertBibliography(): void {
+    const labels: string[] = [];
+    for (const style of this.doc.styles) if (style?.embed === "cite" && style.label) labels.push(style.label);
+    const lines = bibliographyLines(labels);
+    this.insertText((lines.length ? `Bibliography\n${lines.join("\n")}` : "Bibliography") + "\n");
   }
 
   toggleVote(index: number): void {

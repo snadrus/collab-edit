@@ -7,11 +7,12 @@ import {
   isBreak,
   isNoop,
 } from "./delta.ts";
+import { citeChip } from "./tools.ts";
 
 export type Heading = "normal" | "title" | "subtitle" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6";
 export type Align = "left" | "center" | "right" | "justify";
 export type ListKind = "bullet" | "numbered" | "check";
-export type EmbedKind = "vote" | "person" | "date" | "drop" | "img" | "fn" | "eq";
+export type EmbedKind = "vote" | "person" | "date" | "drop" | "img" | "fn" | "eq" | "chart" | "draw" | "cite";
 
 export interface CharStyle {
   b?: true;
@@ -321,6 +322,9 @@ export function chipLabel(style: CharStyle | undefined): string {
   if (style.embed === "img") return style.alt || "Image";
   if (style.embed === "fn") return style.label || "Footnote";
   if (style.embed === "eq") return style.label || "Equation";
+  if (style.embed === "chart") return "Chart";
+  if (style.embed === "draw") return "Drawing";
+  if (style.embed === "cite") return citeChip(style.label || "");
   return "";
 }
 
