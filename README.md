@@ -28,6 +28,10 @@ npm run test:e2e
 
 `npm test` includes a randomized operational-transform fuzz. `npm run test:e2e` drives two browsers with Playwright.
 
+## Static peer host
+
+On the `p2p` branch the same editors also build into a static site. `npm run p2p` writes `p2p/dist/` and serves it. There is no document server: the owner's browser sequences edits over Trystero (public Nostr relays), and the share link's fragment is the room password. Other people can edit only while that owner is online. Snapshots autosave in IndexedDB. End session offers a Filecoin save through the Synapse SDK on mainnet, with a Calibration toggle, plus an optional IPFS token and a file download. A wallet or a key is entered at runtime and is never stored in the repo. `npm run test:p2p` covers convergence, the owner-offline lock, and the file adapter against the local static host.
+
 ## How it works
 
 The document is a flat string plus per-character styles (bold, italic, underline, strikethrough, super/subscript, font, size, color, highlight, links, lists, spacing, indent, and embedded chips). Edits are insert, delete, and style deltas. The browser turns those into 1-based `is` / `ds` / `as` / `mlti` commands. A chip is one object-replacement character; votes are per-session attributes so concurrent ballots merge. Comment anchors are a mark on the characters they cover, so they move with the text. Comment bodies sync beside the op log.

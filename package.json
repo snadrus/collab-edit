@@ -9,11 +9,16 @@
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning --experimental-strip-types src/server/index.ts",
     "dev": "DEV=1 node --disable-warning=ExperimentalWarning --watch-path=src/server --watch-path=src/shared --experimental-strip-types src/server/index.ts",
-    "test": "node --disable-warning=ExperimentalWarning --experimental-strip-types --test tests/*.test.ts apps/felanumio/tests/*.test.ts",
-    "test:e2e": "playwright test"
+    "test": "node --disable-warning=ExperimentalWarning --experimental-strip-types --test tests/*.test.ts apps/felanumio/tests/*.test.ts p2p/tests/*.test.ts",
+    "test:e2e": "playwright test",
+    "test:p2p": "playwright test -c p2p/playwright.config.ts",
+    "p2p": "node --disable-warning=ExperimentalWarning --experimental-strip-types p2p/serve.ts"
   },
   "dependencies": {
+    "@filoz/synapse-sdk": "^2.0.2",
     "esbuild": "^0.25.0",
+    "trystero": "^0.26.0",
+    "viem": "^2.57.13",
     "ws": "^8.18.3"
   },
   "devDependencies": {

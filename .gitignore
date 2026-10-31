@@ -4,6 +4,7 @@ public/app.js
 public/app.js.map
 apps/felanumio/public/app.js
 apps/felanumio/public/app.js.map
+p2p/dist/
 test-results/
 playwright-report/
 blob-report/

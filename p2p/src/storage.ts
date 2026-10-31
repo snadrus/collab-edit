@@ -1,0 +1,134 @@
+/** Pluggable snapshot storage. Filecoin via Synapse is the default. */
+
+export type FilecoinNetwork = "mainnet" | "calibration";
+
+export const DEFAULT_NETWORK: FilecoinNetwork = "mainnet";
+
+export const RPC_URLS: Record<FilecoinNetwork, string> = {
+  mainnet: "https://api.node.glif.io/rpc/v1",
+  calibration: "https://api.calibration.node.glif.io/rpc/v1",
+};
+
+export const TRYSTERO_APP_ID = "felarumi.collab";
+
+export function normalizeNetwork(value: unknown): FilecoinNetwork {
+  return value === "calibration" ? "calibration" : "mainnet";
+}
+
+export function trysteroOptions(secret: string): { appId: string; password: string } {
+  return { appId: TRYSTERO_APP_ID, password: secret };
+}
+
+export interface StorageAdapter {
+  put(bytes: Uint8Array): Promise<string>;
+  get(id: string): Promise<Uint8Array>;
+}
+
+export interface SynapseLike {
+  storage: {
+    upload(data: Uint8Array): Promise<{ pieceCid: { toString(): string } | string }>;
+    download(options: { pieceCid: string }): Promise<Uint8Array>;
+  };
+}
+
+export interface Eip1193Provider {
+  request(args: { method: string; params?: unknown[] }): Promise<unknown>;
+}
+
+export function pieceCidOf(value: { toString(): string } | string): string {
+  return typeof value === "string" ? value : value.toString();
+}
+
+/** Uploads through a Synapse client. Pass `client` in tests; the live path connects a wallet or a runtime key. */
+export async function synapseAdapter(opts: {
+  network?: FilecoinNetwork;
+  privateKey?: string;
+  provider?: Eip1193Provider;
+  client?: SynapseLike;
+}): Promise<StorageAdapter> {
+  const network = normalizeNetwork(opts.network);
+  const client = opts.client ?? (await connectSynapse(network, opts.privateKey, opts.provider));
+  return {
+    async put(bytes: Uint8Array): Promise<string> {
+      const result = await client.storage.upload(bytes);
+      return pieceCidOf(result.pieceCid);
+    },
+    get(pieceCid: string): Promise<Uint8Array> {
+      return client.storage.download({ pieceCid });
+    },
+  };
+}
+
+async function connectSynapse(network: FilecoinNetwork, privateKey?: string, provider?: Eip1193Provider): Promise<SynapseLike> {
+  const { Synapse } = await import("@filoz/synapse-sdk");
+  const chains = await import("@filoz/synapse-core/chains");
+  const { custom, http } = await import("viem");
+  const chain = network === "calibration" ? chains.calibration : chains.mainnet;
+  const rpc = RPC_URLS[network];
+  if (privateKey) {
+    const { privateKeyToAccount } = await import("viem/accounts");
+    const hex = (privateKey.startsWith("0x") ? privateKey : "0x" + privateKey) as `0x${string}`;
+    return Synapse.create({
+      account: privateKeyToAccount(hex),
+      chain,
+      transport: http(rpc),
+      source: "felarumi",
+    });
+  }
+  if (!provider) throw new Error("Connect a wallet or enter a key");
+  const accounts = (await provider.request({ method: "eth_requestAccounts" })) as string[];
+  const address = accounts[0];
+  if (!address) throw new Error("The wallet did not return an account");
+  return Synapse.create({
+    account: address as `0x${string}`,
+    chain,
+    transport: custom(provider),
+    source: "felarumi",
+  });
+}
+
+export async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** Download / upload a JSON snapshot. The content id is `file:` plus the sha256. */
+export function fileAdapter(memory: Map<string, Uint8Array> = new Map()): StorageAdapter {
+  return {
+    async put(bytes: Uint8Array): Promise<string> {
+      const id = "file:" + (await sha256Hex(bytes));
+      memory.set(id, bytes);
+      return id;
+    },
+    async get(id: string): Promise<Uint8Array> {
+      const hit = memory.get(id);
+      if (!hit) throw new Error("missing file " + id);
+      return hit;
+    },
+  };
+}
+
+const IPFS_UPLOAD = "https://api.web3.storage/upload";
+const IPFS_READ = "https://w3s.link/ipfs/";
+
+/** Secondary adapter. The token is supplied at runtime and is not stored in the repo. */
+export function ipfsAdapter(token: string, fetchImpl: typeof fetch = fetch): StorageAdapter {
+  return {
+    async put(bytes: Uint8Array): Promise<string> {
+      const res = await fetchImpl(IPFS_UPLOAD, {
+        method: "POST",
+        headers: { authorization: "Bearer " + token, "content-type": "application/octet-stream" },
+        body: bytes,
+      });
+      if (!res.ok) throw new Error("IPFS upload failed");
+      const body = (await res.json()) as { cid?: string };
+      if (!body.cid) throw new Error("IPFS upload returned no cid");
+      return body.cid;
+    },
+    async get(cid: string): Promise<Uint8Array> {
+      const res = await fetchImpl(IPFS_READ + encodeURIComponent(cid));
+      if (!res.ok) throw new Error("IPFS read failed");
+      return new Uint8Array(await res.arrayBuffer());
+    },
+  };
+}

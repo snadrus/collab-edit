@@ -21,6 +21,18 @@ interface Remote {
   c2: number;
 }
 
+function bookUrl(id: string): string {
+  let hash = "";
+  try {
+    const here = location.pathname === "/sheets/b/" + id || location.pathname.startsWith("/sheets/b/" + id + "/");
+    hash = (here ? location.hash.replace(/^#/, "") : "") || localStorage.getItem("felarumi-secret:book:" + id) || "";
+  } catch {
+    hash = "";
+  }
+  const wire = new URLSearchParams(location.search).get("wire");
+  return "/sheets/b/" + id + (wire ? "?wire=" + encodeURIComponent(wire) : "") + (hash ? "#" + hash : "");
+}
+
 const sid = sessionStorage.getItem("felanumio-sid") || crypto.randomUUID().replace(/-/g, "").slice(0, 16);
 sessionStorage.setItem("felanumio-sid", sid);
 const displayName = () => sessionStorage.getItem("felarumi-name") || "Guest";
@@ -32,7 +44,10 @@ function boot(): void {
     void fetch("/api/books/open/" + tokenPath[2])
       .then((res) => res.json())
       .then((body: { id?: string }) => {
-        if (body.id) location.replace("/sheets/b/" + body.id + "?s=" + tokenPath[2]);
+        if (body.id) {
+          const p2p = (window as unknown as { __FELARUMI_P2P__?: boolean }).__FELARUMI_P2P__;
+          location.replace(p2p ? bookUrl(body.id) : "/sheets/b/" + body.id + "?s=" + tokenPath[2]);
+        }
         else location.replace("/sheets");
       });
     return;
@@ -51,7 +66,7 @@ function mountHome(): void {
       for (const row of rows) {
         const li = document.createElement("li");
         const a = document.createElement("a");
-        a.href = "/sheets/b/" + row.id;
+        a.href = bookUrl(row.id);
         a.textContent = row.title;
         li.appendChild(a);
         recent.appendChild(li);
@@ -61,7 +76,7 @@ function mountHome(): void {
     void fetch("/api/books", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })
       .then((res) => res.json())
       .then((body: { id: string }) => {
-        location.href = "/sheets/b/" + body.id;
+        location.href = bookUrl(body.id);
       });
   });
 }
@@ -673,6 +688,18 @@ function mount(id: string, share: string): void {
         paint();
       } else if (msg.t === "reject") {
         client.load(client.book, client.rev);
+        paint();
+      } else if (msg.t === "access") {
+        role = msg.role === "view" || msg.role === "comment" ? String(msg.role) : "edit";
+        const banner = document.querySelector("#banner") as HTMLElement;
+        const wait = document.querySelector("#p2p-wait") as HTMLElement | null;
+        const waiting = role !== "edit";
+        banner.hidden = !waiting;
+        banner.textContent = typeof msg.banner === "string" && waiting ? msg.banner : waiting ? "Viewing" : "";
+        if (wait) {
+          wait.hidden = !waiting;
+          if (typeof msg.banner === "string" && waiting) wait.textContent = msg.banner;
+        }
         paint();
       }
       (document.querySelector("#status") as HTMLElement).textContent = "Saved";

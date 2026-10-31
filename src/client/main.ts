@@ -168,6 +168,26 @@ function drawVRuler(): void {
 
 let rulerIndentPx = 0;
 
+function p2pSecret(kind: "doc" | "book", id: string): string {
+  try {
+    return localStorage.getItem("felarumi-secret:" + kind + ":" + id) || "";
+  } catch {
+    return "";
+  }
+}
+
+function withWire(path: string, hash: string): string {
+  const wire = new URLSearchParams(location.search).get("wire");
+  const query = wire ? "?wire=" + encodeURIComponent(wire) : "";
+  return path + query + (hash ? "#" + hash : "");
+}
+
+function docUrl(id: string): string {
+  const here = location.pathname === "/d/" + id || location.pathname === "/d/" + id + "/";
+  const hash = (here ? location.hash.replace(/^#/, "") : "") || p2pSecret("doc", id);
+  return withWire("/d/" + id, hash);
+}
+
 async function mountHome(): Promise<void> {
   (document.querySelector("#home") as HTMLElement).hidden = false;
   document.title = "Felarumi";
@@ -176,7 +196,7 @@ async function mountHome(): Promise<void> {
   blank.addEventListener("click", async () => {
     const res = await fetch("/api/docs", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
     const body = (await res.json()) as { id: string };
-    location.href = "/d/" + body.id;
+    location.href = docUrl(body.id);
   });
   const docs = (await fetch("/api/docs").then((r) => r.json())) as { id: string; title: string; updated: number }[];
   const trashed = (await fetch("/api/docs?trash=1").then((r) => r.json())) as { id: string; title: string; updated: number }[];
@@ -185,7 +205,7 @@ async function mountHome(): Promise<void> {
   for (const doc of docs) {
     const li = document.createElement("li");
     const a = document.createElement("a");
-    a.href = "/d/" + doc.id;
+    a.href = docUrl(doc.id);
     const name = document.createElement("span");
     name.textContent = doc.title;
     const time = document.createElement("time");
@@ -201,7 +221,7 @@ async function mountHome(): Promise<void> {
   for (const doc of trashed) {
     const li = document.createElement("li");
     const a = document.createElement("a");
-    a.href = "/d/" + doc.id;
+    a.href = docUrl(doc.id);
     a.textContent = doc.title;
     const restore = document.createElement("button");
     restore.type = "button";
@@ -479,7 +499,7 @@ function mountEditor(id: string, shareToken = ""): void {
       fetch("/api/docs", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })
         .then((r) => r.json())
         .then((body: { id: string }) => {
-          location.href = "/d/" + body.id;
+          location.href = docUrl(body.id);
         });
     },
     rename: () => title.focus(),
@@ -491,7 +511,7 @@ function mountEditor(id: string, shareToken = ""): void {
     makecopy: () => {
       void fetch("/api/docs/" + encodeURIComponent(id) + "/copy", { method: "POST" })
         .then((r) => r.json())
-        .then((body: { id: string }) => window.open("/d/" + body.id, "_blank", "noopener"));
+        .then((body: { id: string }) => window.open(docUrl(body.id), "_blank", "noopener"));
     },
     "download-felarumi": () => saveFile(safeName(title.value, ".felarumi"), new Blob([toFelarumi(title.value, editor.doc, editor.threads)], { type: "application/json" })),
     "download-docx": () => void toDocx(editor.doc).then((buf) => saveFile(safeName(title.value, ".docx"), new Blob([buf]))),
@@ -850,6 +870,15 @@ function mountEditor(id: string, shareToken = ""): void {
         if (!(document.querySelector("#history") as HTMLElement).hidden) send({ t: "history" });
       } else if (msg.t === "reject") {
         console.warn("op rejected", msg.error);
+      } else if (msg.t === "access") {
+        const next = msg.role === "view" || msg.role === "comment" ? msg.role : "edit";
+        applyAccess(next, false);
+        if (next === "edit") editor.setMode("edit");
+        const wait = document.querySelector("#p2p-wait") as HTMLElement | null;
+        if (wait) {
+          wait.hidden = next === "edit";
+          if (typeof msg.banner === "string" && next !== "edit") wait.textContent = msg.banner;
+        }
       }
       refreshChrome();
     };
@@ -960,7 +989,7 @@ function mountEditor(id: string, shareToken = ""): void {
       btn.textContent = tab.title || "Tab";
       if (tab.id === id) btn.setAttribute("aria-current", "true");
       btn.addEventListener("click", () => {
-        if (tab.id !== id) location.href = "/d/" + tab.id;
+        if (tab.id !== id) location.href = docUrl(tab.id);
       });
       btn.addEventListener("dblclick", () => {
         const next = window.prompt("Rename tab", tab.title);
@@ -987,7 +1016,7 @@ function mountEditor(id: string, shareToken = ""): void {
         })
           .then((r) => r.json())
           .then((body: { id: string }) => {
-            location.href = "/d/" + body.id;
+            location.href = docUrl(body.id);
           });
       });
       bar.append(add);
@@ -1042,7 +1071,7 @@ function mountEditor(id: string, shareToken = ""): void {
     links.className = "share-links";
     const origin = location.origin;
     const entries: [string, string][] = [
-      ["document link", origin + "/d/" + id],
+      ["document link", origin + docUrl(id)],
       ["editor link", origin + "/e/" + data.tokens.edit],
       ["commenter link", origin + "/c/" + data.tokens.comment],
       ["viewer link", origin + "/v/" + data.tokens.view],
