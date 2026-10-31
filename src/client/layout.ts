@@ -191,6 +191,13 @@ interface Measured {
 
 const images = new Map<string, HTMLImageElement>();
 let repaint: (() => void) | null = null;
+let scriptFont = false;
+
+function ensureScriptFont(): void {
+  if (scriptFont || typeof document === "undefined" || !document.fonts) return;
+  scriptFont = true;
+  void document.fonts.load('20px "Dancing Script"').then(() => repaint?.());
+}
 
 export function onNeedPaint(fn: () => void): void {
   repaint = fn;
@@ -227,6 +234,16 @@ function embedWidth(ctx: CanvasRenderingContext2D, doc: Doc, index: number): num
   if (st.embed === "eq") return Math.min(contentWidth(), Math.max(28, parseEquation(st.label || "").w * 16 + 8));
   if (st.embed === "img") return Math.min(contentWidth(), Math.max(24, imageExtent(st, index).w));
   if (st.embed === "chart" || st.embed === "draw") return Math.min(contentWidth(), Math.max(120, st.iw || 280));
+  if (st.embed === "sig") {
+    ensureScriptFont();
+    const name = st.label || "Signed";
+    const addr = st.alt ? st.alt.slice(0, 6) + "…" : "";
+    ctx.font = `400 20px "Dancing Script", cursive`;
+    const nameW = ctx.measureText(name).width;
+    ctx.font = `500 11px "Roboto", sans-serif`;
+    const addrW = ctx.measureText(addr).width;
+    return Math.min(420, Math.ceil(nameW + addrW + 28));
+  }
   ctx.font = `500 12px "Roboto", sans-serif`;
   if (st.embed === "vote") return Math.min(280, 46 + Object.keys(voteMap(st)).length * 18);
   return Math.min(280, ctx.measureText(chipLabel(st) || "Chip").width + 28);
@@ -279,6 +296,7 @@ function blockHeight(doc: Doc, from: number, to: number, base: number): number {
     if (st.embed === "img") h = Math.max(h, imageExtent(st, k).h + 6);
     else if (st.embed === "chart" || st.embed === "draw") h = Math.max(h, Math.max(80, st.ih || 150) + 6);
     else if (st.embed === "eq") h = Math.max(h, (parseEquation(st.label || "").h + parseEquation(st.label || "").d) * 16 + 10);
+    else if (st.embed === "sig") h = Math.max(h, 32);
     else if (st.embed) h = Math.max(h, 26);
   }
   return h;
@@ -698,8 +716,35 @@ function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: numbe
   ctx.closePath();
 }
 
+export function signatureChipRect(glyph: Glyph, line: LineBox): { x: number; y: number; w: number; h: number } {
+  return { x: glyph.x, y: line.baseline - 18, w: Math.max(20, glyph.w - 2), h: 26 };
+}
+
 function drawChip(ctx: CanvasRenderingContext2D, doc: Doc, glyph: Glyph, line: LineBox, colors: Record<string, string>): void {
   const st = doc.styles[glyph.i] || {};
+  if (st.embed === "sig") {
+    const box = signatureChipRect(glyph, line);
+    const name = st.label || "Signed";
+    const addr = st.alt ? st.alt.slice(0, 6) + "…" : "";
+    ctx.save();
+    ctx.fillStyle = "#fbf6e8";
+    ctx.strokeStyle = "#C9A227";
+    ctx.lineWidth = 1.5;
+    roundRect(ctx, box.x, box.y, box.w, box.h, 8);
+    ctx.fill();
+    ctx.stroke();
+    ctx.font = `400 20px "Dancing Script", cursive`;
+    ctx.fillStyle = "#3c2f0b";
+    ctx.textBaseline = "middle";
+    ctx.textAlign = "left";
+    ctx.fillText(name, box.x + 8, box.y + box.h / 2);
+    const nameW = ctx.measureText(name).width;
+    ctx.font = `500 11px "Roboto", sans-serif`;
+    ctx.fillStyle = "#7a6220";
+    ctx.fillText(addr, box.x + 12 + nameW, box.y + box.h / 2 + 2);
+    ctx.restore();
+    return;
+  }
   const y = line.baseline - 14;
   const h = 20;
   ctx.fillStyle = st.embed === "date" ? "#fef7e0" : st.embed === "person" ? "#e8f0fe" : "#f8f9fa";

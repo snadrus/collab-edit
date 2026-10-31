@@ -127,6 +127,7 @@
           <button type="button" data-act="person">Person</button>
           <button type="button" data-act="date">Date</button>
           <button type="button" data-act="dropdown">Dropdown</button>
+          <button type="button" data-act="signature">Signature</button>
           <button type="button" data-act="comment">Comment</button>
         </div>
       </div>
@@ -254,6 +255,7 @@
       <span class="sep"></span>
       <button type="button" id="link" class="icon" title="Insert link (Ctrl+K)"><span class="material-symbols-outlined">link</span></button>
       <button type="button" id="comment" class="icon" title="Comment (Ctrl+Alt+M)"><span class="material-symbols-outlined">comment</span></button>
+      <button type="button" id="signature" class="icon" title="Insert signature"><span class="material-symbols-outlined">draw</span></button>
       <button type="button" id="paint" class="icon" title="Paint format (Ctrl+Alt+C, then Ctrl+Alt+V)"><span class="material-symbols-outlined">format_paint</span></button>
       <button type="button" id="clear" class="icon" title="Clear formatting (Ctrl+\\)"><span class="material-symbols-outlined">format_clear</span></button>
       <span class="sep"></span>
@@ -280,6 +282,7 @@
       </select>
     </div>
     <div id="mode-banner" hidden></div>
+    <div id="sign-banner" hidden>Signed, locked for edits</div>
     <div id="findbar" hidden>
       <input id="find-q" aria-label="Find" placeholder="Find">
       <label class="find-opt"><input id="find-regex" type="checkbox">Regex</label>

@@ -1,7 +1,17 @@
 import type { Command } from "../shared/commands.ts";
 import type { Role } from "../shared/access.ts";
 import type { Heading } from "../shared/doc.ts";
-import { restoreDoc } from "../shared/doc.ts";
+import { docIsSigned, restoreDoc } from "../shared/doc.ts";
+import {
+  chainIdFor,
+  chainLabel,
+  contentHashOf,
+  normalizeAddress,
+  readStored,
+  signatureAttrs,
+  typedDataJson,
+  verifyStored,
+} from "../shared/sign.ts";
 import {
   base64ToBytes,
   bytesToBase64,
@@ -340,6 +350,10 @@ function mountEditor(id: string, shareToken = ""): void {
     },
     lookup: (word: string) => lookupWord(word),
     diffWords: (before: string, after: string) => diffWords(before, after),
+    signed: () => docIsSigned(editor.doc),
+    signatures: () => signatureRows(),
+    signatureBoxes: () => editor.signatureBoxes(),
+    forceText: (text: string) => editor.forceText(text),
   };
   (window as unknown as { __editor: typeof api }).__editor = api;
 
@@ -380,6 +394,7 @@ function mountEditor(id: string, shareToken = ""): void {
     if ([...size.options].some((o) => o.value === sizeText)) size.value = sizeText;
     document.title = (title.value || "Untitled document") + " - Felarumi";
     syncMode();
+    syncSigned();
   };
 
   editor = new Editor(session, pages, overlay, input, "#f44336", {
@@ -425,6 +440,7 @@ function mountEditor(id: string, shareToken = ""): void {
       else if (st.embed === "fn") openFootnote(index);
       else if (st.embed === "img") openAlt(index);
       else if (st.embed === "eq") openEquation(index);
+      else if (st.embed === "sig") openSignatureDetails(index);
     },
     onSuggestion: (meta) => send({ t: "suggest", suggestion: meta }),
     onMargin: (which) => openMargin(which),
@@ -602,6 +618,7 @@ function mountEditor(id: string, shareToken = ""): void {
     person: () => editor.insertEmbed({ embed: "person", label: displayName() }),
     date: () => editor.insertEmbed({ embed: "date", iso: new Date().toISOString().slice(0, 10) }),
     dropdown: () => editor.insertEmbed({ embed: "drop", opts: JSON.stringify(["Yes", "No", "Maybe"]), val: "Yes" }),
+    signature: () => openSignature(),
     comment: () => chrome.openComment(),
     find: () => chrome.openFind(false),
     replace: () => chrome.openFind(true),
@@ -656,6 +673,7 @@ function mountEditor(id: string, shareToken = ""): void {
   document.querySelector("#strike")!.addEventListener("click", () => editor.toggleMark("strike"));
   document.querySelector("#link")!.addEventListener("click", () => chrome.openLink());
   document.querySelector("#comment")!.addEventListener("click", () => chrome.openComment());
+  document.querySelector("#signature")!.addEventListener("click", () => openSignature());
   document.querySelector("#paint")!.addEventListener("click", () => editor.copyFormatting());
   document.querySelector("#clear")!.addEventListener("click", () => editor.clearFormatting());
   document.querySelector("#indent")!.addEventListener("click", () => editor.indent(1));
@@ -1199,6 +1217,135 @@ function mountEditor(id: string, shareToken = ""): void {
     editor.render();
     sendPage();
     syncView();
+  }
+
+  function syncSigned(): void {
+    const banner = document.querySelector("#sign-banner") as HTMLElement | null;
+    if (!banner) return;
+    const locked = docIsSigned(editor.doc);
+    banner.hidden = !locked;
+    if (locked) banner.textContent = "Signed, locked for edits";
+  }
+
+  function signatureRows(): { index: number; name: string; address: string; hash: string; signature: string; chainId: string; verified: boolean }[] {
+    const hash = contentHashOf(editor.doc);
+    const out: { index: number; name: string; address: string; hash: string; signature: string; chainId: string; verified: boolean }[] = [];
+    for (let i = 0; i < editor.doc.text.length; i++) {
+      const style = editor.doc.styles[i];
+      if (editor.doc.text[i] !== "\uFFFC" || style?.embed !== "sig") continue;
+      const stored = readStored(style, id);
+      out.push({
+        index: i,
+        name: style.label || "",
+        address: style.alt || "",
+        hash: style.val || "",
+        signature: style.src || "",
+        chainId: style.opts || "",
+        verified: verifyStored(style, id, hash) == null && !!stored,
+      });
+    }
+    return out;
+  }
+
+  function signingChainId(): number {
+    const api = (window as unknown as { __p2p?: { network?: () => string } }).__p2p;
+    let network = "mainnet";
+    try {
+      network = api?.network?.() || sessionStorage.getItem("felarumi-filecoin-net") || "mainnet";
+    } catch {
+      network = "mainnet";
+    }
+    return chainIdFor(network);
+  }
+
+  function openSignature(): void {
+    const wrap = document.createElement("div");
+    wrap.id = "sig-form";
+    const input = document.createElement("input");
+    input.id = "sig-name";
+    input.placeholder = "Written name";
+    input.value = displayName() === "Guest" ? "" : displayName();
+    const go = document.createElement("button");
+    go.type = "button";
+    go.id = "sig-sign";
+    go.textContent = "Sign with wallet";
+    go.addEventListener("click", () => {
+      go.disabled = true;
+      void signDocument(input.value).then(
+        () => undefined,
+        (err: unknown) => {
+          go.disabled = false;
+          toast(err instanceof Error ? err.message : "Wallet signature failed");
+        },
+      );
+    });
+    wrap.append(input, go);
+    openDialog("Signature", wrap);
+    window.setTimeout(() => input.focus(), 0);
+  }
+
+  async function signDocument(name: string): Promise<void> {
+    const written = name.trim().slice(0, 80);
+    if (!written) throw new Error("Type your name");
+    const eth = (window as unknown as { ethereum?: { request?: (args: { method: string; params?: unknown[] }) => Promise<unknown> } }).ethereum;
+    if (!eth?.request) throw new Error("Connect a wallet such as MetaMask");
+    const accounts = (await eth.request({ method: "eth_requestAccounts" })) as string[];
+    const signer = normalizeAddress(accounts?.[0] || "");
+    const fields = {
+      docId: id,
+      contentHash: contentHashOf(editor.doc),
+      signerName: written,
+      signer,
+      timestamp: BigInt(Date.now()),
+      chainId: signingChainId(),
+    };
+    const signature = String(await eth.request({ method: "eth_signTypedData_v4", params: [signer, typedDataJson(fields)] }));
+    editor.insertSignature(signatureAttrs({ ...fields, signature }));
+    closeDialog();
+  }
+
+  function copyButton(value: string): HTMLButtonElement {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = "Copy";
+    button.addEventListener("click", () => {
+      void navigator.clipboard.writeText(value).then(() => toast("Copied")).catch(() => toast("Allow clipboard access to copy"));
+    });
+    return button;
+  }
+
+  function openSignatureDetails(index: number): void {
+    const stored = readStored(editor.styleAt(index), id);
+    if (!stored) return;
+    const hash = contentHashOf(editor.doc);
+    const verified = verifyStored(editor.styleAt(index), id, hash) == null;
+    const wrap = document.createElement("div");
+    wrap.id = "sig-details";
+    const rows: [string, string][] = [
+      ["Name", stored.signerName],
+      ["Address", stored.signer],
+      ["Chain", chainLabel(stored.chainId)],
+      ["Timestamp", new Date(Number(stored.timestamp)).toISOString()],
+      ["Content hash", stored.contentHash],
+      ["Signature", stored.signature],
+    ];
+    for (const [label, value] of rows) {
+      const row = document.createElement("p");
+      const strong = document.createElement("strong");
+      strong.textContent = label;
+      const span = document.createElement("span");
+      span.textContent = value;
+      row.append(strong, span, copyButton(value));
+      wrap.append(row);
+    }
+    const verifiedLine = document.createElement("p");
+    verifiedLine.id = "sig-verified";
+    verifiedLine.textContent = verified ? "Verified" : "Not verified";
+    const pre = document.createElement("pre");
+    pre.id = "sig-typed";
+    pre.textContent = typedDataJson(stored);
+    wrap.append(verifiedLine, pre, copyButton(pre.textContent));
+    openDialog("Signature", wrap);
   }
 
   function syncMode(): void {

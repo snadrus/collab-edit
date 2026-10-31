@@ -11,6 +11,7 @@ import {
   type Align,
   type ListKind,
   chipLabel,
+  docIsSigned,
   insertedLength,
   paraBounds,
   paragraphStyle,
@@ -32,7 +33,7 @@ import { assignBookmarks, bookmarkAt, bookmarkId, headingsOf, insertTocDelta, up
 import { bibliographyLines, citeLabel } from "../shared/tools.ts";
 import { addColumnDelta, addRowDelta, insertTableDelta, removeColumnDelta, removeRowDelta, tableAt, tableRowAt } from "../shared/table.ts";
 import { spellHits, spellSuggestions, dictReady } from "./dict.ts";
-import { caretBox, contentWidth, drawPage, hitTest, imageBox, layoutDoc, markerHit, onNeedPaint, pageSize, PAGE_H, PAGE_W, setImageDraft, stackOffset, type Layout } from "./layout.ts";
+import { caretBox, contentWidth, drawPage, hitTest, imageBox, layoutDoc, markerHit, onNeedPaint, pageSize, PAGE_H, PAGE_W, setImageDraft, signatureChipRect, stackOffset, type Layout } from "./layout.ts";
 import { clipboardToDelta } from "./paste.ts";
 
 export interface RemoteCaret {
@@ -696,6 +697,14 @@ export class Editor {
         this.hooks.onEmbed?.(idx);
         return;
       }
+      if (this.doc.text[idx] === EMBED && st?.embed === "sig") {
+        this.anchor = idx;
+        this.head = idx;
+        this.render();
+        this.hooks.onSelection();
+        this.hooks.onEmbed?.(idx);
+        return;
+      }
       if (((ev as MouseEvent).metaKey || (ev as MouseEvent).ctrlKey) && st?.link) {
         this.followLink(st.link);
         return;
@@ -1329,6 +1338,44 @@ export class Editor {
 
   insertEmbed(attrs: Attrs): void {
     this.commitQuery([{ t: "i", s: EMBED, a: attrs }]);
+  }
+
+  /** Insert a verified signature without deleting text. Allowed after the document locks. */
+  insertSignature(attrs: Attrs): void {
+    if (this.role === "view" || this.preview || attrs.embed !== "sig") return;
+    const at = Math.min(this.anchor, this.head);
+    const delta = splice(at, at, [{ t: "i", s: EMBED, a: attrs }], this.doc.text.length);
+    this.sync.local(delta);
+    const caret = this.clamp(at + 1);
+    this.anchor = caret;
+    this.head = caret;
+    this.sampleTyping();
+    this.afterEdit();
+  }
+
+  /** Apply text even when the document is signed, so a sequencer rejection can be observed. */
+  forceText(text: string): void {
+    const lo = Math.min(this.anchor, this.head);
+    const hi = Math.max(this.anchor, this.head);
+    const delta = splice(lo, hi, text ? [{ t: "i", s: text }] : [], this.doc.text.length);
+    this.sync.local(delta);
+    const caret = this.clamp(lo + text.length);
+    this.anchor = caret;
+    this.head = caret;
+    this.sampleTyping();
+    this.afterEdit();
+  }
+
+  signatureBoxes(): { index: number; page: number; x: number; y: number; w: number; h: number }[] {
+    const out: { index: number; page: number; x: number; y: number; w: number; h: number }[] = [];
+    for (const line of this.layout.lines) {
+      for (const glyph of line.glyphs) {
+        if (this.doc.text[glyph.i] !== EMBED || this.doc.styles[glyph.i]?.embed !== "sig") continue;
+        const box = signatureChipRect(glyph, line);
+        out.push({ index: glyph.i, page: line.page, ...box });
+      }
+    }
+    return out;
   }
 
   insertVote(emoji: string): void {
@@ -2071,7 +2118,7 @@ export class Editor {
   }
 
   private canEdit(): boolean {
-    return this.role !== "view" && this.mode !== "view" && !this.preview;
+    return this.role !== "view" && this.mode !== "view" && !this.preview && !docIsSigned(this.doc);
   }
 
   private ownSuggestionIds(): Set<string> {

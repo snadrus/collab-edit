@@ -3,6 +3,7 @@ import { deltaToCommands, commandsToDelta, type Command } from "../shared/comman
 import { applyDoc, snapshotDoc, restoreDoc, plainText, type Doc, type Snapshot } from "../shared/doc.ts";
 import { insertedRanges } from "../shared/replace.ts";
 import { ServerDoc } from "../shared/engine.ts";
+import { signatureGate } from "../shared/sign.ts";
 import { assignColor } from "../shared/palette.ts";
 import { type PageSpec, normalizePage } from "../shared/page.ts";
 import { type Reply, type Thread, sanitizeThread, validId } from "../shared/threads.ts";
@@ -68,6 +69,7 @@ export class Hub {
   hydrate(loaded: LoadedDoc): Room {
     const base = restoreDoc(loaded.snap);
     const server = new ServerDoc(base);
+    server.gate = signatureGate(loaded.id);
     server.rev = loaded.snapRev;
     const ordered = [...loaded.ops].sort((a, b) => a.rev - b.rev);
     server.log = [];

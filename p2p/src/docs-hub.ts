@@ -2,6 +2,7 @@ import { assignColor } from "../../packages/core/src/palette.ts";
 import { commandsToDelta, deltaToCommands, type Command } from "../../src/shared/commands.ts";
 import { type Snapshot, emptyDoc, restoreDoc, snapshotDoc } from "../../src/shared/doc.ts";
 import { ServerDoc } from "../../src/shared/engine.ts";
+import { signatureGate } from "../../src/shared/sign.ts";
 import { DEFAULT_PAGE, type PageSpec } from "../../src/shared/page.ts";
 
 export interface HubSocket {
@@ -37,6 +38,7 @@ export class DocSession {
     this.title = record?.title || "Untitled document";
     this.page = record?.page || { ...DEFAULT_PAGE };
     this.server = new ServerDoc(record ? restoreDoc(record.snapshot) : emptyDoc());
+    this.server.gate = signatureGate(this.id);
     if (record) this.server.rev = record.rev;
   }
 
@@ -88,6 +90,7 @@ export class DocSession {
   replace(snapshot: Snapshot, title?: string): void {
     if (title) this.title = title.slice(0, 200);
     this.server = new ServerDoc(restoreDoc(snapshot));
+    this.server.gate = signatureGate(this.id);
     this.persist();
     for (const conn of this.conns) this.pushInit(conn);
   }

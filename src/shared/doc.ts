@@ -12,7 +12,7 @@ import { citeChip } from "./tools.ts";
 export type Heading = "normal" | "title" | "subtitle" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6";
 export type Align = "left" | "center" | "right" | "justify";
 export type ListKind = "bullet" | "numbered" | "check";
-export type EmbedKind = "vote" | "person" | "date" | "drop" | "img" | "fn" | "eq" | "chart" | "draw" | "cite";
+export type EmbedKind = "vote" | "person" | "date" | "drop" | "img" | "fn" | "eq" | "chart" | "draw" | "cite" | "sig";
 
 export interface CharStyle {
   b?: true;
@@ -313,6 +313,13 @@ export function dropOptions(style: CharStyle | undefined): string[] {
   return [];
 }
 
+export function docIsSigned(doc: Doc): boolean {
+  for (let i = 0; i < doc.text.length; i++) {
+    if (doc.text[i] === "\uFFFC" && doc.styles[i]?.embed === "sig") return true;
+  }
+  return false;
+}
+
 export function chipLabel(style: CharStyle | undefined): string {
   if (!style) return "";
   if (style.embed === "vote") return `${style.emoji || "👍"} ${Object.keys(voteMap(style)).length}`;
@@ -325,6 +332,10 @@ export function chipLabel(style: CharStyle | undefined): string {
   if (style.embed === "chart") return "Chart";
   if (style.embed === "draw") return "Drawing";
   if (style.embed === "cite") return citeChip(style.label || "");
+  if (style.embed === "sig") {
+    const short = style.alt ? style.alt.slice(0, 6) + "…" : "";
+    return `${style.label || "Signed"}${short ? " " + short : ""}`;
+  }
   return "";
 }
 

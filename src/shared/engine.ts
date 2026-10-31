@@ -26,6 +26,8 @@ export class ServerDoc {
   doc: Doc;
   log: LogEntry[] = [];
   acks = new Map<string, number | null>();
+  /** Return an error to refuse the canonical delta. Runs before it is stored. */
+  gate: ((doc: Doc, delta: Delta) => string | null) | null = null;
 
   constructor(doc?: Doc) {
     this.doc = doc ?? emptyDoc();
@@ -53,6 +55,17 @@ export class ServerDoc {
     if (isNoop(d)) {
       this.acks.set(key, null);
       return { duplicate: false, assignedRev: null, serverRev: this.rev, delta: null };
+    }
+    if (this.gate) {
+      let gateError: string | null = null;
+      try {
+        gateError = this.gate(this.doc, d);
+      } catch (err) {
+        gateError = err instanceof Error ? err.message : "rejected";
+      }
+      if (gateError) {
+        return { duplicate: false, assignedRev: null, serverRev: this.rev, delta: null, error: gateError };
+      }
     }
     let next: Doc;
     try {
