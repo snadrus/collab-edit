@@ -1,0 +1,12 @@
+{
+  "name": "@collab/core",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./palette": "./src/palette.ts",
+    "./access": "./src/access.ts",
+    "./presence": "./src/presence.ts",
+    "./threads": "./src/threads.ts"
+  }
+}

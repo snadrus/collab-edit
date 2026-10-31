@@ -2,6 +2,8 @@ node_modules/
 data/
 public/app.js
 public/app.js.map
+apps/felanumio/public/app.js
+apps/felanumio/public/app.js.map
 test-results/
 playwright-report/
 blob-report/

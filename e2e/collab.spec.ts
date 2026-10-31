@@ -46,6 +46,14 @@ declare global {
       insertEquation: (src: string) => void;
       role: () => string;
     };
+    __sheet?: {
+      ready: boolean;
+      setCell: (r: number, c: number, v: string) => void;
+      display: (r: number, c: number) => string;
+      raw: (r: number, c: number) => string;
+      sheetNames: () => string[];
+      role: () => string;
+    };
   }
 }
 
@@ -473,6 +481,34 @@ test("local caret and selection stay neutral while the other side keeps the assi
   expect(await pa.evaluate(() => getComputedStyle(document.querySelector(".remote-caret")!).backgroundColor)).toBe(cssRgb(bColor));
   expect(await pa.evaluate(() => getComputedStyle(document.querySelector(".remote-flag")!).backgroundColor)).toBe(cssRgb(bColor));
   expect(await pa.evaluate(() => getComputedStyle(document.querySelector(".avatar:not(.self)")!).boxShadow)).toContain(cssRgb(bColor));
+
+  await a.close();
+  await b.close();
+});
+
+test("spreadsheet formula converges for a second editor", async ({ browser, request }) => {
+  const created = await request.post("/api/books", { data: { title: "Budget" } });
+  expect(created.ok()).toBeTruthy();
+  const { id } = (await created.json()) as { id: string };
+
+  const a = await browser.newContext();
+  const b = await browser.newContext();
+  const pa = await a.newPage();
+  const pb = await b.newPage();
+  await pa.goto("/sheets/b/" + id);
+  await pb.goto("/sheets/b/" + id);
+  await pa.waitForFunction(() => window.__sheet?.ready === true);
+  await pb.waitForFunction(() => window.__sheet?.ready === true);
+
+  await pa.evaluate(() => {
+    window.__sheet!.setCell(0, 0, "10");
+    window.__sheet!.setCell(1, 0, "32");
+    window.__sheet!.setCell(2, 0, "=SUM(A1:A2)");
+  });
+  await expect.poll(async () => pa.evaluate(() => window.__sheet!.display(2, 0))).toBe("42");
+  await expect.poll(async () => pb.evaluate(() => window.__sheet!.display(2, 0))).toBe("42");
+  expect(await pb.evaluate(() => window.__sheet!.raw(2, 0))).toBe("=SUM(A1:A2)");
+  expect(await pa.evaluate(() => window.__sheet!.sheetNames())).toEqual(["Sheet1"]);
 
   await a.close();
   await b.close();

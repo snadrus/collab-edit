@@ -21,7 +21,8 @@ import {
   type Snapshot,
 } from "../shared/doc.ts";
 import { ClientSync } from "../shared/engine.ts";
-import { hexAlpha, LOCAL_CARET, LOCAL_SELECTION } from "../shared/palette.ts";
+import { hexAlpha } from "../shared/palette.ts";
+import { caretColor, selectionColor } from "../shared/presence.ts";
 import { moveParagraphDelta, moveSliceDelta } from "../shared/edit.ts";
 import { replaceDelta, styleToAttrs } from "../shared/replace.ts";
 import { DEFAULT_SUBS, autocorrectSpan } from "../shared/spell.ts";
@@ -520,11 +521,11 @@ export class Editor {
       ranges.push({
         start: Math.min(remote.anchor, remote.head),
         end: Math.max(remote.anchor, remote.head),
-        color: hexAlpha(remote.color, 0.28),
+        color: selectionColor(false, remote.color),
       });
     }
     if (this.anchor !== this.head) {
-      ranges.push({ start: Math.min(this.anchor, this.head), end: Math.max(this.anchor, this.head), color: LOCAL_SELECTION });
+      ranges.push({ start: Math.min(this.anchor, this.head), end: Math.max(this.anchor, this.head), color: selectionColor(true, this.color) });
     }
     return ranges;
   }
@@ -534,7 +535,7 @@ export class Editor {
     this.localCaret.style.left = local.x + "px";
     this.localCaret.style.top = stackOffset(local.page, local.y) + "px";
     this.localCaret.style.height = local.h + "px";
-    this.localCaret.style.background = LOCAL_CARET;
+    this.localCaret.style.background = caretColor(true, this.color);
     this.localCaret.style.opacity = this.preview ? "0" : "";
     if (this.dropAt == null || this.preview) this.dropCaret.hidden = true;
     else {
@@ -543,7 +544,7 @@ export class Editor {
       this.dropCaret.style.left = drop.x + "px";
       this.dropCaret.style.top = stackOffset(drop.page, drop.y) + "px";
       this.dropCaret.style.height = drop.h + "px";
-      this.dropCaret.style.background = LOCAL_CARET;
+      this.dropCaret.style.background = caretColor(true, this.color);
     }
     for (const el of [...this.overlay.querySelectorAll(".remote-caret")]) el.remove();
     if (this.preview) return;
@@ -556,7 +557,7 @@ export class Editor {
       flag.style.left = box.x + "px";
       flag.style.top = stackOffset(box.page, box.y) + "px";
       flag.style.height = box.h + "px";
-      flag.style.background = remote.color;
+      flag.style.background = caretColor(false, remote.color);
       const name = document.createElement("div");
       name.className = "remote-flag";
       name.textContent = remote.name || "Guest";

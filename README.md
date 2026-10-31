@@ -6,7 +6,7 @@ Felarumi is a real-time collaborative rich-text editor. Several people can edit 
 
 ## Roadmap
 
-Felarumi is the writing app. A Sheets-style sibling, Felanumio, is planned as a separate collaborative spreadsheet and is not part of this editor.
+Felarumi is the writing app. Felanumio, the spreadsheet, is served from the same process at [/sheets](http://localhost:8787/sheets).
 
 ## Run
 

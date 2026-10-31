@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Felanumio</title>
+  <link rel="stylesheet" href="/fonts/fonts.css">
+  <link rel="stylesheet" href="/ui/shell.css">
+  <link rel="stylesheet" href="/sheets/app.css">
+</head>
+<body>
+  <div id="home" hidden>
+    <header class="topbar">
+      <a class="mark" href="/sheets">F</a>
+      <strong>Felanumio</strong>
+      <a class="text-link" href="/">Felarumi</a>
+    </header>
+    <main class="home-main">
+      <button type="button" id="blank" class="blank">Blank spreadsheet</button>
+      <h2>Recent</h2>
+      <ul id="recent"></ul>
+    </main>
+  </div>
+  <div id="app" hidden>
+    <header class="topbar">
+      <a class="mark" href="/sheets">F</a>
+      <input id="title" value="Untitled spreadsheet" maxlength="200">
+      <span id="status"></span>
+      <div id="avatars" class="avatars"></div>
+      <button type="button" id="share" class="share">Share</button>
+    </header>
+    <div class="menubar" id="menubar">
+      <div class="menu"><button type="button" class="menu-btn" data-menu="file">File</button>
+        <div class="menu-pop" data-pop="file" hidden>
+          <button type="button" data-act="history">Version history</button>
+          <button type="button" data-act="namever">Name current version</button>
+        </div>
+      </div>
+      <div class="menu"><button type="button" class="menu-btn" data-menu="edit">Edit</button>
+        <div class="menu-pop" data-pop="edit" hidden>
+          <button type="button" data-act="copy">Copy</button>
+          <button type="button" data-act="paste">Paste</button>
+        </div>
+      </div>
+      <div class="menu"><button type="button" class="menu-btn" data-menu="insert">Insert</button>
+        <div class="menu-pop" data-pop="insert" hidden>
+          <button type="button" data-act="insrow">Row above</button>
+          <button type="button" data-act="inscol">Column left</button>
+          <button type="button" data-act="delrow">Delete row</button>
+          <button type="button" data-act="delcol">Delete column</button>
+          <button type="button" data-act="comment">Comment</button>
+          <button type="button" data-act="chart">Chart</button>
+        </div>
+      </div>
+      <div class="menu"><button type="button" class="menu-btn" data-menu="format">Format</button>
+        <div class="menu-pop" data-pop="format" hidden>
+          <button type="button" data-act="bold">Bold</button>
+          <button type="button" data-act="italic">Italic</button>
+          <button type="button" data-act="freeze">Freeze up to here</button>
+        </div>
+      </div>
+    </div>
+    <div class="toolbar">
+      <button type="button" class="tool" id="bold" title="Bold"><span class="material-symbols-outlined">format_bold</span></button>
+      <button type="button" class="tool" id="italic" title="Italic"><span class="material-symbols-outlined">format_italic</span></button>
+      <select id="format">
+        <option value="general">General</option>
+        <option value="number">Number</option>
+        <option value="percent">Percent</option>
+        <option value="currency">Currency</option>
+      </select>
+      <select id="align">
+        <option value="left">Left</option>
+        <option value="center">Center</option>
+        <option value="right">Right</option>
+      </select>
+      <label class="swatch">Text <input id="color" type="color" value="#202124"></label>
+      <label class="swatch">Fill <input id="fill" type="color" value="#ffffff"></label>
+      <button type="button" class="tool" id="border" title="Borders"><span class="material-symbols-outlined">border_all</span></button>
+    </div>
+    <div class="formula-bar">
+      <span id="namebox">A1</span>
+      <input id="formula" spellcheck="false" autocomplete="off">
+    </div>
+    <div id="body">
+      <div id="stage"><canvas id="grid"></canvas></div>
+      <aside id="side">
+        <section id="chartbox" hidden>
+          <h3>Chart</h3>
+          <canvas id="chart" width="280" height="160"></canvas>
+        </section>
+        <section id="notes">
+          <h3>Comments</h3>
+          <div id="thread-list"></div>
+        </section>
+        <section id="history" hidden>
+          <h3>Versions</h3>
+          <div id="history-list"></div>
+          <button type="button" id="history-close">Close</button>
+        </section>
+      </aside>
+    </div>
+    <nav id="tabs"></nav>
+    <div id="banner" hidden></div>
+  </div>
+  <div id="dialog" hidden><div class="card" id="dialog-card"></div></div>
+  <script src="/sheets/app.js"></script>
+</body>
+</html>
