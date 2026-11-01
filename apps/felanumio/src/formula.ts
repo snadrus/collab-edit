@@ -16,6 +16,7 @@ export type Value =
 type Expr =
   | { k: "num"; n: number }
   | { k: "str"; s: string }
+  | { k: "bool"; b: boolean }
   | { k: "ref"; ref: Ref }
   | { k: "range"; a: Ref; b: Ref }
   | { k: "call"; name: string; args: Expr[] }
@@ -51,13 +52,14 @@ function parseCell(token: string, sheet: string | null): Ref | null {
   if (!m) return null;
   const c = colToIndex(m[2]);
   const r = Number(m[4]) - 1;
-  if (r < 0 || r > 10000 || c < 0 || c > 700) return null;
+  if (r < 0 || r > 1048575 || c < 0 || c > 16383) return null;
   return { sheet, r, c, absC: m[1] === "$", absR: m[3] === "$" };
 }
 
 type Tok =
   | { t: "num"; n: number }
   | { t: "str"; s: string }
+  | { t: "bool"; b: boolean }
   | { t: "id"; s: string }
   | { t: "ref"; ref: Ref }
   | { t: "op"; s: string }
@@ -119,8 +121,18 @@ function tokenize(input: string): Tok[] {
     if (ch === '"') {
       let s = "";
       i++;
-      while (i < src.length && src[i] !== '"') s += src[i++];
-      if (src[i] === '"') i++;
+      while (i < src.length) {
+        if (src[i] === '"') {
+          if (src[i + 1] === '"') {
+            s += '"';
+            i += 2;
+            continue;
+          }
+          i++;
+          break;
+        }
+        s += src[i++];
+      }
       out.push({ t: "str", s });
       continue;
     }
@@ -145,6 +157,10 @@ function tokenize(input: string): Tok[] {
       const start = i;
       while (i < src.length && /[A-Za-z0-9_$]/.test(src[i])) i++;
       const word = src.slice(start, i);
+      if ((word.toUpperCase() === "TRUE" || word.toUpperCase() === "FALSE") && src[i] !== "(") {
+        out.push({ t: "bool", b: word.toUpperCase() === "TRUE" });
+        continue;
+      }
       if (src[i] === "!") {
         i++;
         const c0 = i;
@@ -217,6 +233,7 @@ class Parser {
     const tok = this.take();
     if (tok.t === "num") return { k: "num", n: tok.n };
     if (tok.t === "str") return { k: "str", s: tok.s };
+    if (tok.t === "bool") return { k: "bool", b: tok.b };
     if (tok.t === "ref") {
       if (this.peek().t === "op" && (this.peek() as { s: string }).s === ":") {
         this.take();
@@ -254,6 +271,131 @@ export function parseFormula(input: string): Expr {
   return new Parser(tokenize(body)).parse();
 }
 
+export function isValidFormula(input: string): boolean {
+  try {
+    parseFormula(input.startsWith("=") ? input : "=" + input);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const CANON = /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/;
+
+/** A numeric literal with no leading zeros. "02134" and "00000" stay text. */
+export function canonicalNumber(raw: string): number | null {
+  const text = raw.trim();
+  if (!CANON.test(text)) return null;
+  const n = Number(text);
+  return Number.isFinite(n) ? n : null;
+}
+
+export function dateSerial(y: number, m: number, d: number, hh = 0, mi = 0, ss = 0): number {
+  const ms = Date.UTC(y, m - 1, d, hh, mi, ss) - Date.UTC(1899, 11, 30);
+  return ms / 86400000;
+}
+
+export function todaySerial(now = new Date()): number {
+  return dateSerial(now.getFullYear(), now.getMonth() + 1, now.getDate());
+}
+
+export function nowSerial(now = new Date()): number {
+  return dateSerial(now.getFullYear(), now.getMonth() + 1, now.getDate(), now.getHours(), now.getMinutes(), now.getSeconds());
+}
+
+const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+const MONS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+export function formatSerial(serial: number, fmt: string): string {
+  const whole = Math.floor(serial + 1e-8);
+  let frac = serial - whole;
+  if (frac < 0) frac = 0;
+  const d = new Date(Date.UTC(1899, 11, 30) + whole * 86400000);
+  const y = d.getUTCFullYear();
+  const m = d.getUTCMonth() + 1;
+  const day = d.getUTCDate();
+  let secs = Math.round(frac * 86400);
+  if (secs >= 86400) secs = 0;
+  const hh24 = Math.floor(secs / 3600);
+  const mi = Math.floor((secs % 3600) / 60);
+  const ss = secs % 60;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  let i = 0;
+  let out = "";
+  while (i < fmt.length) {
+    if (fmt.startsWith("yyyy", i)) {
+      out += String(y);
+      i += 4;
+      continue;
+    }
+    if (fmt.startsWith("yy", i)) {
+      out += String(y).slice(-2);
+      i += 2;
+      continue;
+    }
+    if (fmt.startsWith("mmmm", i)) {
+      out += MONTHS[m - 1];
+      i += 4;
+      continue;
+    }
+    if (fmt.startsWith("mmm", i)) {
+      out += MONS[m - 1];
+      i += 3;
+      continue;
+    }
+    if (fmt.startsWith("mm", i)) {
+      const prev = fmt[i - 1] || "";
+      const next = fmt[i + 2] || "";
+      const minute = /[hHsS:]/.test(prev) || next === ":";
+      out += pad(minute ? mi : m);
+      i += 2;
+      continue;
+    }
+    if (fmt.startsWith("dd", i)) {
+      out += pad(day);
+      i += 2;
+      continue;
+    }
+    if (fmt.startsWith("hh", i)) {
+      out += pad(hh24);
+      i += 2;
+      continue;
+    }
+    if (fmt.startsWith("ss", i)) {
+      out += pad(ss);
+      i += 2;
+      continue;
+    }
+    if (fmt.startsWith("AM/PM", i) || fmt.startsWith("am/pm", i)) {
+      out += hh24 >= 12 ? "PM" : "AM";
+      i += 5;
+      continue;
+    }
+    if (fmt[i] === "m") {
+      out += String(m);
+      i++;
+      continue;
+    }
+    if (fmt[i] === "d") {
+      out += String(day);
+      i++;
+      continue;
+    }
+    if (fmt[i] === "h") {
+      out += String(hh24 % 12 || 12);
+      i++;
+      continue;
+    }
+    out += fmt[i++];
+  }
+  return out;
+}
+
+export function a1ToIndex(token: string): { r: number; c: number } | null {
+  const ref = parseCell(token, null);
+  return ref ? { r: ref.r, c: ref.c } : null;
+}
+
 function walk(expr: Expr, fn: (ref: Ref) => Ref): Expr {
   if (expr.k === "ref") return { k: "ref", ref: fn(expr.ref) };
   if (expr.k === "range") return { k: "range", a: fn(expr.a), b: fn(expr.b) };
@@ -265,6 +407,7 @@ function walk(expr: Expr, fn: (ref: Ref) => Ref): Expr {
 
 function printExpr(expr: Expr): string {
   if (expr.k === "num") return String(expr.n);
+  if (expr.k === "bool") return expr.b ? "TRUE" : "FALSE";
   if (expr.k === "str") return `"${expr.s.replace(/"/g, '""')}"`;
   if (expr.k === "ref") return formatRef(expr.ref);
   if (expr.k === "range") return formatRef(expr.a) + ":" + formatRef(expr.b);
@@ -322,7 +465,7 @@ function truthy(v: Value): boolean {
 function num(v: Value): number | null {
   if (v.t === "n") return v.n;
   if (v.t === "b") return v.b ? 1 : 0;
-  if (v.t === "s" && v.s.trim() !== "" && Number.isFinite(Number(v.s))) return Number(v.s);
+  if (v.t === "s") return canonicalNumber(v.s);
   return null;
 }
 
@@ -336,13 +479,44 @@ function text(v: Value): string {
 
 function sameKey(a: Value, b: Value): boolean {
   if (a.t === "n" && b.t === "n") return a.n === b.n;
+  if (a.t === "b" && b.t === "b") return a.b === b.b;
   return text(a).toLowerCase() === text(b).toLowerCase();
+}
+
+function criteriaMatch(value: Value, crit: Value): boolean {
+  if (crit.t === "s") {
+    const m = /^(>=|<=|<>|>|<|=)([\s\S]*)$/.exec(crit.s);
+    if (m) {
+      const rest = m[2];
+      const rhsN = canonicalNumber(rest.trim());
+      const rhs: Value = rhsN != null ? { t: "n", n: rhsN } : { t: "s", s: rest };
+      if (m[1] === "=") return sameKey(value, rhs);
+      if (m[1] === "<>") return !sameKey(value, rhs);
+      const ln = num(value);
+      const rn = num(rhs);
+      if (ln == null || rn == null) {
+        const ls = text(value);
+        const rs = text(rhs);
+        if (m[1] === ">") return ls > rs;
+        if (m[1] === "<") return ls < rs;
+        if (m[1] === ">=") return ls >= rs;
+        return ls <= rs;
+      }
+      if (m[1] === ">") return ln > rn;
+      if (m[1] === "<") return ln < rn;
+      if (m[1] === ">=") return ln >= rn;
+      return ln <= rn;
+    }
+  }
+  return sameKey(value, crit);
 }
 
 export function evaluate(grid: GridRead, sheet: string, raw: string, stack: string[] = []): Value {
   if (!raw.startsWith("=")) {
     if (raw === "") return { t: "z" };
-    if (Number.isFinite(Number(raw)) && raw.trim() !== "") return { t: "n", n: Number(raw) };
+    if (raw.startsWith("'")) return { t: "s", s: raw.slice(1) };
+    const plain = canonicalNumber(raw);
+    if (plain != null) return { t: "n", n: plain };
     return { t: "s", s: raw };
   }
   let expr: Expr;
@@ -353,6 +527,7 @@ export function evaluate(grid: GridRead, sheet: string, raw: string, stack: stri
   }
   const evalExpr = (node: Expr, seen: string[]): Value => {
     if (node.k === "num") return { t: "n", n: node.n };
+    if (node.k === "bool") return { t: "b", b: node.b };
     if (node.k === "str") return { t: "s", s: node.s };
     if (node.k === "neg") {
       const inner = evalExpr(node.x, seen);
@@ -438,30 +613,168 @@ export function evaluate(grid: GridRead, sheet: string, raw: string, stack: stri
       if (key.t === "e") return key;
       const index = num(evalExpr(args[2], seen));
       if (index == null || index < 1) return { t: "e", e: "#VALUE!" };
+      let exact = true;
+      if (args[3]) {
+        const flag = evalExpr(args[3], seen);
+        const approx = flag.t === "b" ? flag.b : flag.t === "n" ? flag.n !== 0 : flag.t === "s" && flag.s.toUpperCase() === "TRUE";
+        exact = !approx;
+      }
       const range = args[1];
       const sheetName = range.a.sheet || range.b.sheet || sheet;
       const r1 = Math.min(range.a.r, range.b.r);
       const r2 = Math.max(range.a.r, range.b.r);
       const c1 = Math.min(range.a.c, range.b.c);
+      let approxRow = -1;
       for (let r = r1; r <= r2; r++) {
         const cell = evalRef({ sheet: sheetName, r, c: c1, absR: false, absC: false }, seen);
-        if (sameKey(cell, key)) return evalRef({ sheet: sheetName, r, c: c1 + index - 1, absR: false, absC: false }, seen);
+        if (exact) {
+          if (sameKey(cell, key)) return evalRef({ sheet: sheetName, r, c: c1 + index - 1, absR: false, absC: false }, seen);
+        } else {
+          const ln = num(cell);
+          const kn = num(key);
+          if (ln != null && kn != null && ln <= kn) approxRow = r;
+          else if (ln != null && kn != null && ln > kn) break;
+        }
       }
+      if (!exact && approxRow >= 0) return evalRef({ sheet: sheetName, r: approxRow, c: c1 + index - 1, absR: false, absC: false }, seen);
       return { t: "e", e: "#N/A" };
+    }
+    if (name === "INDEX") {
+      if (args[0]?.k !== "range") return { t: "e", e: "#VALUE!" };
+      const row = num(evalExpr(args[1], seen));
+      const col = args[2] ? num(evalExpr(args[2], seen)) : 1;
+      if (row == null || col == null || row < 1 || col < 1) return { t: "e", e: "#VALUE!" };
+      const range = args[0];
+      const r1 = Math.min(range.a.r, range.b.r);
+      const c1 = Math.min(range.a.c, range.b.c);
+      const r = r1 + row - 1;
+      const c = c1 + col - 1;
+      if (r > Math.max(range.a.r, range.b.r) || c > Math.max(range.a.c, range.b.c)) return { t: "e", e: "#REF!" };
+      return evalRef({ sheet: range.a.sheet || range.b.sheet, r, c, absR: false, absC: false }, seen);
+    }
+    if (name === "MATCH") {
+      if (args[1]?.k !== "range") return { t: "e", e: "#VALUE!" };
+      const key = evalExpr(args[0], seen);
+      if (key.t === "e") return key;
+      const mode = args[2] ? num(evalExpr(args[2], seen)) : 1;
+      const values = cellsOf(args[1], seen);
+      if (mode === 0) {
+        for (let i = 0; i < values.length; i++) if (sameKey(values[i], key)) return { t: "n", n: i + 1 };
+        return { t: "e", e: "#N/A" };
+      }
+      let found = -1;
+      for (let i = 0; i < values.length; i++) {
+        const ln = num(values[i]);
+        const kn = num(key);
+        if (ln == null || kn == null) continue;
+        if (mode === -1 ? ln >= kn : ln <= kn) found = i;
+        else break;
+      }
+      return found >= 0 ? { t: "n", n: found + 1 } : { t: "e", e: "#N/A" };
+    }
+    if (name === "COUNTIF") {
+      if (args[0]?.k !== "range") return { t: "e", e: "#VALUE!" };
+      const crit = evalExpr(args[1], seen);
+      if (crit.t === "e") return crit;
+      return { t: "n", n: cellsOf(args[0], seen).filter((value) => criteriaMatch(value, crit)).length };
+    }
+    if (name === "SUMIF") {
+      if (args[0]?.k !== "range") return { t: "e", e: "#VALUE!" };
+      const crit = evalExpr(args[1], seen);
+      if (crit.t === "e") return crit;
+      const keys = cellsOf(args[0], seen);
+      const sums = args[2] ? cellsOf(args[2], seen) : keys;
+      let total = 0;
+      for (let i = 0; i < keys.length; i++) if (criteriaMatch(keys[i], crit)) total += num(sums[i] || { t: "z" }) || 0;
+      return { t: "n", n: total };
+    }
+    if (name === "TEXT") {
+      const value = evalExpr(args[0], seen);
+      if (value.t === "e") return value;
+      const fmt = args[1] ? text(evalExpr(args[1], seen)) : "";
+      if (value.t === "n" && /[yd]/i.test(fmt)) return { t: "s", s: formatSerial(value.n, fmt) };
+      if (value.t === "n" && fmt.includes("%")) {
+        const decimals = (fmt.split("%")[0].split(".")[1] || "").length;
+        return { t: "s", s: (value.n * 100).toFixed(decimals) + "%" };
+      }
+      if (value.t === "n") return { t: "s", s: String(value.n) };
+      return { t: "s", s: text(value) };
+    }
+    if (name === "TODAY") return { t: "n", n: todaySerial() };
+    if (name === "NOW") return { t: "n", n: nowSerial() };
+    if (name === "AND" || name === "OR") {
+      const values = args.flatMap((arg) => cellsOf(arg, seen));
+      const bad = values.find((value) => value.t === "e");
+      if (bad) return bad;
+      if (!values.length) return { t: "e", e: "#VALUE!" };
+      const flags = values.map(truthy);
+      return { t: "b", b: name === "AND" ? flags.every(Boolean) : flags.some(Boolean) };
+    }
+    if (name === "ROUND") {
+      const n = num(evalExpr(args[0], seen));
+      const digits = args[1] ? num(evalExpr(args[1], seen)) : 0;
+      if (n == null || digits == null) return { t: "e", e: "#VALUE!" };
+      const factor = 10 ** Math.trunc(digits);
+      return { t: "n", n: Math.round(n * factor) / factor };
+    }
+    if (name === "LEN") {
+      const value = evalExpr(args[0], seen);
+      if (value.t === "e") return value;
+      return { t: "n", n: text(value).length };
+    }
+    if (name === "LEFT" || name === "RIGHT") {
+      const value = evalExpr(args[0], seen);
+      if (value.t === "e") return value;
+      const count = args[1] ? num(evalExpr(args[1], seen)) : 1;
+      if (count == null) return { t: "e", e: "#VALUE!" };
+      const s = text(value);
+      const n = Math.max(0, count);
+      return { t: "s", s: name === "LEFT" ? s.slice(0, n) : s.slice(s.length - n) };
+    }
+    if (name === "MID") {
+      const value = evalExpr(args[0], seen);
+      if (value.t === "e") return value;
+      const start = num(evalExpr(args[1], seen));
+      const count = num(evalExpr(args[2], seen));
+      if (start == null || count == null) return { t: "e", e: "#VALUE!" };
+      const at = Math.max(0, start - 1);
+      return { t: "s", s: text(value).slice(at, at + Math.max(0, count)) };
+    }
+    if (name === "IFERROR") {
+      const value = evalExpr(args[0], seen);
+      if (value.t === "e") return evalExpr(args[1] || { k: "str", s: "" }, seen);
+      return value;
     }
     return { t: "e", e: "#NAME?" };
   };
   return evalExpr(expr, stack);
 }
 
-export function displayValue(value: Value, format = "general"): string {
+function grouped(n: number, decimals: number): string {
+  const sign = n < 0 ? "-" : "";
+  const [whole, frac] = Math.abs(n).toFixed(decimals).split(".");
+  return sign + whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",") + (frac ? "." + frac : "");
+}
+
+export function displayValue(value: Value, format = "general", numFmt?: string): string {
   if (value.t === "e") return value.e;
   if (value.t === "z") return "";
   if (value.t === "b") return value.b ? "TRUE" : "FALSE";
   if (value.t === "s") return value.s;
-  if (format === "number") return value.n.toFixed(2);
-  if (format === "percent") return (value.n * 100).toFixed(0) + "%";
-  if (format === "currency") return "$" + value.n.toFixed(2);
+  const fmt = numFmt || "";
+  if (format === "date" || (/[yd]/i.test(fmt) && /m/i.test(fmt))) return formatSerial(value.n, fmt || "yyyy-mm-dd");
+  if (format === "number") {
+    const decimals = fmt.includes(".") ? (fmt.split(".")[1] || "").replace(/[^0#]/g, "").length : 2;
+    return value.n.toFixed(decimals || 2);
+  }
+  if (format === "percent" || fmt.includes("%")) {
+    const decimals = ((fmt.includes("%") ? fmt.split("%")[0] : "").split(".")[1] || "").length;
+    return (value.n * 100).toFixed(format === "percent" && !fmt ? 0 : decimals) + "%";
+  }
+  if (format === "currency" || fmt.includes("$")) {
+    const decimals = fmt.includes(".") ? (fmt.split(".")[1] || "").replace(/[^0#]/g, "").length : 2;
+    return (value.n < 0 ? "-$" : "$") + grouped(Math.abs(value.n), decimals);
+  }
   if (Number.isInteger(value.n)) return String(value.n);
   return String(Math.round(value.n * 1e6) / 1e6);
 }

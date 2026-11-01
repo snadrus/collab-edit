@@ -1,0 +1,4 @@
+Name	Score	Double
+Ann	90	=B2*2
+Bob	75	=B3*2
+Sum	=SUM(B2:B3)	

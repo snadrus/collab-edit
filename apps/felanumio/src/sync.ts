@@ -7,9 +7,16 @@ export class GridClient {
   pending: GridDelta | null = null;
   sid: string;
   private req = 1;
+  private generation = 0;
+  private seen = -1;
+  private cached: Book = emptyBook();
 
   constructor(sid: string) {
     this.sid = sid;
+  }
+
+  private bump(): void {
+    this.generation++;
   }
 
   load(book: Book, rev: number): void {
@@ -17,12 +24,16 @@ export class GridClient {
     this.rev = rev;
     this.inflight = null;
     this.pending = null;
+    this.bump();
   }
 
   view(): Book {
+    if (this.seen === this.generation) return this.cached;
     let book = this.book;
     if (this.inflight) book = applyBook(book, this.inflight.delta);
     if (this.pending) book = applyBook(book, this.pending);
+    this.cached = book;
+    this.seen = this.generation;
     return book;
   }
 
@@ -31,10 +42,12 @@ export class GridClient {
     if (!delta.ops.length) return null;
     if (this.inflight) {
       this.pending = this.pending ? { ops: [...this.pending.ops, ...delta.ops] } : { ops: [...delta.ops] };
+      this.bump();
       return null;
     }
     const reqId = this.req++;
     this.inflight = { reqId, delta };
+    this.bump();
     return { reqId, baseRev: this.rev, delta };
   }
 
@@ -45,6 +58,7 @@ export class GridClient {
     this.inflight = null;
     const next = this.pending;
     this.pending = null;
+    this.bump();
     return next ? this.push(next) : null;
   }
 
@@ -54,6 +68,7 @@ export class GridClient {
     this.rev = rev;
     if (this.inflight) this.inflight = { reqId: this.inflight.reqId, delta: transformGrid(this.inflight.delta, delta, this.sid < sid) };
     if (this.pending) this.pending = transformGrid(this.pending, delta, this.sid < sid);
+    this.bump();
   }
 }
 

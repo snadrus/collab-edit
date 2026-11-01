@@ -1,0 +1,26 @@
+Date	Region	Product	Units	Price	Revenue	Share	Big?	Label		Merged header		
+01/15/2026	South	P1	28	=VLOOKUP(C2,Products!$A$2:$B$4,2,FALSE)	=D2*E2	=F2/SUM($F$2:$F$21)	=IF(F2>500,"Yes","No")	=TEXT(A2,"yyyy-mm-dd")&" "&C2				
+01/22/2026	East	P2	36	=VLOOKUP(C3,Products!$A$2:$B$4,2,FALSE)	=D3*E3	=F3/SUM($F$2:$F$21)	=IF(F3>500,"Yes","No")	=TEXT(A3,"yyyy-mm-dd")&" "&C3		Google		
+01/29/2026	North	P2	20	=VLOOKUP(C4,Products!$A$2:$B$4,2,FALSE)	=D4*E4	=F4/SUM($F$2:$F$21)	=IF(F4>500,"Yes","No")	=TEXT(A4,"yyyy-mm-dd")&" "&C4		Go to Products		
+02/05/2026	East	P1	36	=VLOOKUP(C5,Products!$A$2:$B$4,2,FALSE)	=D5*E5	=F5/SUM($F$2:$F$21)	=IF(F5>500,"Yes","No")	=TEXT(A5,"yyyy-mm-dd")&" "&C5				
+02/12/2026	West	P3	8	=VLOOKUP(C6,Products!$A$2:$B$4,2,FALSE)	=D6*E6	=F6/SUM($F$2:$F$21)	=IF(F6>500,"Yes","No")	=TEXT(A6,"yyyy-mm-dd")&" "&C6				
+02/19/2026	East	P3	47	=VLOOKUP(C7,Products!$A$2:$B$4,2,FALSE)	=D7*E7	=F7/SUM($F$2:$F$21)	=IF(F7>500,"Yes","No")	=TEXT(A7,"yyyy-mm-dd")&" "&C7				
+02/26/2026	West	P1	40	=VLOOKUP(C8,Products!$A$2:$B$4,2,FALSE)	=D8*E8	=F8/SUM($F$2:$F$21)	=IF(F8>500,"Yes","No")	=TEXT(A8,"yyyy-mm-dd")&" "&C8				
+03/05/2026	West	P2	39	=VLOOKUP(C9,Products!$A$2:$B$4,2,FALSE)	=D9*E9	=F9/SUM($F$2:$F$21)	=IF(F9>500,"Yes","No")	=TEXT(A9,"yyyy-mm-dd")&" "&C9				
+03/12/2026	North	P2	43	=VLOOKUP(C10,Products!$A$2:$B$4,2,FALSE)	=D10*E10	=F10/SUM($F$2:$F$21)	=IF(F10>500,"Yes","No")	=TEXT(A10,"yyyy-mm-dd")&" "&C10				
+03/19/2026	East	P2	21	=VLOOKUP(C11,Products!$A$2:$B$4,2,FALSE)	=D11*E11	=F11/SUM($F$2:$F$21)	=IF(F11>500,"Yes","No")	=TEXT(A11,"yyyy-mm-dd")&" "&C11				
+03/26/2026	South	P2	39	=VLOOKUP(C12,Products!$A$2:$B$4,2,FALSE)	=D12*E12	=F12/SUM($F$2:$F$21)	=IF(F12>500,"Yes","No")	=TEXT(A12,"yyyy-mm-dd")&" "&C12				
+04/02/2026	North	P3	16	=VLOOKUP(C13,Products!$A$2:$B$4,2,FALSE)	=D13*E13	=F13/SUM($F$2:$F$21)	=IF(F13>500,"Yes","No")	=TEXT(A13,"yyyy-mm-dd")&" "&C13				
+04/09/2026	East	P2	26	=VLOOKUP(C14,Products!$A$2:$B$4,2,FALSE)	=D14*E14	=F14/SUM($F$2:$F$21)	=IF(F14>500,"Yes","No")	=TEXT(A14,"yyyy-mm-dd")&" "&C14				
+04/16/2026	North	P1	50	=VLOOKUP(C15,Products!$A$2:$B$4,2,FALSE)	=D15*E15	=F15/SUM($F$2:$F$21)	=IF(F15>500,"Yes","No")	=TEXT(A15,"yyyy-mm-dd")&" "&C15				
+04/23/2026	East	P2	19	=VLOOKUP(C16,Products!$A$2:$B$4,2,FALSE)	=D16*E16	=F16/SUM($F$2:$F$21)	=IF(F16>500,"Yes","No")	=TEXT(A16,"yyyy-mm-dd")&" "&C16				
+04/30/2026	North	P1	13	=VLOOKUP(C17,Products!$A$2:$B$4,2,FALSE)	=D17*E17	=F17/SUM($F$2:$F$21)	=IF(F17>500,"Yes","No")	=TEXT(A17,"yyyy-mm-dd")&" "&C17				
+05/07/2026	East	P1	48	=VLOOKUP(C18,Products!$A$2:$B$4,2,FALSE)	=D18*E18	=F18/SUM($F$2:$F$21)	=IF(F18>500,"Yes","No")	=TEXT(A18,"yyyy-mm-dd")&" "&C18				
+05/14/2026	North	P1	2	=VLOOKUP(C19,Products!$A$2:$B$4,2,FALSE)	=D19*E19	=F19/SUM($F$2:$F$21)	=IF(F19>500,"Yes","No")	=TEXT(A19,"yyyy-mm-dd")&" "&C19				
+05/21/2026	West	P3	17	=VLOOKUP(C20,Products!$A$2:$B$4,2,FALSE)	=D20*E20	=F20/SUM($F$2:$F$21)	=IF(F20>500,"Yes","No")	=TEXT(A20,"yyyy-mm-dd")&" "&C20				
+05/28/2026	East	P3	39	=VLOOKUP(C21,Products!$A$2:$B$4,2,FALSE)	=D21*E21	=F21/SUM($F$2:$F$21)	=IF(F21>500,"Yes","No")	=TEXT(A21,"yyyy-mm-dd")&" "&C21				
+												
+Total					=SUM(F2:F21)							
+North count	=COUNTIF(B2:B21,"North")											
+P2 price (INDEX/MATCH)	=INDEX(Products!B2:B4,MATCH("P2",Products!A2:A4,0))											
+Days since first	=TODAY()-A2											

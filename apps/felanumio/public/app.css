@@ -15,9 +15,11 @@ button { cursor: pointer; }
 .blank { border: 1px solid var(--line); background: white; border-radius: 8px; height: 96px; padding: 0 24px; }
 #recent { list-style: none; padding: 0; }
 #recent a { color: var(--ink); }
-#body { display: flex; height: calc(100vh - 196px); }
+#body { display: flex; height: calc(100vh - 196px); position: relative; }
 #stage { flex: 1; overflow: auto; position: relative; background: #e8eaed; }
-#grid { background: white; display: block; }
+#sizer { position: relative; }
+#grid { position: sticky; top: 0; left: 0; z-index: 1; background: white; display: block; }
+#valid { position: absolute; z-index: 4; height: 24px; max-width: 160px; }
 #side { width: 280px; background: white; border-left: 1px solid var(--line); overflow: auto; padding: 12px; }
 #side h3 { margin: 8px 0; font-size: 14px; }
 .formula-bar { display: flex; gap: 8px; align-items: center; padding: 4px 12px; background: white; border-bottom: 1px solid var(--line); }
