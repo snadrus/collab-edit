@@ -1,6 +1,6 @@
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
-import { a1ToIndex, canonicalNumber, dateSerial, isValidFormula } from "./formula.ts";
-import { type Book, type Cell, type CellStyle, type CfRule, type ChartMark, type Merge, type Sheet, type Validation, cellKey } from "./ot.ts";
+import { a1ToIndex, canonicalNumber, dateSerial, displayValue, evaluate, indexToCol, isValidFormula, type GridRead } from "./formula.ts";
+import { type Book, type Cell, type CellStyle, type CfRule, type ChartMark, type ChartSeries, type Merge, type Sheet, type Validation, cellKey } from "./ot.ts";
 
 export interface ImportOptions {
   separator: "auto" | "," | ";" | "\t" | string;
@@ -165,7 +165,12 @@ function parseDate(raw: string, locale: "us" | "eu"): { serial: number; fmt: str
     const ap = (m[7] || "").toUpperCase();
     if (ap === "PM" && hh < 12) hh += 12;
     if (ap === "AM" && hh === 12) hh = 0;
-    const fmt = m[4] ? (locale === "eu" ? "dd/mm/yyyy hh:mm" : "m/d/yyyy h:mm") : locale === "eu" ? "dd/mm/yyyy" : "mm/dd/yyyy";
+    const yearTok = m[3].length <= 2 ? "yy" : "yyyy";
+    const euOrder = locale === "eu" || a > 12;
+    const left = (euOrder ? m[1] : m[1]).length >= 2 ? (euOrder ? "dd" : "mm") : euOrder ? "d" : "m";
+    const right = m[2].length >= 2 ? (euOrder ? "mm" : "dd") : euOrder ? "m" : "d";
+    const dateFmt = m[4] ? `${left}/${right}/${yearTok}` : locale === "eu" ? "dd/mm/yyyy" : "mm/dd/yyyy";
+    const fmt = !m[4] ? dateFmt : ap ? `${dateFmt} h:mm AM/PM` : locale === "eu" ? `${dateFmt} hh:mm` : `${dateFmt} h:mm`;
     return { serial: dateSerial(y, mo, d, hh, mi, ss), fmt };
   }
   m = /^([A-Za-z]+)\s+(\d{1,2}),?\s+(\d{4})$/.exec(s);
@@ -539,7 +544,10 @@ function parseWorksheet(xml: string, rels: string, files: Record<string, Uint8Ar
   const merges: Merge[] = [];
   for (const tag of xml.match(/<mergeCell\b[^>]*\/?>/g) || []) {
     const range = rangeOf(attr(tag, "ref"));
-    if (range) merges.push(range);
+    if (!range) continue;
+    merges.push(range);
+    rows = Math.max(rows, range.r2 + 1);
+    cols = Math.max(cols, range.c2 + 1);
   }
   const linkRels = new Map<string, string>();
   for (const rel of rels.match(/<Relationship\b[^>]*\/?>/g) || []) {
@@ -590,10 +598,37 @@ function commentsOf(xml: string): Map<string, string> {
   const map = new Map<string, string>();
   for (const comment of xml.match(/<comment\b[\s\S]*?<\/comment>/g) || []) {
     const ref = attr(comment.match(/<comment\b[^>]*>/)?.[0] || "", "ref").toUpperCase();
-    const text = [...comment.matchAll(/<t\b[^>]*>([\s\S]*?)<\/t>/g)].map((m) => decodeXml(m[1])).join("");
-    if (ref && text) map.set(ref, text);
+    const parts = [...comment.matchAll(/<t\b[^>]*>([\s\S]*?)<\/t>/g)].map((m) => decodeXml(m[1])).filter((part) => part.length);
+    const text = parts.length && parts.every((part) => part === parts[0]) ? parts[0] : parts.join("");
+    if (!ref || !text) continue;
+    const prev = map.get(ref);
+    if (!prev) map.set(ref, text);
+    else if (prev !== text && !prev.split("\n").includes(text)) map.set(ref, prev + "\n" + text);
   }
   return map;
+}
+
+/** One card per quote+text, so a cell note and the thread created from it do not both show. */
+export function uniqueComments<T extends { quote?: string; text: string }>(
+  threads: T[],
+  notes: { quote: string; text: string }[],
+): { quote: string; text: string; thread?: T }[] {
+  const seen = new Set<string>();
+  const out: { quote: string; text: string; thread?: T }[] = [];
+  for (const thread of threads) {
+    const quote = thread.quote || "";
+    const key = quote + "\n" + thread.text;
+    if (!thread.text || seen.has(key)) continue;
+    seen.add(key);
+    out.push({ quote, text: thread.text, thread });
+  }
+  for (const note of notes) {
+    const key = note.quote + "\n" + note.text;
+    if (!note.text || seen.has(key)) continue;
+    seen.add(key);
+    out.push({ quote: note.quote, text: note.text });
+  }
+  return out;
 }
 
 function relTarget(rels: string, id: string): string {
@@ -603,35 +638,112 @@ function relTarget(rels: string, id: string): string {
   return "";
 }
 
+function parseChartRef(ref: string): { sheet: string; r1: number; c1: number; r2: number; c2: number } | null {
+  let body = decodeXml(ref).trim().replace(/\$/g, "");
+  let sheet = "";
+  const bang = body.lastIndexOf("!");
+  if (bang >= 0) {
+    sheet = body.slice(0, bang).replace(/^'/, "").replace(/'$/, "").replace(/''/g, "'");
+    body = body.slice(bang + 1);
+  }
+  const range = rangeOf(body);
+  if (!range) return null;
+  return { sheet, ...range };
+}
+
 function parseChart(xml: string, sheetId: string): ChartMark | null {
   if (!xml) return null;
   const title = decodeXml(/<a:t>([\s\S]*?)<\/a:t>/.exec(xml)?.[1] || "");
   const kind = /<barChart\b/.test(xml) ? "bar" : /<lineChart\b/.test(xml) ? "line" : /<pieChart\b/.test(xml) || /<ofPieChart\b/.test(xml) ? "pie" : "placeholder";
-  const refs = [...xml.matchAll(/<f>([\s\S]*?)<\/f>/g)].map((m) => decodeXml(m[1]));
-  let r1 = 0;
-  let c1 = 0;
-  let r2 = 0;
-  let c2 = 0;
-  let any = false;
-  for (const ref of refs) {
-    const body = ref.includes("!") ? ref.slice(ref.indexOf("!") + 1) : ref;
-    const range = rangeOf(body.replace(/\$/g, ""));
-    if (!range) continue;
-    if (!any) {
-      r1 = range.r1;
-      c1 = range.c1;
-      r2 = range.r2;
-      c2 = range.c2;
-      any = true;
-    } else {
-      r1 = Math.min(r1, range.r1);
-      c1 = Math.min(c1, range.c1);
-      r2 = Math.max(r2, range.r2);
-      c2 = Math.max(c2, range.c2);
-    }
+  const series: ChartSeries[] = [];
+  for (const ser of xml.match(/<ser\b[\s\S]*?<\/ser>/g) || []) {
+    const nameRef = /<tx\b[\s\S]*?<f>([\s\S]*?)<\/f>/.exec(ser)?.[1] || "";
+    const catRef = /<cat\b[\s\S]*?<f>([\s\S]*?)<\/f>/.exec(ser)?.[1] || "";
+    const valRef = /<val\b[\s\S]*?<f>([\s\S]*?)<\/f>/.exec(ser)?.[1] || "";
+    const val = parseChartRef(valRef);
+    const cat = parseChartRef(catRef);
+    if (!val) continue;
+    series.push({
+      name: decodeXml(nameRef).replace(/\$/g, ""),
+      sheet: val.sheet,
+      r1: val.r1,
+      c1: val.c1,
+      r2: val.r2,
+      c2: val.c2,
+      catSheet: cat?.sheet || val.sheet,
+      catR1: cat?.r1 ?? val.r1,
+      catC1: cat?.c1 ?? val.c1,
+      catR2: cat?.r2 ?? val.r2,
+      catC2: cat?.c2 ?? val.c1,
+    });
   }
+  const first = series[0];
+  const r1 = first?.r1 ?? 0;
+  const c1 = first?.c1 ?? 0;
+  const r2 = first?.r2 ?? 0;
+  const c2 = first?.c2 ?? 0;
   const note = kind === "placeholder" ? (title ? `Chart: ${title}` : "Chart") : title;
-  return { id: "h" + Math.random().toString(36).slice(2, 10), sheet: sheetId, r1, c1, r2, c2, kind, title, note };
+  return { id: "h" + Math.random().toString(36).slice(2, 10), sheet: sheetId, r1, c1, r2, c2, kind, title, note, series };
+}
+
+function chartWalk(r1: number, c1: number, r2: number, c2: number): { r: number; c: number }[] {
+  const pts: { r: number; c: number }[] = [];
+  if (c2 - c1 > r2 - r1) {
+    for (let c = c1; c <= c2; c++) for (let r = r1; r <= r2; r++) pts.push({ r, c });
+  } else {
+    for (let r = r1; r <= r2; r++) for (let c = c1; c <= c2; c++) pts.push({ r, c });
+  }
+  return pts;
+}
+
+/** Category labels and series values, including refs like Sales!$B$2:$B$4. */
+export function chartPoints(book: Book, chart: ChartMark): { name: string; n: number }[] {
+  const host = book.sheets.find((sheet) => sheet.id === chart.sheet)?.name || book.sheets[0]?.name || "";
+  const read: GridRead = {
+    sheets: () => book.sheets.map((sheet) => sheet.name),
+    raw: (name, r, c) => book.sheets.find((sheet) => sheet.name === name)?.cells[cellKey(r, c)]?.v || "",
+  };
+  const sheetName = (name: string) => name || host;
+  const label = (name: string, r: number, c: number): string => {
+    const sheet = sheetName(name);
+    const cell = book.sheets.find((item) => item.name === sheet)?.cells[cellKey(r, c)];
+    const raw = cell?.v || "";
+    if (!raw) return "";
+    if (raw.startsWith("'")) return raw.slice(1);
+    if (raw.startsWith("=") || (cell?.style?.format && cell.style.format !== "general")) {
+      return displayValue(evaluate(read, sheet, raw), cell?.style?.format || "general", cell?.style?.numFmt);
+    }
+    return raw;
+  };
+  const num = (name: string, r: number, c: number): number | null => {
+    const sheet = sheetName(name);
+    const raw = read.raw(sheet, r, c);
+    if (!raw || raw.startsWith("'")) return null;
+    const value = evaluate(read, sheet, raw);
+    return value.t === "n" ? value.n : null;
+  };
+  const series = chart.series?.length ? chart.series : [];
+  const out: { name: string; n: number }[] = [];
+  if (!series.length) {
+    for (const pt of chartWalk(chart.r1, chart.c1, chart.r2, chart.c2)) {
+      const n = num(host, pt.r, pt.c);
+      if (n == null) continue;
+      out.push({ name: indexToCol(pt.c) + (pt.r + 1), n });
+    }
+    return out;
+  }
+  for (const ser of series) {
+    const vals = chartWalk(ser.r1, ser.c1, ser.r2, ser.c2);
+    const cats = chartWalk(ser.catR1, ser.catC1, ser.catR2, ser.catC2);
+    vals.forEach((pt, i) => {
+      const n = num(ser.sheet, pt.r, pt.c);
+      if (n == null) return;
+      const cat = cats[i];
+      const name = cat ? label(ser.catSheet, cat.r, cat.c) : "";
+      out.push({ name: name || indexToCol(pt.c) + (pt.r + 1), n });
+    });
+  }
+  return out;
 }
 
 function chartsFor(files: Record<string, Uint8Array>, sheetPath: string, sheetId: string): ChartMark[] {

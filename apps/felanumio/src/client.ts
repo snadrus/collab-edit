@@ -1,7 +1,7 @@
 import { caretColor, selectionColor } from "../../../packages/core/src/presence.ts";
 import { hexAlpha } from "../../../packages/core/src/palette.ts";
 import { a1ToIndex, canonicalNumber, displayValue, evaluate, indexToCol, shiftFormula, type GridRead } from "./formula.ts";
-import { bookOds, bookXlsx, convertField, defaultImportOptions, detectSeparator, importBytes, parseDelimited, parseHtmlTable, sheetCsv, type ImportOptions } from "./import.ts";
+import { bookOds, bookXlsx, chartPoints, convertField, defaultImportOptions, detectSeparator, importBytes, parseDelimited, parseHtmlTable, sheetCsv, uniqueComments, type ImportOptions } from "./import.ts";
 import { type Book, type Cell, type CellStyle, type ChartMark, type GridOp, type Merge, type Sheet, cellKey } from "./ot.ts";
 import { GridClient } from "./sync.ts";
 import type { Thread } from "../../../packages/core/src/threads.ts";
@@ -324,8 +324,7 @@ function mount(id: string, share: string): void {
       let px = 0;
       for (let c = c0; c < c1; c++) {
         const cw = colW(s, c);
-        const merge = mergeOf(s, r, c);
-        if (merge && (merge.r1 !== r || merge.c1 !== c)) {
+        if (mergeOf(s, r, c)) {
           px += cw;
           continue;
         }
@@ -464,6 +463,7 @@ function mount(id: string, share: string): void {
     for (let r = 0; r < frozenR; r++) for (let c = colStart; c <= colEnd; c++) paintOne(r, c);
     for (let c = 0; c < frozenC; c++) for (let r = rowStart; r <= rowEnd; r++) paintOne(r, c);
     for (let r = 0; r < frozenR; r++) for (let c = 0; c < frozenC; c++) paintOne(r, c);
+    for (const merge of s.merges || []) paintOne(merge.r1, merge.c1);
     ctx.fillStyle = "#f8f9fa";
     ctx.fillRect(0, 0, viewW, HEAD_H);
     ctx.fillRect(0, 0, HEAD_W, viewH);
@@ -616,15 +616,8 @@ function mount(id: string, share: string): void {
       ctx.fillText(chart.note || "Chart", 16, 80);
       return;
     }
-    const host = book().sheets.find((item) => item.id === chart.sheet) || sheet();
-    const values: { name: string; n: number }[] = [];
-    for (let r = chart.r1; r <= chart.r2; r++) {
-      for (let c = chart.c1; c <= chart.c2; c++) {
-        const raw = host.cells[cellKey(r, c)]?.v || "";
-        const value = evaluate(reader(), host.name, raw);
-        if (value.t === "n") values.push({ name: indexToCol(c) + (r + 1), n: value.n });
-      }
-    }
+    const values = chartPoints(book(), chart);
+    (document.querySelector("#chart") as HTMLCanvasElement).dataset.labels = values.map((item) => item.name).join("|");
     const max = Math.max(1, ...values.map((item) => Math.abs(item.n)));
     const slice = values.slice(0, 8);
     if (chart.kind === "pie") {
@@ -669,21 +662,17 @@ function mount(id: string, share: string): void {
   function paintThreads(): void {
     const list = document.querySelector("#thread-list") as HTMLElement;
     list.innerHTML = "";
-    const seen = new Set<string>();
-    for (const thread of threads) {
-      seen.add(thread.quote + "\n" + thread.text);
-      const card = document.createElement("div");
-      card.className = "note";
-      card.textContent = thread.name + ": " + thread.text;
-      list.appendChild(card);
+    const notes: { quote: string; text: string }[] = [];
+    for (const [key, cell] of Object.entries(sheet().cells)) {
+      if (!cell.note) continue;
+      const [rs, cs] = key.split(",");
+      notes.push({ quote: indexToCol(Number(cs)) + (Number(rs) + 1), text: cell.note });
     }
-    const s = sheet();
-    for (const [key, cell] of Object.entries(s.cells)) {
-      if (!cell.note || seen.has(key + cell.note)) continue;
-      const card = document.createElement("div");
-      card.className = "note";
-      card.textContent = cell.note;
-      list.appendChild(card);
+    for (const card of uniqueComments(threads, notes)) {
+      const el = document.createElement("div");
+      el.className = "note";
+      el.textContent = card.thread ? card.thread.name + ": " + card.text : card.text;
+      list.appendChild(el);
     }
   }
 

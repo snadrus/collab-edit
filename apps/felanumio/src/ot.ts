@@ -59,6 +59,20 @@ export interface Sheet {
   rules?: CfRule[];
 }
 
+export interface ChartSeries {
+  name: string;
+  sheet: string;
+  r1: number;
+  c1: number;
+  r2: number;
+  c2: number;
+  catSheet: string;
+  catR1: number;
+  catC1: number;
+  catR2: number;
+  catC2: number;
+}
+
 export interface ChartMark {
   id: string;
   sheet: string;
@@ -69,6 +83,7 @@ export interface ChartMark {
   kind?: "bar" | "line" | "pie" | "placeholder";
   title?: string;
   note?: string;
+  series?: ChartSeries[];
 }
 
 export interface Book {
