@@ -87,6 +87,34 @@ async function connectSynapse(network: FilecoinNetwork, privateKey?: string, pro
   });
 }
 
+export const UNANCHORED = "unanchored";
+
+/** Local Filecoin CommP / PieceCID. Falls back to a sentinel when the calculator cannot run. */
+export async function commpOf(bytes: Uint8Array): Promise<string> {
+  try {
+    const piece = await import("@filoz/synapse-core/piece");
+    return (await piece.calculate(bytes)).toString();
+  } catch {
+    return UNANCHORED;
+  }
+}
+
+/** File-adapter anchor: store the bytes under their PieceCID, or `unanchored` when CommP is unavailable. */
+export function commpAdapter(memory: Map<string, Uint8Array> = new Map()): StorageAdapter {
+  return {
+    async put(bytes: Uint8Array): Promise<string> {
+      const id = await commpOf(bytes);
+      memory.set(id, bytes);
+      return id;
+    },
+    async get(id: string): Promise<Uint8Array> {
+      const hit = memory.get(id);
+      if (!hit) throw new Error("missing file " + id);
+      return hit;
+    },
+  };
+}
+
 export async function sha256Hex(bytes: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");

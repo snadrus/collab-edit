@@ -46,6 +46,8 @@ export interface CharStyle {
   alt?: string;
   /** Image rotation in degrees. */
   rot?: number;
+  /** PieceCID of the unsigned document this signature commits to. */
+  cid?: string;
   h?: Heading;
   align?: Align;
   list?: ListKind;

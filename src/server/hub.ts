@@ -1,9 +1,9 @@
 import type { WebSocket } from "ws";
 import { deltaToCommands, commandsToDelta, type Command } from "../shared/commands.ts";
-import { applyDoc, snapshotDoc, restoreDoc, plainText, type Doc, type Snapshot } from "../shared/doc.ts";
+import { applyDoc, docIsSigned, snapshotDoc, restoreDoc, plainText, type Doc, type Snapshot } from "../shared/doc.ts";
 import { insertedRanges } from "../shared/replace.ts";
 import { ServerDoc } from "../shared/engine.ts";
-import { signatureGate } from "../shared/sign.ts";
+import { applyAnchor, signatureGate } from "../shared/sign.ts";
 import { assignColor } from "../shared/palette.ts";
 import { type PageSpec, normalizePage } from "../shared/page.ts";
 import { type Reply, type Thread, sanitizeThread, validId } from "../shared/threads.ts";
@@ -35,6 +35,8 @@ interface Room {
   suggestions: Map<string, SuggestionMeta>;
   page: PageSpec;
   pageTs: number;
+  contentCid: string;
+  locked: boolean;
 }
 
 function send(ws: WebSocket, msg: unknown): void {
@@ -69,7 +71,6 @@ export class Hub {
   hydrate(loaded: LoadedDoc): Room {
     const base = restoreDoc(loaded.snap);
     const server = new ServerDoc(base);
-    server.gate = signatureGate(loaded.id);
     server.rev = loaded.snapRev;
     const ordered = [...loaded.ops].sort((a, b) => a.rev - b.rev);
     server.log = [];
@@ -89,7 +90,7 @@ export class Hub {
     const suggestions = new Map<string, SuggestionMeta>();
     for (const suggestion of this.store.loadSuggestions(loaded.id)) suggestions.set(suggestion.id, suggestion);
     const page = this.store.loadPage(loaded.id);
-    return {
+    const room: Room = {
       id: loaded.id,
       title: loaded.title,
       titleTs: loaded.titleTs,
@@ -99,7 +100,12 @@ export class Hub {
       suggestions,
       page: page.page,
       pageTs: page.ts,
+      contentCid: "",
+      locked: false,
     };
+    room.locked = docIsSigned(server.doc);
+    server.gate = signatureGate(loaded.id, () => ({ contentCid: room.contentCid, locked: room.locked }));
+    return room;
   }
 
   snapshot(room: Room): Snapshot {
@@ -145,6 +151,8 @@ export class Hub {
       threads: [...room.threads.values()],
       suggestions: [...room.suggestions.values()],
       page: room.page,
+      contentCid: room.contentCid,
+      locked: room.locked,
       role: conn.role,
       trashed: this.store.trashedAt(room.id) > 0,
       resume: resume && since != null && catchup.length === room.server.rev - since,
@@ -193,6 +201,19 @@ export class Hub {
     else if (t === "namever") this.onNameVersion(room, conn, msg);
     else if (t === "page") this.onPage(room, msg);
     else if (t === "suggest") this.onSuggest(room, conn, msg);
+    else if (t === "anchor") this.onAnchor(room, conn, msg);
+  }
+
+  onAnchor(room: Room, conn: Conn, msg: Record<string, unknown>): void {
+    const phase = typeof msg.phase === "string" ? msg.phase : "freeze";
+    const next = applyAnchor(room, room.server.doc, phase, typeof msg.contentCid === "string" ? msg.contentCid : "");
+    if (next.error) {
+      send(conn.ws, { t: "reject", reqId: null, error: next.error });
+      return;
+    }
+    room.contentCid = next.state.contentCid;
+    room.locked = next.state.locked;
+    this.broadcast(room, { t: "anchor", locked: room.locked, contentCid: room.contentCid }, null);
   }
 
   onOp(room: Room, conn: Conn, msg: Record<string, unknown>): void {

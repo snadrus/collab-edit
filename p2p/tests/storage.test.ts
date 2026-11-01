@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { DEFAULT_NETWORK, RPC_URLS, fileAdapter, ipfsAdapter, normalizeNetwork, pieceCidOf, synapseAdapter, trysteroOptions } from "../src/storage.ts";
+import { DEFAULT_NETWORK, RPC_URLS, UNANCHORED, commpOf, fileAdapter, ipfsAdapter, normalizeNetwork, pieceCidOf, synapseAdapter, trysteroOptions } from "../src/storage.ts";
 
 describe("filecoin defaults", () => {
   it("uses mainnet unless the toggle asks for calibration", () => {
@@ -53,5 +53,13 @@ describe("filecoin defaults", () => {
     assert.equal(await ipfs.put(bytes), "bafyipfs");
     assert.equal(auth, "Bearer runtime-token");
     assert.equal(new TextDecoder().decode(await ipfs.get("bafyipfs")), '{"kind":"felarumi-p2p"}');
+  });
+
+  it("computes a stable local piece cid", async () => {
+    const bytes = new TextEncoder().encode("hello");
+    const first = await commpOf(bytes);
+    assert.equal(first, await commpOf(bytes));
+    assert.notEqual(first, UNANCHORED);
+    assert.notEqual(await commpOf(new TextEncoder().encode("other")), first);
   });
 });

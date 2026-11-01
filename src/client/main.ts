@@ -3,13 +3,17 @@ import type { Role } from "../shared/access.ts";
 import type { Heading } from "../shared/doc.ts";
 import { docIsSigned, restoreDoc } from "../shared/doc.ts";
 import {
+  canonicalUnsigned,
   chainIdFor,
   chainLabel,
   contentHashOf,
+  docFromCanonical,
+  hashBytes,
   normalizeAddress,
   readStored,
   signatureAttrs,
   typedDataJson,
+  unsignedBytes,
   verifyStored,
 } from "../shared/sign.ts";
 import {
@@ -50,6 +54,8 @@ interface InitMsg {
   threads?: Thread[];
   suggestions?: SuggestionMeta[];
   page?: PageSpec;
+  contentCid?: string;
+  locked?: boolean;
   role?: Role;
   trashed?: boolean;
   resume?: boolean;
@@ -269,6 +275,7 @@ function mountEditor(id: string, shareToken = ""): void {
   let spellAt = 0;
   let ws: WebSocket | null = null;
   let chrome: Chrome;
+  let anchorWait: (() => void) | null = null;
   const people = () => [{ sid: session, name: displayName(), color: editor.color }, ...editor.remotes.values()];
   const api = {
     ready: false,
@@ -350,10 +357,12 @@ function mountEditor(id: string, shareToken = ""): void {
     },
     lookup: (word: string) => lookupWord(word),
     diffWords: (before: string, after: string) => diffWords(before, after),
-    signed: () => docIsSigned(editor.doc),
+    signed: () => docIsSigned(editor.doc) || editor.anchorLock || !!editor.contentCid,
+    contentCid: () => editor.contentCid,
     signatures: () => signatureRows(),
     signatureBoxes: () => editor.signatureBoxes(),
     forceText: (text: string) => editor.forceText(text),
+    signWithCid: (name: string, contentCid: string) => signDocument(name, contentCid),
   };
   (window as unknown as { __editor: typeof api }).__editor = api;
 
@@ -619,6 +628,7 @@ function mountEditor(id: string, shareToken = ""): void {
     date: () => editor.insertEmbed({ embed: "date", iso: new Date().toISOString().slice(0, 10) }),
     dropdown: () => editor.insertEmbed({ embed: "drop", opts: JSON.stringify(["Yes", "No", "Maybe"]), val: "Yes" }),
     signature: () => openSignature(),
+    "verify-cid": () => openVerifyCid(),
     comment: () => chrome.openComment(),
     find: () => chrome.openFind(false),
     replace: () => chrome.openFind(true),
@@ -888,6 +898,15 @@ function mountEditor(id: string, shareToken = ""): void {
         if (!(document.querySelector("#history") as HTMLElement).hidden) send({ t: "history" });
       } else if (msg.t === "reject") {
         console.warn("op rejected", msg.error);
+      } else if (msg.t === "anchor") {
+        const cid = typeof msg.contentCid === "string" ? msg.contentCid : "";
+        editor.setAnchor(cid, msg.locked !== false || !!cid);
+        syncSigned();
+        if (anchorWait) {
+          const resume = anchorWait;
+          anchorWait = null;
+          resume();
+        }
       } else if (msg.t === "access") {
         const next = msg.role === "view" || msg.role === "comment" ? msg.role : "edit";
         applyAccess(next, false);
@@ -934,21 +953,27 @@ function mountEditor(id: string, shareToken = ""): void {
         void saveQueue(id, null);
         applyPresence(msg);
         applyAccess(msg.role || "edit", msg.trashed === true);
+        applyAnchorMsg(msg);
         pump();
+        void maybeVerifyLocation();
         return;
       }
       applyPresence(msg);
       applyAccess(msg.role || "edit", msg.trashed === true);
+      applyAnchorMsg(msg);
       editor.sync.resend();
       pump();
       void persistQueue();
+      void maybeVerifyLocation();
       return;
     }
     editor.load(msg.snapshot as InitMsg["snapshot"] & { runs: { n: number; s: never }[] }, msg.rev);
     void saveQueue(id, null);
     applyPresence(msg);
     applyAccess(msg.role || "edit", msg.trashed === true);
+    applyAnchorMsg(msg);
     pump();
+    void maybeVerifyLocation();
   }
 
   window.setInterval(() => {
@@ -1219,17 +1244,45 @@ function mountEditor(id: string, shareToken = ""): void {
     syncView();
   }
 
+  function p2pApi(): {
+    putUnsigned?: (bytes: Uint8Array) => Promise<string>;
+    fetchCid?: (cid: string) => Promise<Uint8Array>;
+    pieceCidOf?: (bytes: Uint8Array) => Promise<string>;
+    network?: () => string;
+  } | undefined {
+    return (window as unknown as { __p2p?: ReturnType<typeof p2pApi> }).__p2p;
+  }
+
+  function applyAnchorMsg(msg: { contentCid?: unknown; locked?: unknown }): void {
+    const cid = typeof msg.contentCid === "string" ? msg.contentCid : "";
+    editor.setAnchor(cid, msg.locked === true || !!cid || docIsSigned(editor.doc));
+  }
+
+  function waitForAnchor(sendNow: () => void): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const timer = window.setTimeout(() => {
+        if (anchorWait) anchorWait = null;
+        reject(new Error("The owner did not anchor the document"));
+      }, 10000);
+      anchorWait = () => {
+        window.clearTimeout(timer);
+        resolve();
+      };
+      sendNow();
+    });
+  }
+
   function syncSigned(): void {
     const banner = document.querySelector("#sign-banner") as HTMLElement | null;
     if (!banner) return;
-    const locked = docIsSigned(editor.doc);
+    const locked = docIsSigned(editor.doc) || editor.anchorLock || !!editor.contentCid;
     banner.hidden = !locked;
     if (locked) banner.textContent = "Signed, locked for edits";
   }
 
-  function signatureRows(): { index: number; name: string; address: string; hash: string; signature: string; chainId: string; verified: boolean }[] {
+  function signatureRows(): { index: number; name: string; address: string; hash: string; signature: string; chainId: string; contentCid: string; verified: boolean }[] {
     const hash = contentHashOf(editor.doc);
-    const out: { index: number; name: string; address: string; hash: string; signature: string; chainId: string; verified: boolean }[] = [];
+    const out: { index: number; name: string; address: string; hash: string; signature: string; chainId: string; contentCid: string; verified: boolean }[] = [];
     for (let i = 0; i < editor.doc.text.length; i++) {
       const style = editor.doc.styles[i];
       if (editor.doc.text[i] !== "\uFFFC" || style?.embed !== "sig") continue;
@@ -1241,7 +1294,8 @@ function mountEditor(id: string, shareToken = ""): void {
         hash: style.val || "",
         signature: style.src || "",
         chainId: style.opts || "",
-        verified: verifyStored(style, id, hash) == null && !!stored,
+        contentCid: style.cid || "",
+        verified: verifyStored(style, id, hash, editor.contentCid) == null && !!stored,
       });
     }
     return out;
@@ -1284,16 +1338,43 @@ function mountEditor(id: string, shareToken = ""): void {
     window.setTimeout(() => input.focus(), 0);
   }
 
-  async function signDocument(name: string): Promise<void> {
+  async function signDocument(name: string, overrideCid?: string): Promise<void> {
     const written = name.trim().slice(0, 80);
     if (!written) throw new Error("Type your name");
     const eth = (window as unknown as { ethereum?: { request?: (args: { method: string; params?: unknown[] }) => Promise<unknown> } }).ethereum;
     if (!eth?.request) throw new Error("Connect a wallet such as MetaMask");
+    let contentCid = overrideCid || editor.contentCid;
+    if (!overrideCid && !contentCid) {
+      const put = p2pApi()?.putUnsigned;
+      if (!put) throw new Error("Signing needs the peer host storage adapter");
+      editor.setAnchor("", true);
+      try {
+        await waitForAnchor(() => send({ t: "anchor", phase: "freeze" }));
+      } catch (err) {
+        editor.setAnchor("", false);
+        send({ t: "anchor", phase: "abort" });
+        throw err;
+      }
+      if (!editor.contentCid) {
+        try {
+          contentCid = await put(unsignedBytes(editor.doc));
+        } catch (err) {
+          editor.setAnchor("", false);
+          send({ t: "anchor", phase: "abort" });
+          throw err;
+        }
+        await waitForAnchor(() => send({ t: "anchor", phase: "cid", contentCid }));
+        if (editor.contentCid !== contentCid) throw new Error("content cid mismatch");
+      } else {
+        contentCid = editor.contentCid;
+      }
+    }
     const accounts = (await eth.request({ method: "eth_requestAccounts" })) as string[];
     const signer = normalizeAddress(accounts?.[0] || "");
     const fields = {
       docId: id,
       contentHash: contentHashOf(editor.doc),
+      contentCid,
       signerName: written,
       signer,
       timestamp: BigInt(Date.now()),
@@ -1318,7 +1399,7 @@ function mountEditor(id: string, shareToken = ""): void {
     const stored = readStored(editor.styleAt(index), id);
     if (!stored) return;
     const hash = contentHashOf(editor.doc);
-    const verified = verifyStored(editor.styleAt(index), id, hash) == null;
+    const verified = verifyStored(editor.styleAt(index), id, hash, editor.contentCid || stored.contentCid) == null;
     const wrap = document.createElement("div");
     wrap.id = "sig-details";
     const rows: [string, string][] = [
@@ -1327,6 +1408,7 @@ function mountEditor(id: string, shareToken = ""): void {
       ["Chain", chainLabel(stored.chainId)],
       ["Timestamp", new Date(Number(stored.timestamp)).toISOString()],
       ["Content hash", stored.contentHash],
+      ["Content CID", stored.contentCid],
       ["Signature", stored.signature],
     ];
     for (const [label, value] of rows) {
@@ -1346,6 +1428,93 @@ function mountEditor(id: string, shareToken = ""): void {
     pre.textContent = typedDataJson(stored);
     wrap.append(verifiedLine, pre, copyButton(pre.textContent));
     openDialog("Signature", wrap);
+  }
+
+  function openVerifyCid(): void {
+    const wrap = document.createElement("div");
+    wrap.id = "verify-form";
+    const input = document.createElement("input");
+    input.id = "verify-cid";
+    input.value = editor.contentCid;
+    const go = document.createElement("button");
+    go.type = "button";
+    go.id = "verify-go";
+    go.textContent = "Verify";
+    const out = document.createElement("div");
+    out.id = "verify-signers";
+    go.addEventListener("click", () => {
+      void renderVerify(input.value.trim(), out).catch((err: unknown) => {
+        out.textContent = err instanceof Error ? err.message : "Verification failed";
+      });
+    });
+    wrap.append(input, go, out);
+    openDialog("Verify from CID", wrap);
+  }
+
+  async function renderVerify(cid: string, host: HTMLElement): Promise<void> {
+    if (!cid) throw new Error("Enter a content CID");
+    const api = p2pApi();
+    if (!api?.fetchCid || !api.pieceCidOf) throw new Error("Storage is not available");
+    let bytes = await api.fetchCid(cid);
+    let text = new TextDecoder().decode(bytes);
+    let requested = cid;
+    let source = editor.doc;
+    if (text.includes('"felarumi-p2p"')) {
+      const parsed = JSON.parse(text) as { contentCid?: string; snapshot?: Parameters<typeof restoreDoc>[0] };
+      if (!parsed.contentCid || !parsed.snapshot) throw new Error("This file has no content CID");
+      requested = parsed.contentCid;
+      source = restoreDoc(parsed.snapshot);
+      bytes = await api.fetchCid(requested);
+      text = new TextDecoder().decode(bytes);
+    }
+    const unsigned = docFromCanonical(text);
+    if (!unsigned) throw new Error("The CID is not a canonical unsigned snapshot");
+    const hash = hashBytes(bytes);
+    const recomputed = await api.pieceCidOf(bytes);
+    const cidOk = recomputed === requested && canonicalUnsigned(unsigned) === text && hash === contentHashOf(unsigned);
+    const docForSigs = editor.contentCid === requested ? editor.doc : source;
+    host.id = "verify-signers";
+    host.replaceChildren();
+    const match = document.createElement("p");
+    match.id = "verify-cid-match";
+    match.textContent = cidOk ? "CID matches" : "CID does not match";
+    host.append(match);
+    const cidLine = document.createElement("p");
+    cidLine.textContent = requested;
+    host.append(cidLine);
+    let any = false;
+    for (let i = 0; i < docForSigs.text.length; i++) {
+      const style = docForSigs.styles[i];
+      if (docForSigs.text[i] !== "\uFFFC" || style?.embed !== "sig") continue;
+      any = true;
+      const err = verifyStored(style, id, hash, requested);
+      const row = document.createElement("p");
+      row.textContent = `${style.label || "Signed"} ${style.alt || ""} ${err ? err : "Verified"}`;
+      host.append(row);
+    }
+    if (!any) {
+      const empty = document.createElement("p");
+      empty.textContent = "No signatures";
+      host.append(empty);
+    }
+  }
+
+  async function maybeVerifyLocation(): Promise<void> {
+    const cid = new URLSearchParams(location.search).get("cid");
+    if (!cid || !p2pApi()?.fetchCid) return;
+    try {
+      const bytes = await p2pApi()!.fetchCid!(cid);
+      const text = new TextDecoder().decode(bytes);
+      if (text.includes('"felarumi-p2p"')) {
+        const parsed = JSON.parse(text) as { contentCid?: string };
+        if (!parsed.contentCid) return;
+      } else if (!text.includes('"runs"')) return;
+      const host = document.createElement("div");
+      openDialog("Verify from CID", host);
+      await renderVerify(cid, host);
+    } catch {
+      /* a file-export cid is not a content commitment */
+    }
   }
 
   function syncMode(): void {

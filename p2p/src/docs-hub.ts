@@ -1,8 +1,8 @@
 import { assignColor } from "../../packages/core/src/palette.ts";
 import { commandsToDelta, deltaToCommands, type Command } from "../../src/shared/commands.ts";
-import { type Snapshot, emptyDoc, restoreDoc, snapshotDoc } from "../../src/shared/doc.ts";
+import { type Snapshot, docIsSigned, emptyDoc, restoreDoc, snapshotDoc } from "../../src/shared/doc.ts";
 import { ServerDoc } from "../../src/shared/engine.ts";
-import { signatureGate } from "../../src/shared/sign.ts";
+import { applyAnchor, signatureGate } from "../../src/shared/sign.ts";
 import { DEFAULT_PAGE, type PageSpec } from "../../src/shared/page.ts";
 
 export interface HubSocket {
@@ -23,6 +23,7 @@ export interface DocRecord {
   rev: number;
   snapshot: Snapshot;
   page: PageSpec;
+  contentCid?: string;
 }
 
 export class DocSession {
@@ -30,6 +31,8 @@ export class DocSession {
   server: ServerDoc;
   title: string;
   page: PageSpec;
+  contentCid = "";
+  locked = false;
   conns: DocConn[] = [];
   save: ((record: DocRecord) => void) | null = null;
 
@@ -37,9 +40,11 @@ export class DocSession {
     this.id = id;
     this.title = record?.title || "Untitled document";
     this.page = record?.page || { ...DEFAULT_PAGE };
+    this.contentCid = record?.contentCid || "";
     this.server = new ServerDoc(record ? restoreDoc(record.snapshot) : emptyDoc());
-    this.server.gate = signatureGate(this.id);
+    this.server.gate = signatureGate(this.id, () => ({ contentCid: this.contentCid, locked: this.locked }));
     if (record) this.server.rev = record.rev;
+    this.locked = !!this.contentCid || docIsSigned(this.server.doc);
   }
 
   static create(id: string, record?: DocRecord | null, save?: (record: DocRecord) => void): DocSession {
@@ -84,19 +89,39 @@ export class DocSession {
       this.title = msg.title.slice(0, 200);
       this.broadcast({ t: "title", title: this.title }, null);
       this.persist();
-    }
+    } else if (t === "anchor") this.onAnchor(conn, msg);
   }
 
-  replace(snapshot: Snapshot, title?: string): void {
+  onAnchor(conn: DocConn, msg: Record<string, unknown>): void {
+    const phase = typeof msg.phase === "string" ? msg.phase : "freeze";
+    const next = applyAnchor(this, this.server.doc, phase, typeof msg.contentCid === "string" ? msg.contentCid : "");
+    if (next.error) {
+      this.send(conn, { t: "reject", reqId: null, error: next.error });
+      return;
+    }
+    this.contentCid = next.state.contentCid;
+    this.locked = next.state.locked;
+    this.broadcast({ t: "anchor", locked: this.locked, contentCid: this.contentCid }, null);
+    this.persist();
+  }
+
+  replace(snapshot: Snapshot, title?: string, contentCid?: string): void {
     if (title) this.title = title.slice(0, 200);
+    this.contentCid = contentCid || "";
     this.server = new ServerDoc(restoreDoc(snapshot));
-    this.server.gate = signatureGate(this.id);
+    this.server.gate = signatureGate(this.id, () => ({ contentCid: this.contentCid, locked: this.locked }));
+    this.locked = !!this.contentCid || docIsSigned(this.server.doc);
     this.persist();
     for (const conn of this.conns) this.pushInit(conn);
   }
 
   exportJson(): string {
-    return JSON.stringify({ kind: "felarumi-p2p", title: this.title, snapshot: snapshotDoc(this.server.doc) });
+    return JSON.stringify({
+      kind: "felarumi-p2p",
+      title: this.title,
+      contentCid: this.contentCid,
+      snapshot: snapshotDoc(this.server.doc),
+    });
   }
 
   pushInit(conn: DocConn): void {
@@ -110,6 +135,8 @@ export class DocSession {
       threads: [],
       suggestions: [],
       page: this.page,
+      contentCid: this.contentCid,
+      locked: this.locked,
       role: "edit",
       trashed: false,
       resume: false,
@@ -148,7 +175,13 @@ export class DocSession {
   }
 
   persist(): void {
-    this.save?.({ title: this.title, rev: this.server.rev, snapshot: snapshotDoc(this.server.doc), page: this.page });
+    this.save?.({
+      title: this.title,
+      rev: this.server.rev,
+      snapshot: snapshotDoc(this.server.doc),
+      page: this.page,
+      contentCid: this.contentCid,
+    });
   }
 
   send(conn: DocConn, msg: unknown): void {

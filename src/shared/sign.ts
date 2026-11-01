@@ -3,7 +3,7 @@ import { sha256 } from "@noble/hashes/sha2";
 import { bytesToHex } from "@noble/hashes/utils";
 import { getAddress, hashTypedData, keccak256, type Hex } from "viem";
 import { EMBED, type Attrs, type Delta } from "./delta.ts";
-import { type CharStyle, type Doc, docIsSigned, snapshotDoc } from "./doc.ts";
+import { type CharStyle, type Doc, docIsSigned, restoreDoc, snapshotDoc } from "./doc.ts";
 
 export const CHAIN_MAINNET = 314;
 export const CHAIN_CALIBRATION = 314159;
@@ -13,6 +13,7 @@ export const DOMAIN_VERSION = "1";
 const DOCUMENT_FIELDS = [
   { name: "docId", type: "string" },
   { name: "contentHash", type: "string" },
+  { name: "contentCid", type: "string" },
   { name: "signerName", type: "string" },
   { name: "signer", type: "address" },
   { name: "timestamp", type: "uint256" },
@@ -22,10 +23,16 @@ const DOCUMENT_FIELDS = [
 export interface SignFields {
   docId: string;
   contentHash: string;
+  contentCid: string;
   signerName: string;
   signer: string;
   timestamp: bigint;
   chainId: number;
+}
+
+export interface AnchorState {
+  contentCid: string;
+  locked: boolean;
 }
 
 export interface StoredSignature extends SignFields {
@@ -55,8 +62,7 @@ function sortStyle(style: CharStyle): Record<string, unknown> {
   return out;
 }
 
-/** sha256 of the canonical snapshot with every signature embed removed. */
-export function contentHashOf(doc: Doc): string {
+export function unsignedDoc(doc: Doc): Doc {
   const text: string[] = [];
   const styles: CharStyle[] = [];
   for (let i = 0; i < doc.text.length; i++) {
@@ -64,12 +70,39 @@ export function contentHashOf(doc: Doc): string {
     text.push(doc.text[i]);
     styles.push(doc.styles[i] || {});
   }
-  const snap = snapshotDoc({ text: text.join(""), styles });
-  const body = JSON.stringify({
+  return { text: text.join(""), styles };
+}
+
+/** Deterministic JSON of the snapshot with every signature embed removed. */
+export function canonicalUnsigned(doc: Doc): string {
+  const snap = snapshotDoc(unsignedDoc(doc));
+  return JSON.stringify({
     text: snap.text,
     runs: snap.runs.map((run) => ({ n: run.n, s: sortStyle(run.s) })),
   });
-  return bytesToHex(sha256(new TextEncoder().encode(body)));
+}
+
+export function unsignedBytes(doc: Doc): Uint8Array {
+  return new TextEncoder().encode(canonicalUnsigned(doc));
+}
+
+export function hashBytes(bytes: Uint8Array): string {
+  return bytesToHex(sha256(bytes));
+}
+
+/** sha256 of the canonical snapshot with every signature embed removed. */
+export function contentHashOf(doc: Doc): string {
+  return hashBytes(unsignedBytes(doc));
+}
+
+export function docFromCanonical(raw: string): Doc | null {
+  try {
+    const parsed = JSON.parse(raw) as { text?: unknown; runs?: { n: number; s: CharStyle }[] };
+    if (typeof parsed.text !== "string" || !Array.isArray(parsed.runs)) return null;
+    return restoreDoc({ text: parsed.text, runs: parsed.runs });
+  } catch {
+    return null;
+  }
 }
 
 export function typedDataFor(fields: SignFields) {
@@ -80,6 +113,7 @@ export function typedDataFor(fields: SignFields) {
     message: {
       docId: fields.docId,
       contentHash: fields.contentHash,
+      contentCid: fields.contentCid,
       signerName: fields.signerName,
       signer: fields.signer as Hex,
       timestamp: fields.timestamp,
@@ -104,6 +138,7 @@ export function typedDataJson(fields: SignFields): string {
     message: {
       docId: fields.docId,
       contentHash: fields.contentHash,
+      contentCid: fields.contentCid,
       signerName: fields.signerName,
       signer: fields.signer,
       timestamp: fields.timestamp.toString(),
@@ -121,6 +156,7 @@ export function signatureAttrs(fields: StoredSignature): Attrs {
     val: fields.contentHash,
     src: fields.signature,
     opts: String(fields.chainId),
+    cid: fields.contentCid,
   };
 }
 
@@ -135,17 +171,20 @@ export function readStored(style: CharStyle | undefined, docId: string): StoredS
   const iso = style.iso || "";
   const contentHash = style.val || "";
   const signature = style.src || "";
+  const contentCid = style.cid || "";
   const chainId = Number(style.opts);
   if (!signerName || signerName.length > 80 || /[\n\uFFFC]/.test(signerName)) return null;
   if (!/^0x[0-9a-fA-F]{40}$/.test(signer)) return null;
   if (!/^\d+$/.test(iso)) return null;
   if (!/^[0-9a-f]{64}$/i.test(contentHash)) return null;
   if (!/^0x[0-9a-fA-F]{130}$/.test(signature)) return null;
+  if (!contentCid || contentCid.length > 200 || /\s/.test(contentCid)) return null;
   if (!allowedChain(chainId) || String(chainId) !== style.opts) return null;
   if (!docId) return null;
   return {
     docId,
     contentHash,
+    contentCid,
     signerName,
     signer,
     timestamp: BigInt(iso),
@@ -167,10 +206,12 @@ function recoverSigner(fields: SignFields, signature: string): string {
   return getAddress(`0x${digest.slice(-40)}`);
 }
 
-/** Null when the stored signature recovers to its address over this doc id and hash. */
-export function verifyStored(style: CharStyle | undefined, docId: string, expectedHash: string): string | null {
+/** Null when the stored signature recovers to its address over this doc id, hash, and content CID. */
+export function verifyStored(style: CharStyle | undefined, docId: string, expectedHash: string, expectedCid: string): string | null {
   const stored = readStored(style, docId);
   if (!stored) return "bad signature";
+  if (!expectedCid) return "missing content cid";
+  if (stored.contentCid !== expectedCid) return "content cid mismatch";
   if (stored.contentHash.toLowerCase() !== expectedHash.toLowerCase()) return "content changed";
   let recovered = "";
   try {
@@ -220,16 +261,33 @@ function classify(delta: Delta): { kind: "edit" } | { kind: "bad" } | { kind: "s
   return { kind: "edit" };
 }
 
-/** Reject every op except a verified signature insert once the document is signed. */
-export function signatureGate(docId: string): (doc: Doc, delta: Delta) => string | null {
+/** Freeze, record the unsigned PieceCID, or drop the freeze when the upload fails before a CID exists. */
+export function applyAnchor(state: AnchorState, doc: Doc, phase: string, contentCid = ""): { state: AnchorState; error?: string } {
+  const signed = docIsSigned(doc);
+  if (phase === "abort") {
+    if (signed || state.contentCid) return { state: { contentCid: state.contentCid, locked: true } };
+    return { state: { contentCid: "", locked: false } };
+  }
+  if (phase === "cid") {
+    if (!contentCid || contentCid.length > 200 || /\s/.test(contentCid)) return { state, error: "bad content cid" };
+    if (state.contentCid && state.contentCid !== contentCid) return { state, error: "content cid mismatch" };
+    return { state: { contentCid, locked: true } };
+  }
+  return { state: { contentCid: state.contentCid, locked: true } };
+}
+
+/** Reject every op except a verified signature insert once the document is frozen. */
+export function signatureGate(docId: string, read: () => AnchorState): (doc: Doc, delta: Delta) => string | null {
   return (doc, delta) => {
-    const frozen = docIsSigned(doc);
+    const state = read();
+    const frozen = docIsSigned(doc) || state.locked || !!state.contentCid;
     const verdict = classify(delta);
     if (verdict.kind === "edit") return frozen ? "locked" : null;
     if (verdict.kind === "bad") return frozen ? "locked" : "bad signature";
+    if (!state.contentCid) return "missing content cid";
     const hash = contentHashOf(doc);
     for (const style of verdict.sigs) {
-      const err = verifyStored(style, docId, hash);
+      const err = verifyStored(style, docId, hash, state.contentCid);
       if (err) return err;
     }
     return null;

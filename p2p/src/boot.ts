@@ -3,12 +3,13 @@ import { type Snapshot } from "../../src/shared/doc.ts";
 import { BookSession, type BookRecord } from "./book-hub.ts";
 import { DocSession, type DocRecord } from "./docs-hub.ts";
 import { getBlob, listRecords, loadRecord, putBlob, saveRecord } from "./idb.ts";
-import { DEFAULT_NETWORK, fileAdapter, ipfsAdapter, normalizeNetwork, synapseAdapter, type FilecoinNetwork, type StorageAdapter } from "./storage.ts";
+import { DEFAULT_NETWORK, commpAdapter, commpOf, fileAdapter, ipfsAdapter, normalizeNetwork, synapseAdapter, type FilecoinNetwork, type StorageAdapter, type SynapseLike } from "./storage.ts";
 import type { Wire } from "./wire.ts";
 
 const NativeWebSocket = globalThis.WebSocket;
 const WAIT = "Waiting for the owner. This document is read-only until they are online.";
 const files = fileAdapter();
+const pieceMemory = new Map<string, Uint8Array>();
 
 let docSession: DocSession | null = null;
 let bookSession: BookSession | null = null;
@@ -222,8 +223,8 @@ async function hostDoc(sock: AppSocket, wire: Wire, id: string): Promise<void> {
   if (cid && docSession.server.rev === 0) {
     const bytes = await getBlob(cid);
     if (bytes) {
-      const parsed = JSON.parse(new TextDecoder().decode(bytes)) as { snapshot?: Snapshot; title?: string };
-      if (parsed.snapshot) docSession.replace(parsed.snapshot, parsed.title);
+      const parsed = JSON.parse(new TextDecoder().decode(bytes)) as { snapshot?: Snapshot; title?: string; contentCid?: string };
+      if (parsed.snapshot) docSession.replace(parsed.snapshot, parsed.title, parsed.contentCid);
     }
   }
   const remotes = new Map<string, { conn: ReturnType<DocSession["connect"]> | null; socket: { send(data: string): void } }>();
@@ -491,7 +492,10 @@ async function loadActive(raw: string): Promise<void> {
   const cid = await files.put(bytes);
   await putBlob(cid, bytes);
   setCid(cid);
-  if (parsed.snapshot && docSession) docSession.replace(parsed.snapshot, parsed.title);
+  if (parsed.snapshot && docSession) {
+    const contentCid = (parsed as { contentCid?: string }).contentCid;
+    docSession.replace(parsed.snapshot, parsed.title, contentCid);
+  }
   else if (parsed.book && bookSession) bookSession.replace(parsed.book, parsed.title);
   else throw new Error("This file does not match the open editor");
 }
@@ -599,6 +603,45 @@ function installUi(): void {
   });
 }
 
+function mockSynapse(): SynapseLike | null {
+  return (window as unknown as { __synapseClient?: SynapseLike }).__synapseClient ?? null;
+}
+
+async function signingAdapter(): Promise<StorageAdapter> {
+  const mock = mockSynapse();
+  if (mock) return synapseAdapter({ client: mock, network: currentNetwork() });
+  let mode = "filecoin";
+  try {
+    mode = sessionStorage.getItem("felarumi-storage") || "filecoin";
+  } catch {
+    mode = "filecoin";
+  }
+  if (mode === "file") return commpAdapter(pieceMemory);
+  if (mode === "ipfs") {
+    const token = sessionStorage.getItem("felarumi-ipfs-token") || "";
+    if (!token) throw new Error("Add an IPFS token before signing");
+    return ipfsAdapter(token);
+  }
+  const eth = (window as unknown as { ethereum?: { request(args: { method: string; params?: unknown[] }): Promise<unknown> } }).ethereum;
+  if (!eth) throw new Error("Connect a wallet to anchor this document on Filecoin");
+  return synapseAdapter({ network: currentNetwork(), provider: eth });
+}
+
+async function putUnsigned(bytes: Uint8Array): Promise<string> {
+  const cid = await (await signingAdapter()).put(bytes);
+  pieceMemory.set(cid, bytes);
+  await putBlob(cid, bytes);
+  return cid;
+}
+
+async function fetchCid(cid: string): Promise<Uint8Array> {
+  const saved = await getBlob(cid);
+  if (saved) return saved;
+  const cached = pieceMemory.get(cid);
+  if (cached) return cached;
+  return (await signingAdapter()).get(cid);
+}
+
 function installApi(): void {
   (window as unknown as { __p2p: unknown }).__p2p = {
     network: () => currentNetwork(),
@@ -608,6 +651,9 @@ function installApi(): void {
     exportFile: () => exportActive(),
     loadFile: (raw: string) => loadActive(raw),
     pieceCid: () => new URLSearchParams(location.search).get("cid") || "",
+    putUnsigned: (bytes: Uint8Array) => putUnsigned(bytes),
+    fetchCid: (cid: string) => fetchCid(cid),
+    pieceCidOf: (bytes: Uint8Array) => commpOf(bytes),
   };
 }
 

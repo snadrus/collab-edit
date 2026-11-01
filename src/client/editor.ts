@@ -92,6 +92,8 @@ export class Editor {
   findError = false;
   findMatches: { start: number; end: number }[] = [];
   role: Role = "edit";
+  contentCid = "";
+  anchorLock = false;
   hoverSid: string | null = null;
   flashSid: string | null = null;
   preview: Doc | null = null;
@@ -2117,8 +2119,14 @@ export class Editor {
     return colors;
   }
 
+  setAnchor(contentCid: string, locked: boolean): void {
+    this.contentCid = contentCid;
+    this.anchorLock = locked;
+    this.hooks.onChange();
+  }
+
   private canEdit(): boolean {
-    return this.role !== "view" && this.mode !== "view" && !this.preview && !docIsSigned(this.doc);
+    return this.role !== "view" && this.mode !== "view" && !this.preview && !docIsSigned(this.doc) && !this.anchorLock && !this.contentCid;
   }
 
   private ownSuggestionIds(): Set<string> {
