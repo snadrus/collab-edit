@@ -17,6 +17,7 @@
   "dependencies": {
     "@filoz/synapse-sdk": "^2.0.2",
     "esbuild": "^0.25.0",
+    "fflate": "^0.8.2",
     "trystero": "^0.26.0",
     "viem": "^2.57.13",
     "ws": "^8.18.3"

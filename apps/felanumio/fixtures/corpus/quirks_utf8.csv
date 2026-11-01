@@ -1,0 +1,7 @@
+id,text,zip,date_iso,date_us,date_eu,date_long,note
+001,Hello 😀🎉,02134,2026-11-01,11/01/2026,01.11.2026,"November 1, 2026",plain
+002,日本語テキスト 中文 한국어,00501,2026-02-28,2/28/2026,28.02.2026,"Feb 28, 2026","comma, inside"
+003,"multi
+line cell",07001,1999-12-31,12/31/1999,31.12.1999,31 Dec 1999,"has ""quotes"""
+004,Ünïcödé café,10001,2026-01-05,1/5/2026,05.01.2026,Jan 5 2026,trailing space 
+0005,👨‍👩‍👧 ZWJ family,00000,2026-07-04T13:45:00,7/4/26 1:45 PM,04/07/2026,4 July 2026,=1+1 formula-looking

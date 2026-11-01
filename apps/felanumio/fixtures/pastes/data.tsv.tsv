@@ -1,0 +1,6 @@
+Region	Q1	Q2	Q3	Q4	Total
+North	699	205	847	647	=SUM(B2:E2)
+South	842	665	396	432	=SUM(B3:E3)
+East	792	848	312	683	=SUM(B4:E4)
+West	696	760	894	201	=SUM(B5:E5)
+Note, with comma	"quoted"				

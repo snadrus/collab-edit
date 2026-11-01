@@ -3,7 +3,8 @@ export interface CellStyle {
   i?: boolean;
   color?: string;
   fill?: string;
-  format?: "general" | "number" | "percent" | "currency";
+  format?: "general" | "number" | "percent" | "currency" | "date";
+  numFmt?: string;
   align?: "left" | "center" | "right";
   border?: boolean;
 }
@@ -11,6 +12,36 @@ export interface CellStyle {
 export interface Cell {
   v?: string;
   style?: CellStyle;
+  link?: string;
+  note?: string;
+}
+
+export interface Merge {
+  r1: number;
+  c1: number;
+  r2: number;
+  c2: number;
+}
+
+export interface Validation {
+  r1: number;
+  c1: number;
+  r2: number;
+  c2: number;
+  list: string[];
+}
+
+export interface CfRule {
+  kind: "cell" | "scale";
+  r1: number;
+  c1: number;
+  r2: number;
+  c2: number;
+  op?: "gt" | "lt" | "eq" | "gte" | "lte";
+  value?: number;
+  fill?: string;
+  minColor?: string;
+  maxColor?: string;
 }
 
 export interface Sheet {
@@ -23,6 +54,9 @@ export interface Sheet {
   colW: Record<string, number>;
   freezeR: number;
   freezeC: number;
+  merges?: Merge[];
+  validations?: Validation[];
+  rules?: CfRule[];
 }
 
 export interface ChartMark {
@@ -32,6 +66,9 @@ export interface ChartMark {
   c1: number;
   r2: number;
   c2: number;
+  kind?: "bar" | "line" | "pie" | "placeholder";
+  title?: string;
+  note?: string;
 }
 
 export interface Book {
@@ -40,8 +77,10 @@ export interface Book {
 }
 
 export interface GridOp {
-  t: "set" | "insrow" | "delrow" | "inscol" | "delcol" | "resize" | "freeze" | "addsheet" | "rensheet" | "delsheet" | "chart" | "unchart";
+  t: "set" | "insrow" | "delrow" | "inscol" | "delcol" | "resize" | "freeze" | "addsheet" | "rensheet" | "delsheet" | "chart" | "unchart" | "load";
   sheet: string;
+  mode?: "replace" | "insert" | "append" | "patch";
+  book?: Book;
   r?: number;
   c?: number;
   n?: number;
@@ -58,6 +97,9 @@ export interface GridOp {
   c1?: number;
   r2?: number;
   c2?: number;
+  kind?: ChartMark["kind"];
+  title?: string;
+  note?: string;
 }
 
 export interface GridDelta {
@@ -68,7 +110,7 @@ export const DEFAULT_ROWS = 40;
 export const DEFAULT_COLS = 16;
 
 export function emptySheet(id: string, name: string): Sheet {
-  return { id, name, rows: DEFAULT_ROWS, cols: DEFAULT_COLS, cells: {}, rowH: {}, colW: {}, freezeR: 0, freezeC: 0 };
+  return { id, name, rows: DEFAULT_ROWS, cols: DEFAULT_COLS, cells: {}, rowH: {}, colW: {}, freezeR: 0, freezeC: 0, merges: [], validations: [], rules: [] };
 }
 
 export function emptyBook(): Book {
@@ -88,9 +130,12 @@ function normalizeBook(book: Book): Book {
     charts: book.charts.map((chart) => ({ ...chart })).sort((a, b) => a.id.localeCompare(b.id)),
     sheets: book.sheets.map((sheet) => ({
       ...sheet,
-      cells: Object.fromEntries(Object.entries(sheet.cells).filter(([, cell]) => cell.v || cell.style).sort(([a], [b]) => a.localeCompare(b))),
+      cells: Object.fromEntries(Object.entries(sheet.cells).filter(([, cell]) => cell.v || cell.style || cell.link || cell.note).sort(([a], [b]) => a.localeCompare(b))),
       rowH: { ...sheet.rowH },
       colW: { ...sheet.colW },
+      merges: (sheet.merges || []).map((merge) => ({ ...merge })),
+      validations: (sheet.validations || []).map((rule) => ({ ...rule, list: [...rule.list] })),
+      rules: (sheet.rules || []).map((rule) => ({ ...rule })),
     })),
   };
 }
@@ -147,8 +192,23 @@ function shiftCells(sheet: Sheet, axis: "row" | "col", at: number, n: number, de
   }
 }
 
+function shallowBook(book: Book): Book {
+  return {
+    charts: book.charts.map((chart) => ({ ...chart })),
+    sheets: book.sheets.map((sheet) => ({
+      ...sheet,
+      cells: { ...sheet.cells },
+      rowH: { ...sheet.rowH },
+      colW: { ...sheet.colW },
+      merges: (sheet.merges || []).map((merge) => ({ ...merge })),
+      validations: (sheet.validations || []).map((rule) => ({ ...rule, list: [...rule.list] })),
+      rules: (sheet.rules || []).map((rule) => ({ ...rule })),
+    })),
+  };
+}
+
 export function applyBook(book: Book, delta: GridDelta): Book {
-  const next = clone(book);
+  const next = shallowBook(book);
   for (const op of delta.ops) applyOp(next, op);
   return next;
 }
@@ -174,6 +234,10 @@ function applyOp(book: Book, op: GridOp): void {
     book.charts = book.charts.filter((chart) => chart.id !== op.id);
     return;
   }
+  if (op.t === "load" && op.book) {
+    applyLoad(book, op);
+    return;
+  }
   if (op.t === "chart" && op.id) {
     const mark: ChartMark = {
       id: op.id,
@@ -182,6 +246,9 @@ function applyOp(book: Book, op: GridOp): void {
       c1: op.c1 || 0,
       r2: op.r2 || 0,
       c2: op.c2 || 0,
+      kind: op.kind,
+      title: op.title,
+      note: op.note,
     };
     const at = book.charts.findIndex((chart) => chart.id === op.id);
     if (at >= 0) book.charts[at] = mark;
@@ -204,7 +271,12 @@ function applyOp(book: Book, op: GridOp): void {
   if (op.t === "insrow" || op.t === "delrow" || op.t === "inscol" || op.t === "delcol") {
     const n = Math.max(1, Math.min(20, op.n || 1));
     const at = Math.max(0, op.index || 0);
-    shiftCells(sheet, op.t.endsWith("row") ? "row" : "col", at, n, op.t.startsWith("del"));
+    const axis = op.t.endsWith("row") ? "row" : "col";
+    const del = op.t.startsWith("del");
+    shiftCells(sheet, axis, at, n, del);
+    sheet.merges = shiftRects(sheet.merges || [], axis, at, n, del);
+    sheet.validations = shiftRects(sheet.validations || [], axis, at, n, del);
+    sheet.rules = shiftRects(sheet.rules || [], axis, at, n, del);
     for (const chart of book.charts) {
       if (chart.sheet !== sheet.id) continue;
       const axis = op.t.endsWith("row") ? "r" : "c";
@@ -233,11 +305,80 @@ function applyOp(book: Book, op: GridOp): void {
       if (op.style) cell.style = { ...op.style };
       else delete cell.style;
     }
-    if (!cell.v && !cell.style) delete sheet.cells[key];
+    if (!cell.v && !cell.style && !cell.link && !cell.note) delete sheet.cells[key];
     else sheet.cells[key] = cell;
     sheet.rows = Math.max(sheet.rows, op.r + 1);
     sheet.cols = Math.max(sheet.cols, op.c + 1);
   }
+}
+
+function shiftRects<T extends { r1: number; c1: number; r2: number; c2: number }>(items: T[], axis: "row" | "col", at: number, n: number, del: boolean): T[] {
+  const out: T[] = [];
+  for (const item of items) {
+    if (axis === "row") {
+      const [r1, r2] = mapSpan(item.r1, item.r2, at, n, del);
+      if (r2 < r1) continue;
+      out.push({ ...item, r1, r2 });
+    } else {
+      const [c1, c2] = mapSpan(item.c1, item.c2, at, n, del);
+      if (c2 < c1) continue;
+      out.push({ ...item, c1, c2 });
+    }
+  }
+  return out;
+}
+
+function adoptSheet(src: Sheet): Sheet {
+  return {
+    ...src,
+    cells: { ...src.cells },
+    rowH: { ...src.rowH },
+    colW: { ...src.colW },
+    merges: (src.merges || []).map((merge) => ({ ...merge })),
+    validations: (src.validations || []).map((rule) => ({ ...rule, list: [...rule.list] })),
+    rules: (src.rules || []).map((rule) => ({ ...rule })),
+  };
+}
+
+function applyLoad(book: Book, op: GridOp): void {
+  const incoming = op.book;
+  if (!incoming) return;
+  if (op.mode === "insert") {
+    for (const sheet of incoming.sheets) {
+      if (!book.sheets.some((item) => item.id === sheet.id)) book.sheets.push(adoptSheet(sheet));
+    }
+    for (const chart of incoming.charts) {
+      if (!book.charts.some((item) => item.id === chart.id)) book.charts.push({ ...chart });
+    }
+    return;
+  }
+  if (op.mode === "append" || op.mode === "patch") {
+    const sheet = sheetOf(book, op.sheet) || book.sheets[0];
+    const src = incoming.sheets[0];
+    if (!sheet || !src) return;
+    let dr = 0;
+    if (op.mode === "append") {
+      for (const key of Object.keys(sheet.cells)) dr = Math.max(dr, Number(key.split(",")[0]) + 1);
+    }
+    let maxR = sheet.rows;
+    let maxC = sheet.cols;
+    for (const [key, cell] of Object.entries(src.cells)) {
+      const [rs, cs] = key.split(",");
+      const r = Number(rs) + dr;
+      const c = Number(cs);
+      const next: Cell = { ...cell, style: cell.style ? { ...cell.style } : undefined };
+      if (!next.v && !next.style && !next.link && !next.note) delete sheet.cells[cellKey(r, c)];
+      else sheet.cells[cellKey(r, c)] = next;
+      maxR = Math.max(maxR, r + 1);
+      maxC = Math.max(maxC, c + 1);
+    }
+    sheet.rows = maxR;
+    sheet.cols = maxC;
+    return;
+  }
+  book.sheets = incoming.sheets.map(adoptSheet);
+  book.charts = incoming.charts.map((chart) => ({ ...chart }));
+  if (!book.sheets.length) book.sheets.push(emptySheet("s1", "Sheet1"));
 }
 
 function mapSpan(a: number, b: number, at: number, n: number, del: boolean): [number, number] {
@@ -280,6 +421,8 @@ export function transformGrid(incoming: GridDelta, applied: GridDelta, incomingW
 }
 
 function transformOp(applied: GridOp, ours: GridOp, weWin: boolean): GridOp[] {
+  if (ours.t === "load") return mapLoad(applied, ours, weWin);
+  if (applied.t === "load") return mapAgainstLoad(applied, ours, weWin);
   if (applied.t === "delsheet" && ours.sheet === applied.sheet && ours.t !== "addsheet") return [];
   if (ours.t === "addsheet" || applied.t === "addsheet") {
     if (ours.t === "addsheet" && applied.t === "addsheet" && ours.sheet === applied.sheet) return weWin ? [ours] : [];
@@ -314,6 +457,103 @@ function transformOp(applied: GridOp, ours: GridOp, weWin: boolean): GridOp[] {
   if (ours.t === "insrow" || ours.t === "inscol" || ours.t === "delrow" || ours.t === "delcol") return mapStruct(applied, ours, weWin);
   if (ours.t === "resize") return [mapResize(applied, ours)].filter((op) => op.index != null && op.index >= 0);
   if (ours.t === "chart") return [mapChart(applied, ours)];
+  return [ours];
+}
+
+function copyLoad(op: GridOp, sheets: Sheet[]): GridOp {
+  return { ...op, book: op.book ? { charts: op.book.charts.map((chart) => ({ ...chart })), sheets } : op.book };
+}
+
+function shiftSheetCells(sheet: Sheet, axis: "row" | "col", at: number, n: number, del: boolean): Sheet {
+  const cells: Record<string, Cell> = {};
+  for (const [key, cell] of Object.entries(sheet.cells)) {
+    let r = Number(key.split(",")[0]);
+    let c = Number(key.split(",")[1]);
+    const next = mapPoint(axis === "row" ? r : c, at, n, del);
+    if (next == null) continue;
+    if (axis === "row") r = next;
+    else c = next;
+    cells[cellKey(r, c)] = cell;
+  }
+  const rowH = axis === "row" ? shiftMap(sheet.rowH, at, n, del) : { ...sheet.rowH };
+  const colW = axis === "col" ? shiftMap(sheet.colW, at, n, del) : { ...sheet.colW };
+  return {
+    ...sheet,
+    cells,
+    rowH,
+    colW,
+    rows: Math.max(1, sheet.rows + (axis === "row" ? (del ? -n : n) : 0)),
+    cols: Math.max(1, sheet.cols + (axis === "col" ? (del ? -n : n) : 0)),
+    merges: shiftRects(sheet.merges || [], axis, at, n, del),
+    validations: shiftRects(sheet.validations || [], axis, at, n, del),
+    rules: shiftRects(sheet.rules || [], axis, at, n, del),
+  };
+}
+
+function mapLoad(applied: GridOp, ours: GridOp, weWin: boolean): GridOp[] {
+  if (!ours.book) return [ours];
+  if (applied.t === "load" && applied.mode === "replace" && ours.mode === "replace") return weWin ? [ours] : [];
+  if (applied.t === "load" && applied.mode === "patch" && ours.mode === "patch" && applied.sheet === ours.sheet && !weWin) {
+    const theirs = applied.book?.sheets[0]?.cells || {};
+    const sheets = ours.book.sheets.map((sheet, index) => {
+      if (index !== 0) return sheet;
+      const cells = { ...sheet.cells };
+      for (const key of Object.keys(theirs)) delete cells[key];
+      return { ...sheet, cells };
+    });
+    return [copyLoad(ours, sheets)];
+  }
+  const axis = structAxis(applied.t);
+  if (axis && (ours.mode === "replace" || ours.mode === "patch")) {
+    const hit = ours.mode === "replace" || applied.sheet === ours.sheet;
+    if (!hit) return [ours];
+    if (ours.mode === "replace" && weWin) return [ours];
+    const n = Math.max(1, applied.n || 1);
+    const at = Math.max(0, applied.index || 0);
+    const sheets = ours.book.sheets.map((sheet) => (ours.mode === "patch" || sheet.id === applied.sheet ? shiftSheetCells(sheet, axis, at, n, applied.t.startsWith("del")) : sheet));
+    return [copyLoad(ours, sheets)];
+  }
+  if (applied.t === "set" && !weWin && (ours.mode === "replace" || (ours.mode === "patch" && applied.sheet === ours.sheet))) {
+    const sheets = ours.book.sheets.map((sheet) => {
+      if (sheet.id !== applied.sheet && !(ours.mode === "patch" && sheet === ours.book!.sheets[0])) return sheet;
+      if (ours.mode === "replace" && sheet.id !== applied.sheet) return sheet;
+      const cells = { ...sheet.cells };
+      const key = cellKey(applied.r || 0, applied.c || 0);
+      if (ours.mode === "patch") {
+        delete cells[key];
+        return { ...sheet, cells };
+      }
+      const prev = cells[key] || {};
+      const cell: Cell = { ...prev };
+      if ("v" in applied) {
+        if (applied.v) cell.v = applied.v;
+        else delete cell.v;
+      }
+      if ("style" in applied) {
+        if (applied.style) cell.style = { ...applied.style };
+        else delete cell.style;
+      }
+      if (!cell.v && !cell.style && !cell.link && !cell.note) delete cells[key];
+      else cells[key] = cell;
+      return { ...sheet, cells };
+    });
+    return [copyLoad(ours, sheets)];
+  }
+  return [ours];
+}
+
+function mapAgainstLoad(applied: GridOp, ours: GridOp, weWin: boolean): GridOp[] {
+  if (applied.mode === "insert") return [ours];
+  if (ours.t === "load") return weWin ? [ours] : [];
+  if (applied.mode === "replace") {
+    if (!weWin && ours.sheet && applied.book?.sheets.some((sheet) => sheet.id === ours.sheet)) return [];
+    if (!weWin && (ours.t === "set" || ours.t === "resize" || ours.t === "freeze" || structAxis(ours.t))) return [];
+    return [ours];
+  }
+  if (applied.mode === "patch" && ours.t === "set" && ours.sheet === applied.sheet && !weWin) {
+    const key = cellKey(ours.r || 0, ours.c || 0);
+    if (applied.book?.sheets[0]?.cells[key]) return [];
+  }
   return [ours];
 }
 

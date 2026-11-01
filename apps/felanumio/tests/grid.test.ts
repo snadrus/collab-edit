@@ -54,6 +54,73 @@ test("formulas cover aggregates, lookup, conditions, and other sheets", () => {
   assert.equal(displayValue(evaluate(read(book), "Sheet1", "=A4")), "#CYCLE!");
 });
 
+test("lookup, text, dates, and logic functions", () => {
+  let book = emptyBook();
+  book = put(book, "Sheet1", 0, 0, "P2");
+  book = put(book, "Sheet1", 1, 0, "North");
+  book = put(book, "Sheet1", 2, 0, "South");
+  book = put(book, "Sheet1", 0, 1, "10");
+  book = put(book, "Sheet1", 1, 1, "3");
+  book = put(book, "Sheet1", 2, 1, "8");
+  book = applyBook(book, { ops: [{ t: "addsheet", sheet: "s2", name: "Products" }] });
+  book = put(book, "Products", 0, 0, "P1");
+  book = put(book, "Products", 1, 0, "P2");
+  book = put(book, "Products", 0, 1, "9.99");
+  book = put(book, "Products", 1, 1, "24.5");
+  const grid = read(book);
+  const show = (raw: string) => displayValue(evaluate(grid, "Sheet1", raw));
+  assert.equal(show('=VLOOKUP("P2",Products!$A$1:$B$2,2,FALSE)'), "24.5");
+  assert.equal(show('=INDEX(Products!B1:B2,MATCH("P2",Products!A1:A2,0))'), "24.5");
+  assert.equal(show('=COUNTIF(A2:A3,"North")'), "1");
+  assert.equal(show('=SUMIF(A2:A3,"North",B2:B3)'), "3");
+  assert.equal(show("=ROUND(1.26,1)"), "1.3");
+  assert.equal(show('=LEN("abc")'), "3");
+  assert.equal(show('=LEFT("abcd",2)'), "ab");
+  assert.equal(show('=RIGHT("abcd",2)'), "cd");
+  assert.equal(show('=MID("abcd",2,2)'), "bc");
+  assert.equal(show("=AND(1,0)"), "FALSE");
+  assert.equal(show("=OR(0,1)"), "TRUE");
+  assert.equal(show('=IFERROR(1/0,"no")'), "no");
+  assert.equal(show("=IFERROR(2+2,0)"), "4");
+  const today = Number(show("=TODAY()"));
+  assert.ok(today > 40000);
+  assert.equal(displayValue(evaluate(grid, "Sheet1", "02134")), "02134");
+  assert.equal(displayValue(evaluate(grid, "Sheet1", "'=1+1 formula-looking")), "=1+1 formula-looking");
+});
+
+test("a bulk load converges with a concurrent edit", () => {
+  const base = emptyBook();
+  const loaded = applyBook(base, {
+    ops: [{
+      t: "load",
+      mode: "replace",
+      sheet: "s1",
+      book: {
+        charts: [],
+        sheets: [{ ...base.sheets[0], cells: { "0,0": { v: "from-load" }, "1,0": { v: "keep" } }, rows: 2, cols: 1 }],
+      },
+    }],
+  });
+  assert.equal(loaded.sheets[0].cells["0,0"].v, "from-load");
+  const load = {
+    ops: [{
+      t: "load",
+      mode: "replace",
+      sheet: "s1",
+      book: {
+        charts: [],
+        sheets: [{ ...base.sheets[0], cells: { "0,0": { v: "from-load" }, "1,0": { v: "keep" } }, rows: 2, cols: 1 }],
+      },
+    }],
+  };
+  const edit = { ops: [{ t: "set" as const, sheet: "s1", r: 0, c: 0, v: "from-edit" }] };
+  const left = applyBook(applyBook(base, load), transformGrid(edit, load, true));
+  const right = applyBook(applyBook(base, edit), transformGrid(load, edit, false));
+  assert.equal(bookEqual(left, right), true);
+  assert.equal(left.sheets[0].cells["0,0"].v, "from-edit");
+  assert.equal(left.sheets[0].cells["1,0"].v, "keep");
+});
+
 test("fill shifts relative refs and keeps absolute ones", () => {
   assert.equal(shiftFormula("=B1+1", 1, 0), "=B2+1");
   assert.equal(shiftFormula("=$B$1+C1", 2, 1), "=$B$1+D3");

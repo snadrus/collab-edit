@@ -1,0 +1,7 @@
+Item	Qty	Price	Total
+Apple	3	0.5	=B2*C2
+Banana	12	0.25	=B3*C3
+Cherry	100	0.1	=B4*C4
+Date	7	1.2	=B5*C5
+Elderberry	2	4.0	=B6*C6
+Sum	=SUM(B2:B6)		=SUM(D2:D6)

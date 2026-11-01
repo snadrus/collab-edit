@@ -1,0 +1,8 @@
+Region	Revenue
+North	=SUMIF(Sales!B2:B21,A2,Sales!F2:F21)
+South	=SUMIF(Sales!B2:B21,A3,Sales!F2:F21)
+East	=SUMIF(Sales!B2:B21,A4,Sales!F2:F21)
+West	=SUMIF(Sales!B2:B21,A5,Sales!F2:F21)
+	
+Grand total	=SUM(B2:B5)
+Check (cross-sheet)	=Sales!F23

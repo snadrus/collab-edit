@@ -32,6 +32,11 @@
     <div class="menubar" id="menubar">
       <div class="menu"><button type="button" class="menu-btn" data-menu="file">File</button>
         <div class="menu-pop" data-pop="file" hidden>
+          <button type="button" data-act="import">Import</button>
+          <button type="button" data-act="open">Open</button>
+          <button type="button" data-act="csv">Download as CSV</button>
+          <button type="button" data-act="xlsx">Download as XLSX</button>
+          <button type="button" data-act="ods">Download as ODS</button>
           <button type="button" data-act="history">Version history</button>
           <button type="button" data-act="namever">Name current version</button>
         </div>
@@ -68,6 +73,7 @@
         <option value="number">Number</option>
         <option value="percent">Percent</option>
         <option value="currency">Currency</option>
+        <option value="date">Date</option>
       </select>
       <select id="align">
         <option value="left">Left</option>
@@ -83,7 +89,8 @@
       <input id="formula" spellcheck="false" autocomplete="off">
     </div>
     <div id="body">
-      <div id="stage"><canvas id="grid"></canvas></div>
+      <select id="valid" hidden></select>
+      <div id="stage"><div id="sizer"><canvas id="grid"></canvas></div></div>
       <aside id="side">
         <section id="chartbox" hidden>
           <h3>Chart</h3>
