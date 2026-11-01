@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { displayValue, evaluate, type GridRead } from "../src/formula.ts";
 import {
+  chartPoints,
   convertField,
   defaultImportOptions,
   detectSeparator,
@@ -11,6 +12,7 @@ import {
   odsFormula,
   parseDelimited,
   parseHtmlTable,
+  uniqueComments,
   bookXlsx,
   bookOds,
 } from "../src/import.ts";
@@ -87,6 +89,15 @@ test("small csv, tsv, semicolon, and utf-8 fixtures", () => {
   assert.equal(utf.sheets[0].cells["3,1"].v, "multi\nline cell");
   assert.equal(show(utf, "quirks_utf8", 1, 3), "2026-11-01");
   assert.equal(show(utf, "quirks_utf8", 5, 7), "=1+1 formula-looking");
+  const pm = utf.sheets[0].cells["5,4"];
+  assert.equal(pm.style?.numFmt, "m/d/yy h:mm AM/PM");
+  const frac = Number(pm.v) - Math.floor(Number(pm.v));
+  assert.ok(Math.abs(frac - (13 * 60 + 45) / 1440) < 1e-8);
+  assert.equal(show(utf, "quirks_utf8", 5, 4), "7/4/26 1:45 PM");
+  const am = convertField("7/4/26 1:45 AM", defaultImportOptions(), ",");
+  const amFrac = Number(am.v) - Math.floor(Number(am.v));
+  assert.ok(Math.abs(amFrac - (60 + 45) / 1440) < 1e-8);
+  assert.equal(displayValue({ t: "n", n: Number(am.v) }, "date", am.style?.numFmt), "7/4/26 1:45 AM");
 });
 
 test("xlsx keeps sheets, formulas, formats, and chart", () => {
@@ -121,6 +132,20 @@ test("xlsx keeps sheets, formulas, formats, and chart", () => {
   assert.equal(show(book, "Summary", 2, 1).replace(/[$,]/g, ""), "1235.22");
   assert.equal(book.charts[0]?.kind, "bar");
   assert.equal(book.charts[0]?.title, "Revenue by region");
+  assert.ok(sales.cols > 12);
+  assert.equal(sales.cells["0,10"].style?.fill?.toLowerCase(), "#ffc000");
+  assert.equal(sales.cells["0,10"].style?.align, "center");
+  const points = chartPoints(book, book.charts[0]);
+  assert.deepEqual(points.map((point) => point.name), ["North", "South", "East", "West"]);
+  assert.equal(points[0].n.toFixed(2), "2244.85");
+  const cross = chartPoints(book, {
+    ...book.charts[0],
+    series: [{ name: "Sales!F2", sheet: "Sales", r1: 1, c1: 5, r2: 1, c2: 5, catSheet: "Sales", catR1: 1, catC1: 1, catR2: 1, catC2: 1 }],
+  });
+  assert.equal(cross[0]?.name, "South");
+  assert.equal(cross[0]?.n.toFixed(2), "279.72");
+  assert.equal(sales.cells["0,0"].note, "Order date (weekly)");
+  assert.equal(uniqueComments([{ quote: "A1", text: "Order date (weekly)" }], [{ quote: "A1", text: "Order date (weekly)" }]).length, 1);
   const days = Number(show(book, "Sales", 25, 1));
   assert.equal(days, Number(show(book, "Sales", 25, 1)));
   assert.ok(days > 200 && days < 400);

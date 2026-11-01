@@ -77,6 +77,7 @@ test("imports each corpus workbook", async ({ page }) => {
   expect(await page.evaluate(() => (window as unknown as SheetWin).__sheet.raw(3, 1))).toBe("multi\nline cell");
   expect(await page.evaluate(() => (window as unknown as SheetWin).__sheet.display(1, 3))).toBe("2026-11-01");
   expect(await page.evaluate(() => (window as unknown as SheetWin).__sheet.display(5, 7))).toBe("=1+1 formula-looking");
+  expect(await page.evaluate(() => (window as unknown as SheetWin).__sheet.display(5, 4))).toBe("7/4/26 1:45 PM");
 
   await importFile(page, "basic.ods");
   await expect.poll(() => page.evaluate(() => (window as unknown as SheetWin).__sheet.sheetNames().join(","))).toBe("Sheet1,Second");
@@ -135,6 +136,23 @@ test("imports each corpus workbook", async ({ page }) => {
   expect(sales.cellRule).toBe(true);
   expect(sales.scale).toBe(true);
   expect(sales.wider).toBe(true);
+  const drawn = await page.evaluate(() => {
+    const painted = (window as unknown as SheetWin).__sheet.painted();
+    const canvas = document.querySelector("#grid") as HTMLCanvasElement;
+    const ctx = canvas.getContext("2d");
+    let orange = false;
+    if (ctx) {
+      const img = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      for (let i = 0; i < img.length; i += 16) {
+        if (img[i] > 240 && img[i + 1] > 170 && img[i + 1] < 220 && img[i + 2] < 40) orange = true;
+      }
+    }
+    const notes = [...document.querySelectorAll("#thread-list .note")].map((el) => el.textContent || "");
+    return { painted, orange, notes };
+  });
+  expect(drawn.painted).toContain("Merged header");
+  expect(drawn.orange).toBe(true);
+  expect(drawn.notes.filter((text) => text.includes("Order date (weekly)"))).toHaveLength(1);
   await page.evaluate(() => (window as unknown as SheetWin).__sheet.selectSheet("Products"));
   expect(await page.evaluate(() => (window as unknown as SheetWin).__sheet.display(1, 1))).toBe("$9.99");
   await page.evaluate(() => (window as unknown as SheetWin).__sheet.selectSheet("Summary"));
@@ -146,6 +164,7 @@ test("imports each corpus workbook", async ({ page }) => {
   expect(chart?.title).toBe("Revenue by region");
   await expect(page.locator("#chartbox h3")).toHaveText("Revenue by region");
   await expect(page.locator("#chartbox")).toBeVisible();
+  await expect(page.locator("#chart")).toHaveAttribute("data-labels", "North|South|East|West");
 });
 
 test("native paste lands on A1, and copy writes TSV and HTML", async ({ page, context }) => {
