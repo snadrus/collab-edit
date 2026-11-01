@@ -3,6 +3,17 @@ import { type Snapshot } from "../../src/shared/doc.ts";
 import { BookSession, type BookRecord } from "./book-hub.ts";
 import { DocSession, type DocRecord } from "./docs-hub.ts";
 import { getBlob, listRecords, loadRecord, putBlob, saveRecord } from "./idb.ts";
+import {
+  CALIBRATION_FROM_BLOCK,
+  CALIBRATION_REGISTRY,
+  FELANUMIO_DIR,
+  FELARUMI_DIR,
+  NO_REGISTRY_NOTICE,
+  listSnapshots,
+  openCalibrationVolume,
+  saveSnapshot,
+  volumeHistory,
+} from "./folder-save.ts";
 import { DEFAULT_NETWORK, commpAdapter, commpOf, fileAdapter, ipfsAdapter, normalizeNetwork, synapseAdapter, type FilecoinNetwork, type StorageAdapter, type SynapseLike } from "./storage.ts";
 import type { Wire } from "./wire.ts";
 
@@ -500,24 +511,44 @@ async function loadActive(raw: string): Promise<void> {
   else throw new Error("This file does not match the open editor");
 }
 
-async function saveFilecoin(network: FilecoinNetwork, privateKey: string): Promise<string> {
+async function saveFilecoin(network: FilecoinNetwork, privateKey: string): Promise<{ pieceCid: string; path: string; notice: string }> {
   const raw = docSession ? docSession.exportJson() : bookSession ? bookSession.exportJson() : "";
   if (!raw) throw new Error("Nothing to save");
-  const eth = (window as unknown as { ethereum?: { request(args: { method: string }): Promise<unknown> } }).ethereum;
-  const adapter: StorageAdapter = await synapseAdapter({
-    network,
+  const bytes = new TextEncoder().encode(raw);
+  const eth = (window as unknown as { ethereum?: { request(args: { method: string; params?: unknown[] }): Promise<unknown> } }).ethereum;
+  if (network !== "calibration") {
+    const adapter: StorageAdapter = await synapseAdapter({
+      network,
+      privateKey: privateKey || undefined,
+      provider: privateKey ? undefined : eth,
+    });
+    const pieceCid = await adapter.put(bytes);
+    await putBlob(pieceCid, bytes);
+    setCid(pieceCid);
+    return { pieceCid, path: "", notice: NO_REGISTRY_NOTICE };
+  }
+  const mock = mockSynapse();
+  const volume = await openCalibrationVolume({
     privateKey: privateKey || undefined,
-    provider: privateKey ? undefined : eth,
+    provider: privateKey || mock ? undefined : eth,
+    synapse: mock ?? undefined,
   });
-  const cid = await adapter.put(new TextEncoder().encode(raw));
-  await putBlob(cid, new TextEncoder().encode(raw));
-  setCid(cid);
-  return cid;
+  const saved = await saveSnapshot({
+    kind: docSession ? "felarumi" : "felanumio",
+    title: docSession?.title || bookSession?.title || "Untitled",
+    bytes,
+    owner: volume.owner,
+    storage: volume.storage,
+    registry: volume.registry,
+  });
+  await putBlob(saved.pieceCid, bytes);
+  setCid(saved.pieceCid);
+  return { pieceCid: saved.pieceCid, path: saved.path, notice: "" };
 }
 
 function installUi(): void {
   const style = document.createElement("style");
-  style.textContent = "#p2p-wait{position:sticky;top:0;z-index:80;background:#fef7e0;color:#202124;padding:8px 16px;text-align:center}#p2p-dialog{position:fixed;inset:0;background:rgba(32,33,36,.32);display:grid;place-items:center;z-index:90}#p2p-dialog .card{background:#fff;border-radius:12px;padding:16px;width:min(420px,92vw);display:grid;gap:8px}#p2p-dialog[hidden]{display:none}";
+  style.textContent = "#p2p-wait{position:sticky;top:0;z-index:80;background:#fef7e0;color:#202124;padding:8px 16px;text-align:center}#p2p-dialog{position:fixed;inset:0;background:rgba(32,33,36,.32);display:grid;place-items:center;z-index:90}#p2p-dialog .card{background:#fff;border-radius:12px;padding:16px;width:min(520px,92vw);max-height:88vh;overflow:auto;display:grid;gap:8px}#p2p-dialog[hidden]{display:none}#p2p-files,#p2p-history{display:grid;gap:4px;font-size:12px;word-break:break-all}#p2p-registry{margin:0}";
   document.head.append(style);
   const bar = document.createElement("div");
   bar.id = "p2p-wait";
@@ -539,9 +570,13 @@ function installUi(): void {
   dialog.innerHTML = `<div class="card"><h2>Save this session</h2><p>Filecoin is the default. The key stays in this tab.</p>
     <label><input type="radio" name="p2p-net" value="mainnet" checked> Filecoin mainnet</label>
     <label><input type="radio" name="p2p-net" value="calibration"> Calibration testnet</label>
+    <p id="p2p-registry">${NO_REGISTRY_NOTICE}</p>
     <button type="button" id="p2p-wallet">Connect wallet</button>
     <input id="p2p-key" type="password" placeholder="Or paste a private key" autocomplete="off">
     <button type="button" id="p2p-key-save">Save with key</button>
+    <button type="button" id="p2p-open">Open from Filecoin</button>
+    <div id="p2p-files"></div>
+    <div id="p2p-history"></div>
     <p>IPFS is optional.</p>
     <input id="p2p-ipfs" type="password" placeholder="IPFS token" autocomplete="off">
     <button type="button" id="p2p-ipfs-save">Save to IPFS</button>
@@ -550,15 +585,35 @@ function installUi(): void {
     <button type="button" id="p2p-close">Close</button></div>`;
   document.body.append(dialog);
   const status = dialog.querySelector("#p2p-status") as HTMLElement;
+  const registryNote = dialog.querySelector("#p2p-registry") as HTMLElement;
+  const filesEl = dialog.querySelector("#p2p-files") as HTMLElement;
+  const historyEl = dialog.querySelector("#p2p-history") as HTMLElement;
   const network = (): FilecoinNetwork => {
     const picked = dialog.querySelector('input[name="p2p-net"]:checked') as HTMLInputElement | null;
     const value = normalizeNetwork(picked?.value);
     sessionStorage.setItem("felarumi-filecoin-net", value);
     return value;
   };
+  const showRegistry = (net: FilecoinNetwork) => {
+    registryNote.textContent = net === "calibration"
+      ? `FolderRegistry ${CALIBRATION_REGISTRY} from block ${CALIBRATION_FROM_BLOCK}`
+      : NO_REGISTRY_NOTICE;
+  };
+  const clearBrowser = () => {
+    filesEl.replaceChildren();
+    historyEl.replaceChildren();
+  };
+  for (const input of dialog.querySelectorAll<HTMLInputElement>('input[name="p2p-net"]')) {
+    input.addEventListener("change", () => {
+      const net = network();
+      showRegistry(net);
+      if (net !== "calibration") clearBrowser();
+    });
+  }
   end.addEventListener("click", () => {
     const current = currentNetwork();
     for (const input of dialog.querySelectorAll<HTMLInputElement>('input[name="p2p-net"]')) input.checked = input.value === current;
+    showRegistry(current);
     dialog.hidden = false;
   });
   dialog.querySelector("#p2p-close")!.addEventListener("click", () => {
@@ -571,12 +626,14 @@ function installUi(): void {
       status.textContent = err.message;
     });
   });
+  const reportSave = (saved: { pieceCid: string; path: string; notice: string }) => {
+    const where = saved.path ? saved.path + " " : "PieceCID ";
+    status.textContent = where + saved.pieceCid + (saved.notice ? ". " + saved.notice : "");
+  };
   dialog.querySelector("#p2p-wallet")!.addEventListener("click", () => {
     const key = dialog.querySelector("#p2p-key") as HTMLInputElement;
     key.value = "";
-    void saveFilecoin(network(), "").then((cid) => {
-      status.textContent = "PieceCID " + cid;
-    }).catch((err: Error) => {
+    void saveFilecoin(network(), "").then(reportSave).catch((err: Error) => {
       status.textContent = err.message;
     });
   });
@@ -584,9 +641,21 @@ function installUi(): void {
     const key = dialog.querySelector("#p2p-key") as HTMLInputElement;
     const value = key.value.trim();
     key.value = "";
-    void saveFilecoin(network(), value).then((cid) => {
-      status.textContent = "PieceCID " + cid;
-    }).catch((err: Error) => {
+    void saveFilecoin(network(), value).then(reportSave).catch((err: Error) => {
+      status.textContent = err.message;
+    });
+  });
+  dialog.querySelector("#p2p-open")!.addEventListener("click", () => {
+    const net = network();
+    if (net !== "calibration") {
+      clearBrowser();
+      status.textContent = NO_REGISTRY_NOTICE;
+      return;
+    }
+    const key = dialog.querySelector("#p2p-key") as HTMLInputElement;
+    const value = key.value.trim();
+    key.value = "";
+    void openFromFilecoin(value).catch((err: Error) => {
       status.textContent = err.message;
     });
   });
@@ -601,6 +670,65 @@ function installUi(): void {
       status.textContent = err.message;
     });
   });
+
+  async function paintHistory(volume: Awaited<ReturnType<typeof openCalibrationVolume>>, path?: string): Promise<void> {
+    historyEl.replaceChildren();
+    const heading = document.createElement("div");
+    heading.textContent = path ? "Version history " + path : "Version history";
+    historyEl.append(heading);
+    const versions = await volumeHistory(volume, path);
+    if (!versions.length) {
+      const empty = document.createElement("div");
+      empty.textContent = "No versions yet";
+      historyEl.append(empty);
+      return;
+    }
+    for (const entry of versions.slice().reverse()) {
+      const row = document.createElement("div");
+      row.className = "p2p-version";
+      const ms = entry.timestamp < 1e12 ? entry.timestamp * 1000 : entry.timestamp;
+      const when = Number.isFinite(ms) ? new Date(ms).toISOString() : "";
+      row.textContent = `v${entry.version} ${when} ${entry.pieceCid}`;
+      historyEl.append(row);
+    }
+  }
+
+  async function openFromFilecoin(privateKey: string): Promise<void> {
+    const eth = (window as unknown as { ethereum?: { request(args: { method: string; params?: unknown[] }): Promise<unknown> } }).ethereum;
+    const mock = mockSynapse();
+    const volume = await openCalibrationVolume({
+      privateKey: privateKey || undefined,
+      provider: privateKey || mock ? undefined : eth,
+      synapse: mock ?? undefined,
+    });
+    clearBrowser();
+    const docs = await listSnapshots(volume, FELARUMI_DIR);
+    const sheets = await listSnapshots(volume, FELANUMIO_DIR);
+    const files = [...docs, ...sheets].filter((entry) => entry.type === "file");
+    if (!files.length) {
+      const empty = document.createElement("p");
+      empty.textContent = "No files in /Felarumi or /Felanumio";
+      filesEl.append(empty);
+    }
+    for (const entry of files) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "p2p-file";
+      button.textContent = entry.path;
+      button.addEventListener("click", () => {
+        void volume.get(entry.path).then(async (bytes) => {
+          await loadActive(new TextDecoder().decode(bytes));
+          status.textContent = "Opened " + entry.path;
+          await paintHistory(volume, entry.path);
+        }).catch((err: Error) => {
+          status.textContent = err.message;
+        });
+      });
+      filesEl.append(button);
+    }
+    await paintHistory(volume);
+    status.textContent = files.length ? "Choose a file" : "No files in /Felarumi or /Felanumio";
+  }
 }
 
 function mockSynapse(): SynapseLike | null {

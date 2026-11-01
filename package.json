@@ -7,12 +7,16 @@
     "node": ">=22.18"
   },
   "scripts": {
+    "postinstall": "node scripts/install-fil-folders.mjs",
     "start": "node --disable-warning=ExperimentalWarning --experimental-strip-types src/server/index.ts",
     "dev": "DEV=1 node --disable-warning=ExperimentalWarning --watch-path=src/server --watch-path=src/shared --experimental-strip-types src/server/index.ts",
-    "test": "node --disable-warning=ExperimentalWarning --experimental-strip-types --test tests/*.test.ts apps/felanumio/tests/*.test.ts p2p/tests/*.test.ts",
+    "test": "node scripts/install-fil-folders.mjs && node --disable-warning=ExperimentalWarning --experimental-strip-types --test tests/*.test.ts apps/felanumio/tests/*.test.ts p2p/tests/*.test.ts",
     "test:e2e": "playwright test",
-    "test:p2p": "playwright test -c p2p/playwright.config.ts",
-    "p2p": "node --disable-warning=ExperimentalWarning --experimental-strip-types p2p/serve.ts"
+    "test:p2p": "node scripts/install-fil-folders.mjs && playwright test -c p2p/playwright.config.ts",
+    "p2p": "node scripts/install-fil-folders.mjs && node --disable-warning=ExperimentalWarning --experimental-strip-types p2p/serve.ts"
+  },
+  "externalGitDependencies": {
+    "fil-folders": "git+https://github.com/snadrus/filecoin-folders.git#cbd94907cbf088616b2e85709425b374b2849100"
   },
   "dependencies": {
     "@filoz/synapse-sdk": "^2.0.2",

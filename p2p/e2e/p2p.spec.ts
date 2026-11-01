@@ -83,6 +83,20 @@ test("guests wait read-only when the owner leaves", async ({ browser }) => {
   await guest.close();
 });
 
+test("mainnet save dialog says there is no registry", async ({ page }) => {
+  await newDoc(page);
+  await page.locator('[data-menu="file"]').click();
+  await page.locator("#p2p-end").click();
+  await expect(page.locator("#p2p-registry")).toHaveText("no registry on this network");
+  await page.locator('input[name="p2p-net"][value="calibration"]').check();
+  await expect(page.locator("#p2p-registry")).toContainText("0x4893FfF3611240fbB4Be68eFe4AA0Ec634279331");
+  await expect(page.locator("#p2p-registry")).toContainText("4207373");
+  await page.locator('input[name="p2p-net"][value="mainnet"]').check();
+  await expect(page.locator("#p2p-registry")).toHaveText("no registry on this network");
+  await page.locator("#p2p-open").click();
+  await expect(page.locator("#p2p-status")).toHaveText("no registry on this network");
+});
+
 test("file adapter save and load round-trips the snapshot", async ({ browser }) => {
   const owner = await browser.newContext();
   const other = await browser.newContext();

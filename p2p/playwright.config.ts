@@ -13,7 +13,7 @@ export default defineConfig({
     viewport: { width: 1440, height: 900 },
   },
   webServer: {
-    command: "node --disable-warning=ExperimentalWarning --experimental-strip-types p2p/serve.ts",
+    command: "node scripts/install-fil-folders.mjs && node --disable-warning=ExperimentalWarning --experimental-strip-types p2p/serve.ts",
     cwd: root,
     url: "http://127.0.0.1:8791",
     reuseExistingServer: !process.env.CI,
