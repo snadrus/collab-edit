@@ -1,0 +1,13 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+solc = "0.8.24"
+evm_version = "shanghai"
+optimizer = true
+optimizer_runs = 200
+fs_permissions = [{ access = "read", path = "./" }]
+
+[rpc_endpoints]
+calibration = "https://api.calibration.node.glif.io/rpc/v1"
+mainnet = "https://api.node.glif.io/rpc/v1"

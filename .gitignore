@@ -5,6 +5,9 @@ public/app.js.map
 apps/felanumio/public/app.js
 apps/felanumio/public/app.js.map
 p2p/dist/
+packages/fil-registry/out/
+packages/fil-registry/cache/
+packages/fil-registry/broadcast/
 test-results/
 playwright-report/
 blob-report/

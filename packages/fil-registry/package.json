@@ -1,0 +1,6 @@
+{
+  "name": "@collab/fil-registry",
+  "version": "1.0.0",
+  "private": true,
+  "description": "FEVM compare-and-swap registry for Filecoin piece CIDs."
+}

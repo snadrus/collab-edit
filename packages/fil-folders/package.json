@@ -1,0 +1,14 @@
+{
+  "name": "@collab/fil-folders",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Filecoin Folders: a content-addressed tree whose root head is a FilRegistry piece CID.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@filoz/synapse-sdk": "^2.0.2",
+    "viem": "^2.57.13"
+  }
+}

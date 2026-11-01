@@ -3,13 +3,16 @@ import { type Snapshot } from "../../src/shared/doc.ts";
 import { BookSession, type BookRecord } from "./book-hub.ts";
 import { DocSession, type DocRecord } from "./docs-hub.ts";
 import { getBlob, listRecords, loadRecord, putBlob, saveRecord } from "./idb.ts";
+import { memoryBackend, memoryRegistry, registryFromWallet, synapseStore, type FolderRegistry, type RegistryBackend } from "../../packages/fil-folders/src/index.ts";
 import { DEFAULT_NETWORK, commpAdapter, commpOf, fileAdapter, ipfsAdapter, normalizeNetwork, synapseAdapter, type FilecoinNetwork, type StorageAdapter, type SynapseLike } from "./storage.ts";
+import { saveSnapshot } from "./folder-save.ts";
 import type { Wire } from "./wire.ts";
 
 const NativeWebSocket = globalThis.WebSocket;
 const WAIT = "Waiting for the owner. This document is read-only until they are online.";
 const files = fileAdapter();
 const pieceMemory = new Map<string, Uint8Array>();
+let folderBackend: RegistryBackend | null = null;
 
 let docSession: DocSession | null = null;
 let bookSession: BookSession | null = null;
@@ -500,19 +503,63 @@ async function loadActive(raw: string): Promise<void> {
   else throw new Error("This file does not match the open editor");
 }
 
-async function saveFilecoin(network: FilecoinNetwork, privateKey: string): Promise<string> {
+function registryContract(): `0x${string}` | "" {
+  try {
+    const value = sessionStorage.getItem("felarumi-registry") || "";
+    return /^0x[0-9a-fA-F]{40}$/.test(value) ? (value as `0x${string}`) : "";
+  } catch {
+    return "";
+  }
+}
+
+function browserRegistry(owner: string): FolderRegistry {
+  const injected = (window as unknown as { __folderRegistry?: FolderRegistry }).__folderRegistry;
+  if (injected) return injected;
+  if (!folderBackend) folderBackend = memoryBackend();
+  return memoryRegistry(folderBackend, owner);
+}
+
+async function folderOwner(privateKey: string, eth?: { request(args: { method: string; params?: unknown[] }): Promise<unknown> }): Promise<string> {
+  if (privateKey) {
+    const { privateKeyToAccount } = await import("viem/accounts");
+    const hex = (privateKey.startsWith("0x") ? privateKey : "0x" + privateKey) as `0x${string}`;
+    return privateKeyToAccount(hex).address;
+  }
+  if (!eth) throw new Error("Connect a wallet or enter a key");
+  const accounts = (await eth.request({ method: "eth_requestAccounts" })) as string[];
+  if (!accounts[0]) throw new Error("The wallet did not return an account");
+  return accounts[0];
+}
+
+/** Save the open snapshot at /Felarumi or /Felanumio. Signing still uploads the unsigned bytes directly. */
+async function saveFilecoin(network: FilecoinNetwork, privateKey: string): Promise<{ path: string; pieceCid: string }> {
   const raw = docSession ? docSession.exportJson() : bookSession ? bookSession.exportJson() : "";
   if (!raw) throw new Error("Nothing to save");
-  const eth = (window as unknown as { ethereum?: { request(args: { method: string }): Promise<unknown> } }).ethereum;
-  const adapter: StorageAdapter = await synapseAdapter({
+  const eth = (window as unknown as { ethereum?: { request(args: { method: string; params?: unknown[] }): Promise<unknown> } }).ethereum;
+  const mock = mockSynapse();
+  const bytes = new TextEncoder().encode(raw);
+  const storage = await synapseStore({
     network,
     privateKey: privateKey || undefined,
-    provider: privateKey ? undefined : eth,
+    provider: privateKey || mock ? undefined : eth,
+    client: mock ?? undefined,
   });
-  const cid = await adapter.put(new TextEncoder().encode(raw));
-  await putBlob(cid, new TextEncoder().encode(raw));
-  setCid(cid);
-  return cid;
+  const owner = await folderOwner(privateKey, eth);
+  const contract = registryContract();
+  const registry = contract
+    ? await registryFromWallet({ contract, network, privateKey: privateKey || undefined, provider: privateKey ? undefined : eth })
+    : browserRegistry(owner);
+  const saved = await saveSnapshot({
+    kind: docSession ? "felarumi" : "felanumio",
+    title: docSession?.title || bookSession?.title || "Untitled",
+    bytes,
+    owner,
+    storage,
+    registry,
+  });
+  await putBlob(saved.pieceCid, bytes);
+  setCid(saved.pieceCid);
+  return saved;
 }
 
 function installUi(): void {
@@ -574,8 +621,8 @@ function installUi(): void {
   dialog.querySelector("#p2p-wallet")!.addEventListener("click", () => {
     const key = dialog.querySelector("#p2p-key") as HTMLInputElement;
     key.value = "";
-    void saveFilecoin(network(), "").then((cid) => {
-      status.textContent = "PieceCID " + cid;
+    void saveFilecoin(network(), "").then((saved) => {
+      status.textContent = saved.path + " " + saved.pieceCid + (registryContract() ? "" : " (session registry)");
     }).catch((err: Error) => {
       status.textContent = err.message;
     });
@@ -584,8 +631,8 @@ function installUi(): void {
     const key = dialog.querySelector("#p2p-key") as HTMLInputElement;
     const value = key.value.trim();
     key.value = "";
-    void saveFilecoin(network(), value).then((cid) => {
-      status.textContent = "PieceCID " + cid;
+    void saveFilecoin(network(), value).then((saved) => {
+      status.textContent = saved.path + " " + saved.pieceCid + (registryContract() ? "" : " (session registry)");
     }).catch((err: Error) => {
       status.textContent = err.message;
     });
