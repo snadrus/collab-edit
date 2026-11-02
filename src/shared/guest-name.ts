@@ -69,6 +69,15 @@ export class Xoshiro128pp {
   }
 }
 
+/** Unbiased index in [0, n): reject draws at or above the largest multiple of n below 2^32. */
+export function pickIndex(next: () => number, n: number): number {
+  const span = 2 ** 32;
+  const limit = span - (span % n);
+  let u = next() >>> 0;
+  while (u >= limit) u = next() >>> 0;
+  return u % n;
+}
+
 /** FNV-1a 32-bit hash of the lowercased seed text. */
 export function seedOf(text: string): number {
   let hash = 0x811c9dc5;
@@ -82,8 +91,9 @@ export function seedOf(text: string): number {
 /** Same wallet address (or browser id) gives the same name everywhere. */
 export function guestName(seedText: string): string {
   const rng = Xoshiro128pp.fromSeed(seedOf(seedText));
-  const adjective = ADJECTIVES[rng.nextUint32() % ADJECTIVES.length];
-  const animal = ANIMALS[rng.nextUint32() % ANIMALS.length];
+  const next = () => rng.nextUint32();
+  const adjective = ADJECTIVES[pickIndex(next, ADJECTIVES.length)];
+  const animal = ANIMALS[pickIndex(next, ANIMALS.length)];
   return `${adjective} ${animal}`;
 }
 
