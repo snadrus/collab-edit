@@ -34,7 +34,7 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, t
   return node;
 }
 
-export function mountChrome(editor: Editor, opts: { send: (msg: unknown) => void; toast: (s: string) => void; people: () => Person[] }): Chrome {
+export function mountChrome(editor: Editor, opts: { send: (msg: unknown) => void; toast: (s: string) => void; people: () => Person[]; canResolve?: () => boolean }): Chrome {
   const notes = document.querySelector("#notes") as HTMLElement;
   const findBar = document.querySelector("#findbar") as HTMLElement;
   const findQ = document.querySelector("#find-q") as HTMLInputElement;
@@ -52,7 +52,6 @@ export function mountChrome(editor: Editor, opts: { send: (msg: unknown) => void
   const tableTools = document.querySelector("#table-tools") as HTMLElement;
   let atIndex = 0;
   let atItems: { label: string; detail: string; run: () => void }[] = [];
-  let showResolved = false;
   let composerFor: string | null = null;
 
   notes.addEventListener("keydown", (ev) => {
@@ -119,8 +118,7 @@ export function mountChrome(editor: Editor, opts: { send: (msg: unknown) => void
       floor = top + node.offsetHeight + 8;
     }
     const open = editor.threads.filter((t) => !t.resolved);
-    const done = editor.threads.filter((t) => t.resolved);
-    const cards = showResolved ? editor.threads : open;
+    const cards = open;
     for (const thread of cards) {
       const span = editor.commentSpans(thread.id)[0];
       let top = span ? editor.anchorPoint(span.start).y : 72;
@@ -130,12 +128,11 @@ export function mountChrome(editor: Editor, opts: { send: (msg: unknown) => void
       card.tabIndex = 0;
       card.style.top = top + "px";
       card.dataset.thread = thread.id;
-      const quote = el("div", "note-quote", thread.quote || "Comment");
       const head = el("div", "note-head");
       const who = el("span", "note-name", thread.name);
       who.style.color = thread.color;
       head.append(who, el("time", "", new Date(thread.ts).toLocaleString()));
-      card.append(quote, head, renderText(thread.text));
+      card.append(head, renderText(thread.text));
       for (const reply of thread.replies) {
         const row = el("div", "note-reply");
         const name = el("span", "note-name", reply.name);
@@ -153,24 +150,17 @@ export function mountChrome(editor: Editor, opts: { send: (msg: unknown) => void
         });
         actions.append(reply);
       }
-      const toggle = el("button", "resolve-btn", thread.resolved ? "Reopen" : "Resolve");
-      toggle.type = "button";
-      toggle.addEventListener("click", () => {
-        opts.send({ t: "resolve", id: thread.id, resolved: !thread.resolved });
-      });
-      actions.append(toggle);
+      if (opts.canResolve?.() ?? true) {
+        const toggle = el("button", "resolve-btn", thread.resolved ? "Reopen" : "Resolve");
+        toggle.type = "button";
+        toggle.addEventListener("click", () => {
+          opts.send({ t: "resolve", id: thread.id, resolved: !thread.resolved });
+        });
+        actions.append(toggle);
+      }
       card.append(actions);
       notes.append(card);
       floor = top + card.offsetHeight + 8;
-    }
-    if (done.length) {
-      const toggle = el("button", "resolved-toggle", showResolved ? "Hide resolved" : `Resolved (${done.length})`);
-      toggle.type = "button";
-      toggle.addEventListener("click", () => {
-        showResolved = !showResolved;
-        renderNotes();
-      });
-      notes.append(toggle);
     }
     notes.dataset.sug = editor.suggestionCards().map((card) => card.id + ":" + card.kind + ":" + card.quote).join("|");
   }

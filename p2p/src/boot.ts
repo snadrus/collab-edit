@@ -270,8 +270,10 @@ async function hostDoc(sock: AppSocket, wire: Wire, id: string): Promise<void> {
   sock.toHub = (data: string) => {
     const msg = JSON.parse(data) as Record<string, unknown>;
     if (!docSession) return;
-    if (!local) local = docSession.connect(bridge, msg);
-    else docSession.handle(local, msg);
+    if (!local) {
+      local = docSession.connect(bridge, msg);
+      local.owner = true;
+    } else docSession.handle(local, msg);
   };
   wire.onJoin((peer) => wire.send(peer, { k: "owner" }));
   wire.onMessage((from, body) => {
@@ -281,6 +283,8 @@ async function hostDoc(sock: AppSocket, wire: Wire, id: string): Promise<void> {
       return;
     }
     if (rec.k === "owner" || !docSession) return;
+    // Only the owner resolves comments.
+    if (rec.t === "resolve") return;
     let remote = remotes.get(from);
     if (!remote) {
       const socket = { send: (data: string) => wire.send(from, JSON.parse(data) as unknown) };

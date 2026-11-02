@@ -4,6 +4,7 @@ import { type Snapshot, docIsSigned, emptyDoc, restoreDoc, snapshotDoc } from ".
 import { ServerDoc } from "../../src/shared/engine.ts";
 import { applyAnchor, signatureGate } from "../../src/shared/sign.ts";
 import { DEFAULT_PAGE, type PageSpec } from "../../src/shared/page.ts";
+import { type Reply, type Thread, sanitizeThread, validId } from "../../src/shared/threads.ts";
 
 export interface HubSocket {
   send(data: string): void;
@@ -16,6 +17,8 @@ export interface DocConn {
   color: string;
   anchor: number;
   head: number;
+  /** The host's own tab. Only the owner resolves comments. */
+  owner?: boolean;
 }
 
 export interface DocRecord {
@@ -24,6 +27,7 @@ export interface DocRecord {
   snapshot: Snapshot;
   page: PageSpec;
   contentCid?: string;
+  threads?: Thread[];
 }
 
 export class DocSession {
@@ -34,6 +38,7 @@ export class DocSession {
   contentCid = "";
   locked = false;
   conns: DocConn[] = [];
+  threads = new Map<string, Thread>();
   save: ((record: DocRecord) => void) | null = null;
 
   constructor(id: string, record?: DocRecord | null) {
@@ -44,6 +49,10 @@ export class DocSession {
     this.server = new ServerDoc(record ? restoreDoc(record.snapshot) : emptyDoc());
     this.server.gate = signatureGate(this.id, () => ({ contentCid: this.contentCid, locked: this.locked }));
     if (record) this.server.rev = record.rev;
+    for (const thread of record?.threads || []) {
+      const clean = sanitizeThread(thread);
+      if (clean) this.threads.set(clean.id, clean);
+    }
     this.locked = !!this.contentCid || docIsSigned(this.server.doc);
   }
 
@@ -90,6 +99,62 @@ export class DocSession {
       this.broadcast({ t: "title", title: this.title }, null);
       this.persist();
     } else if (t === "anchor") this.onAnchor(conn, msg);
+    else if (t === "thread") this.onThread(conn, msg);
+    else if (t === "reply") this.onReply(conn, msg);
+    else if (t === "resolve") this.onResolve(conn, msg);
+  }
+
+  onThread(conn: DocConn, msg: Record<string, unknown>): void {
+    const id = validId(msg.id);
+    const text = typeof msg.text === "string" ? msg.text.trim().slice(0, 2000) : "";
+    if (!id || !text) return;
+    const existing = this.threads.get(id);
+    if (existing) {
+      this.broadcast({ t: "thread", thread: existing }, null);
+      return;
+    }
+    const clean = sanitizeThread({
+      id,
+      sid: conn.sid,
+      name: conn.name,
+      color: conn.color,
+      text,
+      ts: Date.now(),
+      quote: typeof msg.quote === "string" ? msg.quote.replace(/\s+/g, " ").trim().slice(0, 240) : "",
+      resolved: false,
+      replies: [],
+    });
+    if (!clean) return;
+    this.threads.set(id, clean);
+    this.publishThread(clean);
+  }
+
+  onReply(conn: DocConn, msg: Record<string, unknown>): void {
+    const id = validId(msg.id);
+    const replyId = validId(msg.replyId);
+    const text = typeof msg.text === "string" ? msg.text.trim().slice(0, 2000) : "";
+    const thread = id ? this.threads.get(id) : undefined;
+    if (!thread || !replyId || !text) return;
+    if (!thread.replies.some((r) => r.id === replyId)) {
+      const reply: Reply = { id: replyId, sid: conn.sid, name: conn.name, text, ts: Date.now() };
+      thread.replies.push(reply);
+    }
+    this.publishThread(thread);
+  }
+
+  /** Resolved threads stay in the document data; clients hide them. */
+  onResolve(conn: DocConn, msg: Record<string, unknown>): void {
+    if (!conn.owner) return;
+    const id = validId(msg.id);
+    const thread = id ? this.threads.get(id) : undefined;
+    if (!thread || typeof msg.resolved !== "boolean") return;
+    thread.resolved = msg.resolved;
+    this.publishThread(thread);
+  }
+
+  publishThread(thread: Thread): void {
+    this.broadcast({ t: "thread", thread }, null);
+    this.persist();
   }
 
   onAnchor(conn: DocConn, msg: Record<string, unknown>): void {
@@ -132,7 +197,7 @@ export class DocSession {
       title: this.title,
       self: { sid: conn.sid, name: conn.name, color: conn.color },
       presence: this.conns.map((item) => ({ sid: item.sid, name: item.name, color: item.color, anchor: item.anchor, head: item.head })),
-      threads: [],
+      threads: [...this.threads.values()],
       suggestions: [],
       page: this.page,
       contentCid: this.contentCid,
@@ -181,6 +246,7 @@ export class DocSession {
       snapshot: snapshotDoc(this.server.doc),
       page: this.page,
       contentCid: this.contentCid,
+      threads: [...this.threads.values()],
     });
   }
 
