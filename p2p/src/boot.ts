@@ -8,13 +8,15 @@ import {
   CALIBRATION_REGISTRY,
   FELANUMIO_DIR,
   FELARUMI_DIR,
+  FIGRID_DIR,
+  FIPEN_DIR,
   NO_REGISTRY_NOTICE,
   listSnapshots,
   openCalibrationVolume,
   saveSnapshot,
   volumeHistory,
 } from "./folder-save.ts";
-import { DEFAULT_NETWORK, commpAdapter, commpOf, fileAdapter, ipfsAdapter, normalizeNetwork, synapseAdapter, type FilecoinNetwork, type StorageAdapter, type SynapseLike } from "./storage.ts";
+import { DEFAULT_NETWORK, commpAdapter, commpOf, fileAdapter, ipfsAdapter, normalizeNetwork, savedVersionUrls, synapseAdapter, type FilecoinNetwork, type StorageAdapter, type SynapseLike } from "./storage.ts";
 import type { Wire } from "./wire.ts";
 
 const NativeWebSocket = globalThis.WebSocket;
@@ -103,7 +105,9 @@ class AppSocket {
 
 function shimWebSocket(url: string): WebSocket {
   const parsed = new URL(url, location.href);
-  if (parsed.pathname === "/relay") return new NativeWebSocket(url);
+  // Only the app's own /ws endpoints are local. Nostr relays and the test relay must stay real sockets.
+  const local = parsed.host === location.host && (parsed.pathname === "/ws" || parsed.pathname === "/ws/sheets");
+  if (!local) return new NativeWebSocket(url);
   const sock = new AppSocket();
   if (parsed.pathname === "/ws") void attachDoc(sock, parsed.searchParams.get("doc") || "");
   else if (parsed.pathname === "/ws/sheets") void attachBook(sock, parsed.searchParams.get("book") || "");
@@ -197,6 +201,30 @@ async function connectWire(room: string, secret: string): Promise<Wire> {
   if (new URLSearchParams(location.search).get("wire") === "test") return connectTest(room);
   const { connectTrystero } = await import("./trystero-wire.ts");
   return connectTrystero(room, secret);
+}
+
+async function readSavedVersion(): Promise<Record<string, unknown> | null> {
+  const params = new URLSearchParams(location.search);
+  const cid = params.get("cid") || params.get("pieceCid") || "";
+  if (!cid) return null;
+  let bytes = await getBlob(cid).catch(() => null);
+  for (const url of bytes ? [] : savedVersionUrls(cid, params.get("owner") || "", currentNetwork())) {
+    try {
+      const res = await fetch(url);
+      if (res.ok) {
+        bytes = new Uint8Array(await res.arrayBuffer());
+        break;
+      }
+    } catch {
+      // Try the next public source.
+    }
+  }
+  if (!bytes) return null;
+  try {
+    return JSON.parse(new TextDecoder().decode(bytes)) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
 }
 
 function showWait(): void {
@@ -332,9 +360,14 @@ function joinDoc(sock: AppSocket, wire: Wire, id: string): void {
   wire.send("*", { k: "join" });
   window.setTimeout(() => {
     if (ownerPeer || inited) return;
-    void loadRecord("doc:" + id).then((saved) => {
+    void loadRecord("doc:" + id).then(async (saved) => {
       if (ownerPeer || inited) return;
-      const data = saved?.data as DocRecord | null;
+      let data = saved?.data as DocRecord | null;
+      if (!data?.snapshot) {
+        const file = await readSavedVersion();
+        if (file?.snapshot) data = { title: String(file.title || "Untitled document"), rev: 0, snapshot: file.snapshot as Snapshot } as unknown as DocRecord;
+      }
+      if (ownerPeer || inited) return;
       if (data?.snapshot) {
         inited = true;
         sock.deliver(
@@ -473,7 +506,31 @@ function joinBook(sock: AppSocket, wire: Wire, id: string): void {
   wire.send("*", { k: "join" });
   window.setTimeout(() => {
     if (ownerPeer || inited) return;
-    showWait();
+    void loadRecord("book:" + id).then(async (saved) => {
+      if (ownerPeer || inited) return;
+      let data = saved?.data as BookRecord | null;
+      if (!data?.book) {
+        const file = await readSavedVersion();
+        if (file?.book) data = { title: String(file.title || "Untitled spreadsheet"), rev: 0, book: file.book as Book } as BookRecord;
+      }
+      if (ownerPeer || inited) return;
+      if (data?.book) {
+        inited = true;
+        sock.deliver(
+          JSON.stringify({
+            t: "init",
+            rev: data.rev,
+            book: data.book,
+            title: data.title,
+            role: "view",
+            self: { sid: "offline", name: "Guest", color: "#188038" },
+            presence: [],
+            threads: [],
+          }),
+        );
+      }
+      lock();
+    });
   }, 1500);
 }
 
@@ -493,7 +550,7 @@ async function exportActive(saveDownload = false): Promise<string> {
   const cid = await files.put(bytes);
   await putBlob(cid, bytes);
   setCid(cid);
-  if (saveDownload) download(bytes, docSession ? "felarumi.json" : "felanumio.json");
+  if (saveDownload) download(bytes, docSession ? "fipen.json" : "figrid.json");
   return raw;
 }
 
@@ -548,7 +605,7 @@ async function saveFilecoin(network: FilecoinNetwork, privateKey: string): Promi
 
 function installUi(): void {
   const style = document.createElement("style");
-  style.textContent = "#p2p-wait{position:sticky;top:0;z-index:80;background:#fef7e0;color:#202124;padding:8px 16px;text-align:center}#p2p-dialog{position:fixed;inset:0;background:rgba(32,33,36,.32);display:grid;place-items:center;z-index:90}#p2p-dialog .card{background:#fff;border-radius:12px;padding:16px;width:min(520px,92vw);max-height:88vh;overflow:auto;display:grid;gap:8px}#p2p-dialog[hidden]{display:none}#p2p-files,#p2p-history{display:grid;gap:4px;font-size:12px;word-break:break-all}#p2p-registry{margin:0}";
+  style.textContent = "#p2p-wait{position:sticky;top:0;z-index:80;background:#fef7e0;color:#202124;padding:8px 16px;text-align:center}#p2p-dialog{position:fixed;inset:0;background:rgba(32,33,36,.32);display:grid;place-items:center;z-index:90}#p2p-dialog .card{background:#fff;border-radius:12px;padding:16px;width:min(520px,92vw);max-height:88vh;overflow:auto;display:grid;gap:8px}#p2p-dialog[hidden]{display:none}#p2p-files,#p2p-history{display:grid;gap:4px;font-size:12px;word-break:break-all}#p2p-registry{margin:0}.p2p-save{margin-left:8px;padding:2px 12px;border:1px solid #dadce0;border-radius:14px;background:#fff;color:#1a73e8;font:500 13px system-ui,sans-serif;cursor:pointer}.p2p-save:hover{background:#f1f3f4}";
   document.head.append(style);
   const bar = document.createElement("div");
   bar.id = "p2p-wait";
@@ -702,12 +759,12 @@ function installUi(): void {
       synapse: mock ?? undefined,
     });
     clearBrowser();
-    const docs = await listSnapshots(volume, FELARUMI_DIR);
-    const sheets = await listSnapshots(volume, FELANUMIO_DIR);
+    const docs = [...(await listSnapshots(volume, FIPEN_DIR)), ...(await listSnapshots(volume, FELARUMI_DIR))];
+    const sheets = [...(await listSnapshots(volume, FIGRID_DIR)), ...(await listSnapshots(volume, FELANUMIO_DIR))];
     const files = [...docs, ...sheets].filter((entry) => entry.type === "file");
     if (!files.length) {
       const empty = document.createElement("p");
-      empty.textContent = "No files in /Felarumi or /Felanumio";
+      empty.textContent = "No files in /FiPen, /FiGrid, /Felarumi, or /Felanumio";
       filesEl.append(empty);
     }
     for (const entry of files) {
@@ -727,7 +784,7 @@ function installUi(): void {
       filesEl.append(button);
     }
     await paintHistory(volume);
-    status.textContent = files.length ? "Choose a file" : "No files in /Felarumi or /Felanumio";
+    status.textContent = files.length ? "Choose a file" : "No files in /FiPen, /FiGrid, /Felarumi, or /Felanumio";
   }
 }
 
@@ -785,11 +842,193 @@ function installApi(): void {
   };
 }
 
+type SaveState = "saved" | "pending" | "saving" | "failed";
+
+const SAVE_TEXT: Record<SaveState, string> = {
+  saved: "All changes saved",
+  pending: "Save pending",
+  saving: "Saving…",
+  failed: "Save failed",
+};
+
+/** The one writer of #status while FiFolders owns saving. The editors skip their own status text then. */
+function paintSave(state: SaveState, filecoin: boolean): void {
+  const status = document.querySelector("#status");
+  if (!status) return;
+  status.textContent = state === "saved" && filecoin ? "Saved to Filecoin" : SAVE_TEXT[state];
+  status.setAttribute("data-save", state);
+}
+
+function activeJson(): string {
+  return docSession ? docSession.exportJson() : bookSession ? bookSession.exportJson() : "";
+}
+
+function activeTitle(): string {
+  const input = document.querySelector("#title") as HTMLInputElement | null;
+  return (input?.value || docSession?.title || bookSession?.title || "").trim();
+}
+
+/** Adds a Save button beside the save status. FiFolders mode queues a save there; otherwise it opens the Filecoin dialog. */
+function installSaveButton(save: () => void): void {
+  const place = () => {
+    const status = document.querySelector("#status");
+    if (!status || document.querySelector("#p2p-save")) return !!status;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.id = "p2p-save";
+    button.className = "p2p-save";
+    button.textContent = "Save";
+    button.title = "Save (Ctrl+S)";
+    button.addEventListener("click", save);
+    status.after(button);
+    return true;
+  };
+  if (!place()) {
+    const timer = window.setInterval(() => {
+      if (place()) window.clearInterval(timer);
+    }, 250);
+  }
+  window.addEventListener(
+    "keydown",
+    (event) => {
+      if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === "s") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        save();
+      }
+    },
+    true,
+  );
+}
+
+function installFifoldersBridge(): void {
+  const params = new URLSearchParams(location.search);
+  if (params.get("fifolders") !== "1") {
+    installSaveButton(() => {
+      const dialog = document.querySelector("#p2p-dialog") as HTMLElement | null;
+      if (dialog) dialog.hidden = false;
+    });
+    return;
+  }
+  document.documentElement.dataset.saveOwner = "fifolders";
+  const path = params.get("path") || "";
+  const id = "fel:" + path;
+  let savedRaw = "";
+  let savedTitle = "";
+  let sent = "";
+  let filecoin = false;
+  const readOps = (): { id?: string; kind?: string; path?: string; stage?: string; status?: string; content?: string }[] => {
+    try {
+      const parsed = JSON.parse(localStorage.getItem("fifolders:ops") || "{}") as { ops?: unknown };
+      return Array.isArray(parsed.ops) ? (parsed.ops as { id?: string }[]) : [];
+    } catch {
+      return [];
+    }
+  };
+  const state = (raw: string): SaveState => {
+    const op = readOps().find((item) => item.id === id || (item.kind === "fel-save" && item.path === path));
+    if (!op && sent) {
+      // FiFolders drops the op once the bytes are in the volume.
+      savedRaw = sent;
+      sent = "";
+      filecoin = true;
+    } else if (op && (op.stage === "saved" || op.stage === "done" || op.status === "done")) {
+      savedRaw = op.content || raw;
+      sent = "";
+      filecoin = true;
+    }
+    if (raw === savedRaw && activeTitle() === savedTitle) return "saved";
+    if (op?.status === "error" || op?.stage === "error" || op?.stage === "interrupted") return "failed";
+    if (op && sent) return "saving";
+    return "pending";
+  };
+  const paint = () => {
+    const raw = activeJson();
+    if (!raw) return;
+    paintSave(state(raw), filecoin);
+  };
+  const publish = (force: boolean) => {
+    const raw = activeJson();
+    if (!raw) return;
+    const title = activeTitle();
+    if (!savedRaw) {
+      savedRaw = raw;
+      savedTitle = title;
+      if (!force) return;
+    }
+    if (!force && raw === savedRaw && title === savedTitle) return;
+    if (!force && raw === sent) return;
+    const name = params.get("name") || "";
+    const now = Date.now();
+    const ops = readOps().filter((op) => op.id !== id);
+    const next = {
+      id,
+      v: 1,
+      kind: "fel-save",
+      label: title || name || path || "Save",
+      status: "pending",
+      stage: "saving",
+      path,
+      name,
+      title,
+      content: raw,
+      volume: params.get("volume") || "",
+      owner: params.get("owner") || "",
+      pieceCid: params.get("pieceCid") || undefined,
+      created: now,
+      updated: now,
+    };
+    localStorage.setItem("fifolders:ops", JSON.stringify({ v: 1, ops: [...ops, next] }));
+    sent = raw;
+    savedTitle = title;
+    try {
+      const channel = new BroadcastChannel("fifolders-ops");
+      channel.postMessage({ v: 1 });
+      channel.close();
+    } catch {
+      // The storage write is enough for the FiFolders tab.
+    }
+    paint();
+  };
+  installSaveButton(() => {
+    const raw = activeJson();
+    if (raw && raw === savedRaw && activeTitle() === savedTitle && !sent) {
+      paint();
+      return;
+    }
+    publish(true);
+  });
+  const tick = () => {
+    const title = document.querySelector("#title") as HTMLInputElement | null;
+    const name = (params.get("name") || "").replace(/\.(felarumi|felanumio|fipen|figrid)$/i, "");
+    if (title && name && !title.dataset.fifolders) {
+      title.dataset.fifolders = "1";
+      title.value = name;
+      title.dispatchEvent(new Event("input", { bubbles: true }));
+      title.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    const home = document.querySelector("#home") as HTMLElement | null;
+    const blank = document.querySelector("#blank") as HTMLButtonElement | null;
+    if (home && !home.hidden && blank && !blank.dataset.fifolders) {
+      blank.dataset.fifolders = "1";
+      blank.click();
+    }
+    publish(false);
+    paint();
+  };
+  window.setInterval(tick, 1000);
+  window.setTimeout(tick, 50);
+  window.addEventListener("storage", (event) => {
+    if (event.key === "fifolders:ops") paint();
+  });
+}
+
 if ((window as unknown as { __FELARUMI_P2P__?: boolean }).__FELARUMI_P2P__) {
   window.WebSocket = shimWebSocket as unknown as typeof WebSocket;
   installFetch();
   installApi();
   installUi();
+  installFifoldersBridge();
 }
 
 export {};

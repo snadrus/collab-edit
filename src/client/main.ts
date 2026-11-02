@@ -1,3 +1,4 @@
+import { hostBase, routePath, withKeptQuery } from "../../p2p/src/host-base.ts";
 import type { Command } from "../shared/commands.ts";
 import type { Role } from "../shared/access.ts";
 import type { Heading } from "../shared/doc.ts";
@@ -85,7 +86,7 @@ function displayName(): string {
 }
 
 function docIdFromPath(): string | null {
-  const m = location.pathname.match(/^\/d\/([^/]+)\/?$/);
+  const m = routePath().match(/^\/d\/([^/]+)\/?$/);
   return m ? decodeURIComponent(m[1]) : null;
 }
 
@@ -193,20 +194,19 @@ function p2pSecret(kind: "doc" | "book", id: string): string {
 }
 
 function withWire(path: string, hash: string): string {
-  const wire = new URLSearchParams(location.search).get("wire");
-  const query = wire ? "?wire=" + encodeURIComponent(wire) : "";
-  return path + query + (hash ? "#" + hash : "");
+  return withKeptQuery(path, hash);
 }
 
 function docUrl(id: string): string {
-  const here = location.pathname === "/d/" + id || location.pathname === "/d/" + id + "/";
+  const path = routePath();
+  const here = path === "/d/" + id || path === "/d/" + id + "/";
   const hash = (here ? location.hash.replace(/^#/, "") : "") || p2pSecret("doc", id);
-  return withWire("/d/" + id, hash);
+  return withWire(hostBase() + "/d/" + id, hash);
 }
 
 async function mountHome(): Promise<void> {
   (document.querySelector("#home") as HTMLElement).hidden = false;
-  document.title = "Felarumi";
+  document.title = "FiPen";
   const recent = document.querySelector("#recent") as HTMLElement;
   const blank = document.querySelector("#blank") as HTMLButtonElement;
   blank.addEventListener("click", async () => {
@@ -380,7 +380,7 @@ function mountEditor(id: string, shareToken = ""): void {
 
   const refreshChrome = () => {
     const live = navigator.onLine && !!ws && ws.readyState === WebSocket.OPEN;
-    status.textContent = live ? (editor.dirty() ? "Saving…" : "All changes saved") : "Offline, changes will sync";
+    if (!document.documentElement.dataset.saveOwner) status.textContent = live ? (editor.dirty() ? "Saving…" : "All changes saved") : "Offline, changes will sync";
     const state = editor.markState();
     press("bold", state.b);
     press("italic", state.i);
@@ -401,7 +401,7 @@ function mountEditor(id: string, shareToken = ""): void {
     const size = document.querySelector("#size") as HTMLSelectElement;
     const sizeText = String(state.size);
     if ([...size.options].some((o) => o.value === sizeText)) size.value = sizeText;
-    document.title = (title.value || "Untitled document") + " - Felarumi";
+    document.title = (title.value || "Untitled document") + " - FiPen";
     syncMode();
     syncSigned();
   };
@@ -483,7 +483,7 @@ function mountEditor(id: string, shareToken = ""): void {
 
   title.addEventListener("change", () => sendTitle());
   title.addEventListener("input", () => {
-    document.title = title.value + " - Felarumi";
+    document.title = title.value + " - FiPen";
   });
   let titleTimer = 0;
   title.addEventListener("input", () => {
@@ -538,7 +538,7 @@ function mountEditor(id: string, shareToken = ""): void {
         .then((r) => r.json())
         .then((body: { id: string }) => window.open(docUrl(body.id), "_blank", "noopener"));
     },
-    "download-felarumi": () => saveFile(safeName(title.value, ".felarumi"), new Blob([toFelarumi(title.value, editor.doc, editor.threads)], { type: "application/json" })),
+    "download-felarumi": () => saveFile(safeName(title.value, ".fipen"), new Blob([toFelarumi(title.value, editor.doc, editor.threads)], { type: "application/json" })),
     "download-docx": () => void toDocx(editor.doc).then((buf) => saveFile(safeName(title.value, ".docx"), new Blob([buf]))),
     "download-odt": () => void toOdt(editor.doc).then((buf) => saveFile(safeName(title.value, ".odt"), new Blob([buf]))),
     "download-html": () => saveFile(safeName(title.value, ".html"), new Blob([toHtml(editor.doc, title.value)], { type: "text/html" })),
@@ -579,7 +579,7 @@ function mountEditor(id: string, shareToken = ""): void {
     citation: () => openCitation(),
     bibliography: () => editor.insertBibliography(),
     preferences: () => openPreferences(),
-    addons: () => openDialog("Add-ons", "Felarumi does not run third-party add-ons or scripts."),
+    addons: () => openDialog("Add-ons", "FiPen does not run third-party add-ons or scripts."),
     "menu-search": () => openMenuSearch(),
     undo: () => editor.undo(),
     redo: () => editor.redo(),
@@ -999,7 +999,7 @@ function mountEditor(id: string, shareToken = ""): void {
 
   async function importFile(file: File): Promise<void> {
     const name = file.name.toLowerCase();
-    if (name.endsWith(".felarumi") || name.endsWith(".json")) importBundle(fromFelarumi(await file.text()));
+    if (name.endsWith(".fipen") || name.endsWith(".felarumi") || name.endsWith(".json")) importBundle(fromFelarumi(await file.text()));
     else if (name.endsWith(".docx")) editor.replaceDocument(await fromDocx(new Uint8Array(await file.arrayBuffer())));
     else if (name.endsWith(".md") || name.endsWith(".markdown")) editor.replaceDocument(fromMarkdown(await file.text()));
     else if (name.endsWith(".html") || name.endsWith(".htm")) editor.replaceDocument(fromHtml(await file.text()));
@@ -2310,12 +2310,13 @@ function bindMenus(editor: Editor, actions: Record<string, () => void>): void {
 }
 
 function boot(): void {
-  const doc = location.pathname.match(/^\/d\/([^/]+)\/?$/);
+  const path = routePath();
+  const doc = path.match(/^\/d\/([^/]+)\/?$/);
   if (doc) {
     mountEditor(decodeURIComponent(doc[1]), new URLSearchParams(location.search).get("s") || "");
     return;
   }
-  const linked = location.pathname.match(/^\/([vce])\/([^/]+)\/?$/);
+  const linked = path.match(/^\/([vce])\/([^/]+)\/?$/);
   if (linked) {
     void fetch("/api/open/" + encodeURIComponent(linked[2]))
       .then((res) => (res.ok ? res.json() : null))

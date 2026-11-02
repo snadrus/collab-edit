@@ -19,6 +19,9 @@ import { RPC_URLS, type Eip1193Provider } from "./storage.ts";
 /** Volume name. The registry key is keccak256("default"). */
 export const VOLUME_NAME = "default";
 
+export const FIPEN_DIR = "/FiPen";
+export const FIGRID_DIR = "/FiGrid";
+/** Legacy folders. New saves use /FiPen and /FiGrid. These stay listed. */
 export const FELARUMI_DIR = "/Felarumi";
 export const FELANUMIO_DIR = "/Felanumio";
 
@@ -35,8 +38,8 @@ export function registryFor(network: "mainnet" | "calibration"): { address: type
 
 export function snapshotPath(kind: "felarumi" | "felanumio", title: string): string {
   const clean = title.replace(/[\\/\u0000]/g, " ").replace(/\s+/g, " ").trim().slice(0, 120) || "Untitled";
-  const dir = kind === "felarumi" ? FELARUMI_DIR : FELANUMIO_DIR;
-  const ext = kind === "felarumi" ? ".felarumi" : ".felanumio";
+  const dir = kind === "felarumi" ? FIPEN_DIR : FIGRID_DIR;
+  const ext = kind === "felarumi" ? ".fipen" : ".figrid";
   return `${dir}/${clean}${ext}`;
 }
 

@@ -6,6 +6,8 @@ import {
   CALIBRATION_REGISTRY,
   FELANUMIO_DIR,
   FELARUMI_DIR,
+  FIGRID_DIR,
+  FIPEN_DIR,
   NO_REGISTRY_NOTICE,
   VOLUME_NAME,
   listSnapshots,
@@ -33,15 +35,15 @@ describe("filecoin folders", () => {
   });
 
   it("saves docs and sheets on volume default and reads them back", async () => {
-    assert.equal(snapshotPath("felarumi", "My/Doc"), "/Felarumi/My Doc.felarumi");
-    assert.equal(snapshotPath("felanumio", ""), "/Felanumio/Untitled.felanumio");
+    assert.equal(snapshotPath("felarumi", "My/Doc"), "/FiPen/My Doc.fipen");
+    assert.equal(snapshotPath("felanumio", ""), "/FiGrid/Untitled.figrid");
     const { storage, registry } = memoryVolumeParts(OWNER);
     const doc = new TextEncoder().encode('{"kind":"felarumi-p2p","contentCid":"bafyunsigned"}');
     const book = new TextEncoder().encode('{"kind":"felanumio-p2p"}');
     const saved = await saveSnapshot({ kind: "felarumi", title: "Notes", bytes: doc, owner: OWNER, storage, registry });
     const sheet = await saveSnapshot({ kind: "felanumio", title: "Budget", bytes: book, owner: OWNER, storage, registry });
-    assert.equal(saved.path, "/Felarumi/Notes.felarumi");
-    assert.equal(sheet.path, "/Felanumio/Budget.felanumio");
+    assert.equal(saved.path, "/FiPen/Notes.fipen");
+    assert.equal(sheet.path, "/FiGrid/Budget.figrid");
     assert.equal(saved.version, 1n);
     assert.equal(sheet.version, 2n);
     assert.notEqual(saved.rootCid, sheet.rootCid);
@@ -49,8 +51,10 @@ describe("filecoin folders", () => {
 
     const volume = await openCalibrationVolume({ storage, registry, owner: OWNER });
     assert.equal(volume.name, VOLUME_NAME);
-    const docs = await listSnapshots(volume, FELARUMI_DIR);
-    const sheets = await listSnapshots(volume, FELANUMIO_DIR);
+    const docs = await listSnapshots(volume, FIPEN_DIR);
+    const sheets = await listSnapshots(volume, FIGRID_DIR);
+    assert.deepEqual(await listSnapshots(volume, FELARUMI_DIR), []);
+    assert.deepEqual(await listSnapshots(volume, FELANUMIO_DIR), []);
     assert.deepEqual(docs.map((entry) => entry.path), [saved.path]);
     assert.deepEqual(sheets.map((entry) => entry.path), [sheet.path]);
     assert.equal(new TextDecoder().decode(await volume.get(saved.path)), new TextDecoder().decode(doc));
@@ -76,6 +80,8 @@ describe("filecoin folders", () => {
   it("lists an empty folder as no files", async () => {
     const { storage, registry } = memoryVolumeParts(OWNER);
     const volume = await openVolume({ storage, registry, owner: OWNER, name: VOLUME_NAME });
+    assert.deepEqual(await listSnapshots(volume, FIPEN_DIR), []);
+    assert.deepEqual(await listSnapshots(volume, FIGRID_DIR), []);
     assert.deepEqual(await listSnapshots(volume, FELARUMI_DIR), []);
     assert.deepEqual(await listSnapshots(volume, FELANUMIO_DIR), []);
     assert.deepEqual(await volumeHistory(volume), []);

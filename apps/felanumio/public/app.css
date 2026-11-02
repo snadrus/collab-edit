@@ -6,6 +6,8 @@ button { cursor: pointer; }
 [hidden] { display: none !important; }
 .topbar { display: flex; align-items: center; gap: 12px; height: 56px; padding: 0 16px; background: white; border-bottom: 1px solid var(--line); }
 .mark { width: 36px; height: 36px; border-radius: 8px; background: var(--green); color: white; display: grid; place-items: center; font-weight: 700; text-decoration: none; }
+.mark.logo { background: transparent; width: auto; height: auto; }
+.mark.logo img { width: 36px; height: 36px; display: block; }
 #title { border: 0; background: transparent; font-size: 18px; padding: 4px 6px; border-radius: 4px; flex: 1; }
 #title:hover, #title:focus { background: var(--hover); outline: none; }
 .share { background: var(--green); color: white; border: 0; border-radius: 999px; height: 36px; padding: 0 18px; }

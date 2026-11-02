@@ -3,17 +3,17 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Felarumi</title>
-  <link rel="icon" href="/favicon.png" type="image/png">
-  <link rel="apple-touch-icon" href="/icon.png">
+  <title>FiPen</title>
+  <link rel="icon" href="/fipen.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/fipen.svg">
   <link rel="stylesheet" href="/fonts/fonts.css">
   <link rel="stylesheet" href="/app.css">
 </head>
 <body>
   <div id="home" hidden>
     <header class="home-bar">
-      <img class="home-logo" src="/logo.png" alt="Felarumi">
-      <a class="sheets-home" href="/sheets">Felanumio</a>
+      <img class="home-logo" src="/fipen.svg" alt="FiPen">
+      <a class="sheets-home" href="/sheets">FiGrid</a>
     </header>
     <main class="home-main">
       <button type="button" id="blank" class="blank-card">
@@ -29,7 +29,7 @@
 
   <div id="editor" hidden>
     <header class="topbar">
-      <a class="mark-link" href="/" aria-label="Felarumi home"><img class="header-logo" src="/logo.png" alt=""></a>
+      <a class="mark-link" href="/" aria-label="FiPen home"><img class="header-logo" src="/fipen.svg" alt=""></a>
       <div class="title-block">
         <input id="title" aria-label="Document title" value="Untitled document" maxlength="200" autocomplete="off">
         <div id="status" class="status">All changes saved</div>
@@ -50,7 +50,7 @@
           <button type="button" data-act="history">See version history</button>
           <button type="button" data-act="name-version">Name current version</button>
           <div class="menu-label">Download</div>
-          <button type="button" data-act="download-felarumi">Felarumi (.felarumi)</button>
+          <button type="button" data-act="download-felarumi">FiPen (.fipen)</button>
           <button type="button" data-act="download-docx">Word (.docx)</button>
           <button type="button" data-act="download-odt">OpenDocument (.odt)</button>
           <button type="button" data-act="download-pdf">PDF (.pdf)</button>
@@ -361,7 +361,7 @@
       <ul id="history-list"></ul>
       <footer><button type="button" id="history-restore" hidden>Restore this version</button></footer>
     </aside>
-    <input id="import-file" type="file" accept=".felarumi,.docx,.odt,.html,.htm,.md,.txt,.json" hidden>
+    <input id="import-file" type="file" accept=".fipen,.felarumi,.docx,.odt,.html,.htm,.md,.txt,.json" hidden>
     <div id="toast" hidden></div>
     <nav id="tabs" hidden></nav>
   </div>

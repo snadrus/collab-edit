@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { DEFAULT_NETWORK, RPC_URLS, UNANCHORED, commpOf, fileAdapter, ipfsAdapter, normalizeNetwork, pieceCidOf, synapseAdapter, trysteroOptions } from "../src/storage.ts";
+import { DEFAULT_NETWORK, RPC_URLS, UNANCHORED, commpOf, fileAdapter, ipfsAdapter, normalizeNetwork, pieceCidOf, savedVersionUrls, synapseAdapter, trysteroOptions } from "../src/storage.ts";
 
 describe("filecoin defaults", () => {
   it("uses mainnet unless the toggle asks for calibration", () => {
@@ -61,5 +61,15 @@ describe("filecoin defaults", () => {
     assert.equal(first, await commpOf(bytes));
     assert.notEqual(first, UNANCHORED);
     assert.notEqual(await commpOf(new TextEncoder().encode("other")), first);
+  });
+});
+
+describe("savedVersionUrls", () => {
+  it("reads piece CIDs from FilBeam with the payer address and IPFS CIDs from a gateway", () => {
+    const owner = "0x4893FfF3611240fbB4Be68eFe4AA0Ec634279331";
+    assert.deepEqual(savedVersionUrls("bafkzcibabc", owner, "mainnet")[0], "https://0x4893fff3611240fbb4be68efe4aa0ec634279331.filbeam.io/bafkzcibabc");
+    assert.match(savedVersionUrls("bafkzcibabc", owner, "calibration")[0], /\.calibration\.filbeam\.io\//);
+    assert.deepEqual(savedVersionUrls("bafybeigabc", "", "mainnet"), ["https://w3s.link/ipfs/bafybeigabc"]);
+    assert.deepEqual(savedVersionUrls("sha256-abc", owner, "mainnet"), []);
   });
 });

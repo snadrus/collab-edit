@@ -1,12 +1,12 @@
-# Felarumi
+# FiPen
 
-Felarumi is a real-time collaborative rich-text editor. Several people can edit one document at once. Remote carets stay on the page; a person's name shows when you hover their caret, their selection, or their avatar.
+FiPen is a real-time collaborative rich-text editor. Several people can edit one document at once. Remote carets stay on the page; a person's name shows when you hover their caret, their selection, or their avatar.
 
-![Felarumi editor with two collaborators](docs/screenshot.png)
+![FiPen editor with two collaborators](docs/screenshot.png)
 
 ## Roadmap
 
-Felarumi is the writing app. Felanumio, the spreadsheet, is served from the same process at [/sheets](http://localhost:8787/sheets).
+FiPen is the writing app. FiGrid, the spreadsheet, is served from the same process at [/sheets](http://localhost:8787/sheets). New documents are `.fipen` files and new spreadsheets are `.figrid` files. Older `.felarumi` and `.felanumio` files still open.
 
 ## Run
 
