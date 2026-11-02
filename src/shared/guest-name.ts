@@ -1,4 +1,4 @@
-/** Friendly default names: "<Adjective> <Animal>", picked by an MT19937 seeded from a wallet address or browser id. */
+/** Friendly default names: "<Adjective> <Animal>", picked by xoshiro128++ seeded from a wallet address or browser id. */
 
 export const ADJECTIVES = [
   "Able", "Agile", "Amber", "Amiable", "Ample", "Upbeat", "Ardent", "Artful", "Awesome", "Balanced",
@@ -28,36 +28,44 @@ export const ANIMALS = [
   "Squirrel", "Starfish", "Swan", "Tiger", "Toucan", "Turtle", "Walrus", "Whale", "Wombat", "Zebra",
 ];
 
-/** MT19937 (Matsumoto & Nishimura), 32-bit output. */
-export class MersenneTwister {
-  private mt = new Uint32Array(624);
-  private index = 625;
+/** splitmix32: expands one 32-bit seed into well-mixed words for the xoshiro state. */
+export function splitmix32(seed: number): () => number {
+  let x = seed >>> 0;
+  return () => {
+    x = (x + 0x9e3779b9) >>> 0;
+    let z = x;
+    z = Math.imul(z ^ (z >>> 16), 0x85ebca6b) >>> 0;
+    z = Math.imul(z ^ (z >>> 13), 0xc2b2ae35) >>> 0;
+    return (z ^ (z >>> 16)) >>> 0;
+  };
+}
 
-  constructor(seed: number) {
-    this.mt[0] = seed >>> 0;
-    for (let i = 1; i < 624; i++) {
-      const prev = this.mt[i - 1] ^ (this.mt[i - 1] >>> 30);
-      this.mt[i] = (Math.imul(1812433253, prev) + i) >>> 0;
-    }
-    this.index = 624;
+/** xoshiro128++ (Blackman & Vigna), 32-bit output. */
+export class Xoshiro128pp {
+  private s: Uint32Array;
+
+  constructor(state: [number, number, number, number]) {
+    this.s = Uint32Array.from(state);
+    if (!(this.s[0] | this.s[1] | this.s[2] | this.s[3])) this.s[0] = 1;
+  }
+
+  static fromSeed(seed: number): Xoshiro128pp {
+    const next = splitmix32(seed);
+    return new Xoshiro128pp([next(), next(), next(), next()]);
   }
 
   nextUint32(): number {
-    if (this.index >= 624) {
-      for (let i = 0; i < 624; i++) {
-        const y = (this.mt[i] & 0x80000000) | (this.mt[(i + 1) % 624] & 0x7fffffff);
-        let next = this.mt[(i + 397) % 624] ^ (y >>> 1);
-        if (y & 1) next ^= 0x9908b0df;
-        this.mt[i] = next >>> 0;
-      }
-      this.index = 0;
-    }
-    let y = this.mt[this.index++];
-    y ^= y >>> 11;
-    y ^= (y << 7) & 0x9d2c5680;
-    y ^= (y << 15) & 0xefc60000;
-    y ^= y >>> 18;
-    return y >>> 0;
+    const s = this.s;
+    const rotl = (x: number, k: number) => ((x << k) | (x >>> (32 - k))) >>> 0;
+    const result = (rotl((s[0] + s[3]) >>> 0, 7) + s[0]) >>> 0;
+    const t = (s[1] << 9) >>> 0;
+    s[2] ^= s[0];
+    s[3] ^= s[1];
+    s[1] ^= s[2];
+    s[0] ^= s[3];
+    s[2] ^= t;
+    s[3] = rotl(s[3], 11);
+    return result;
   }
 }
 
@@ -73,7 +81,7 @@ export function seedOf(text: string): number {
 
 /** Same wallet address (or browser id) gives the same name everywhere. */
 export function guestName(seedText: string): string {
-  const rng = new MersenneTwister(seedOf(seedText));
+  const rng = Xoshiro128pp.fromSeed(seedOf(seedText));
   const adjective = ADJECTIVES[rng.nextUint32() % ADJECTIVES.length];
   const animal = ANIMALS[rng.nextUint32() % ANIMALS.length];
   return `${adjective} ${animal}`;
