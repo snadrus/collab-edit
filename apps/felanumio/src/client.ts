@@ -1344,7 +1344,7 @@ function mount(id: string, share: string): void {
         }
         paint();
       }
-      (document.querySelector("#status") as HTMLElement).textContent = "Saved";
+      if (!document.documentElement.dataset.saveOwner) (document.querySelector("#status") as HTMLElement).textContent = "Saved";
     };
     sock.onclose = () => {
       if (gen === socketGen) window.setTimeout(connect, 800);

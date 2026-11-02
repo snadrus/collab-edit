@@ -459,6 +459,14 @@ export class Editor {
     });
   }
 
+  /** Lay out now if a paint is queued, so caret math never reads lines from before the last edit. */
+  private freshLayout(): void {
+    if (!this.raf) return;
+    cancelAnimationFrame(this.raf);
+    this.raf = 0;
+    this.paint();
+  }
+
   private paint(): void {
     const doc = this.preview ?? this.doc;
     this.layout = layoutDoc(doc, this.measure);
@@ -678,6 +686,7 @@ export class Editor {
         if ((ev as MouseEvent).detail >= 2) this.hooks.onEmbed?.(img);
         return;
       }
+      this.freshLayout();
       const idx = this.clamp(hitTest(this.doc, this.layout, page, point.x, point.y));
       const st = this.doc.styles[idx];
       if (this.doc.text[idx] === EMBED && (st?.embed === "fn" || st?.embed === "eq")) {
@@ -917,7 +926,25 @@ export class Editor {
     }
   }
 
+  private goalX: number | null = null;
+  private goalFor = -1;
+
+  /** Index one visual line up or down, in layout coordinates, keeping the column across repeated moves. */
+  private verticalTarget(from: number, dir: -1 | 1): number {
+    const box = caretBox(this.layout, from);
+    const x = this.goalFor === from && this.goalX !== null ? this.goalX : box.x;
+    const lines = this.layout.lines;
+    const at = lines.findIndex((ln) => ln.page === box.page && ln.y === box.y);
+    const target = at < 0 ? undefined : lines[at + dir];
+    if (!target) return dir < 0 ? 0 : this.doc.text.length - 1;
+    const next = this.clamp(hitTest(this.doc, this.layout, target.page, x, target.y + target.h / 2));
+    this.goalX = x;
+    this.goalFor = next;
+    return next;
+  }
+
   private move(key: string, shift: boolean, meta: boolean): void {
+    this.freshLayout();
     const doc = this.doc;
     let next = this.head;
     if (key === "ArrowLeft") next = meta ? wordBounds(doc, Math.max(0, this.head - 1))[0] : Math.max(0, this.head - 1);
@@ -925,20 +952,7 @@ export class Editor {
     else if (key === "Home") next = paraBounds(doc, this.head).start;
     else if (key === "End") next = paraBounds(doc, this.head).end;
     else if (key === "ArrowUp" || key === "ArrowDown") {
-      const box = caretBox(this.layout, this.head);
-      const y = key === "ArrowUp" ? box.y - 4 : box.y + box.h + 4;
-      let page = box.page;
-      if (y < 0 && page > 0) page -= 1;
-      const limit = pageSize().h;
-      if (y > limit && page < this.layout.pages - 1) page += 1;
-      const pageEl = this.pagesEl.children[page] as HTMLElement | undefined;
-      if (pageEl) {
-        const canvas = pageEl.querySelector("canvas") as HTMLCanvasElement;
-        const rect = canvas.getBoundingClientRect();
-        const scale = rect.height / limit || 1;
-        const clientY = rect.top + (key === "ArrowUp" ? Math.max(0, y) : Math.min(limit - 1, y)) * scale;
-        next = this.indexFromEvent({ clientX: rect.left + box.x * (rect.width / PAGE_W), clientY } as MouseEvent, pageEl, page);
-      }
+      next = this.verticalTarget(this.head, key === "ArrowUp" ? -1 : 1);
     }
     next = this.clamp(next);
     if (shift) this.head = next;
@@ -1216,6 +1230,7 @@ export class Editor {
   }
 
   private indexFromEvent(ev: MouseEvent, pageEl: HTMLElement, page: number): number {
+    this.freshLayout();
     const point = this.pointFromEvent(ev, pageEl);
     return this.clamp(hitTest(this.doc, this.layout, page, point.x, point.y));
   }

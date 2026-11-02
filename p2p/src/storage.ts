@@ -160,3 +160,14 @@ export function ipfsAdapter(token: string, fetchImpl: typeof fetch = fetch): Sto
     },
   };
 }
+
+/** Public, keyless sources for a saved version: FilBeam for piece CIDs (needs the payer address), then an IPFS gateway. */
+export function savedVersionUrls(cid: string, owner: string, network: FilecoinNetwork): string[] {
+  const urls: string[] = [];
+  if (/^0x[0-9a-fA-F]{40}$/.test(owner) && cid.startsWith("bafkzcib")) {
+    urls.push(`https://${owner.toLowerCase()}.${network === "calibration" ? "calibration." : ""}filbeam.io/${cid}`);
+  }
+  if (/^(bafy|bafk|Qm)/.test(cid)) urls.push(`https://w3s.link/ipfs/${cid}`);
+  return urls;
+}
+

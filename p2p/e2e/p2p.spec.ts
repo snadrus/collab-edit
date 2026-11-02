@@ -144,3 +144,64 @@ test("spreadsheet edits sync through the owner", async ({ browser }) => {
   await expect.poll(async () => pb.evaluate(() => window.__sheet!.role())).toBe("view");
   await guest.close();
 });
+
+test("caret lands on empty lines and line starts after Enter and arrows", async ({ page }) => {
+  await newDoc(page);
+  const text = () => page.evaluate(() => window.__editor!.getText());
+  await page.keyboard.type("abc");
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("X");
+  await page.keyboard.press("Home");
+  await page.keyboard.type("H");
+  expect(await text()).toBe("abc\nHX");
+  await page.keyboard.press("End");
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("Enter");
+  await page.keyboard.press("ArrowUp");
+  await page.keyboard.type("E");
+  expect(await text()).toBe("abc\nHX\nE\n");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.type("D");
+  expect(await text()).toBe("abc\nHX\nE\nD");
+  await page.keyboard.press("ArrowUp");
+  await page.keyboard.press("ArrowUp");
+  await page.keyboard.press("Home");
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("R");
+  expect(await text()).toBe("abc\n\nRHX\nE\nD");
+});
+
+test("outside sockets such as Nostr relays are real WebSockets", async ({ page }) => {
+  await page.goto("/?wire=test");
+  const native = await page.evaluate(() => {
+    const ws = new WebSocket("wss://relay.example.invalid/");
+    const ok = typeof (ws as WebSocket).addEventListener === "function" && ws.url.startsWith("wss://relay.example.invalid");
+    ws.close();
+    return ok;
+  });
+  expect(native).toBe(true);
+});
+
+test("FiFolders save button, title, and one consistent save status", async ({ page }) => {
+  await page.goto("/?wire=test&fifolders=1&path=%2FFiPen%2Fnote.fipen&name=note.fipen");
+  await page.waitForFunction(() => window.__editor?.ready === true);
+  const status = page.locator("#status");
+  const save = page.locator("#p2p-save");
+  await expect(save).toBeVisible();
+  await expect(status).toHaveText("All changes saved");
+  await page.evaluate(() => window.__editor!.insertText("hi"));
+  await page.locator("#title").fill("Renamed note");
+  await page.keyboard.press("ControlOrMeta+s");
+  const op = await page.evaluate(() => (JSON.parse(localStorage.getItem("fifolders:ops") || "{}").ops || [])[0]);
+  expect(op.kind).toBe("fel-save");
+  expect(op.title).toBe("Renamed note");
+  await expect(status).toHaveText("Saving…");
+  // FiFolders drops the op once the bytes are in the volume.
+  await page.evaluate(() => {
+    localStorage.setItem("fifolders:ops", JSON.stringify({ v: 1, ops: [] }));
+  });
+  await expect(status).toHaveText("Saved to Filecoin");
+  await page.keyboard.press("ControlOrMeta+s");
+  await expect(status).toHaveText("Saved to Filecoin");
+  await expect(page.getByText("Save pending")).toHaveCount(0);
+});

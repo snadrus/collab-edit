@@ -380,7 +380,7 @@ function mountEditor(id: string, shareToken = ""): void {
 
   const refreshChrome = () => {
     const live = navigator.onLine && !!ws && ws.readyState === WebSocket.OPEN;
-    status.textContent = live ? (editor.dirty() ? "Saving…" : "All changes saved") : "Offline, changes will sync";
+    if (!document.documentElement.dataset.saveOwner) status.textContent = live ? (editor.dirty() ? "Saving…" : "All changes saved") : "Offline, changes will sync";
     const state = editor.markState();
     press("bold", state.b);
     press("italic", state.i);
