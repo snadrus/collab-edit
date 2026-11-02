@@ -1,3 +1,4 @@
+import { learnWallet, resolveDisplayName } from "../../../src/shared/guest-name.ts";
 import { hostBase, routePath, withKeptQuery } from "../../../p2p/src/host-base.ts";
 import { caretColor, selectionColor } from "../../../packages/core/src/presence.ts";
 import { hexAlpha } from "../../../packages/core/src/palette.ts";
@@ -43,7 +44,8 @@ function bookUrl(id: string): string {
 
 const sid = sessionStorage.getItem("felanumio-sid") || crypto.randomUUID().replace(/-/g, "").slice(0, 16);
 sessionStorage.setItem("felanumio-sid", sid);
-const displayName = () => sessionStorage.getItem("felarumi-name") || "Guest";
+const displayName = () => resolveDisplayName();
+void learnWallet();
 
 function boot(): void {
   const path = routePath();

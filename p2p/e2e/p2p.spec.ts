@@ -266,3 +266,80 @@ test("signing path loads all of its modules without 404s or import errors", asyn
   expect(outcome).not.toMatch(/dynamically imported|Importing a module|was updated/);
   expect(bad).toEqual([]);
 });
+
+async function addComment(page: Page, text: string): Promise<void> {
+  await page.evaluate(() => (window.__editor as unknown as { setSelection: (a: number, b: number) => void }).setSelection(0, 5));
+  const canvas = page.locator("#pages canvas").first();
+  const box = (await canvas.boundingBox())!;
+  await page.mouse.click(box.x + 120, box.y + 110, { button: "right" });
+  await page.locator("#context").getByRole("button", { name: "Comment" }).click();
+  await page.locator(".note textarea, .note input").last().fill(text);
+  await page.locator(".note").last().getByRole("button", { name: "Comment" }).click();
+}
+
+test("no mode switcher; comments via context menu; no quote; only the owner resolves", async ({ browser }) => {
+  const owner = await browser.newContext();
+  const guest = await browser.newContext();
+  const pa = await owner.newPage();
+  const url = await newDoc(pa);
+  await expect(pa.locator("#mode")).toHaveCount(0);
+  await pa.evaluate(() => window.__editor!.insertText("hello world"));
+  const pb = await guest.newPage();
+  await pb.goto(url);
+  await pb.waitForFunction(() => window.__editor?.ready === true && window.__editor.getText().includes("hello"));
+  await addComment(pb, "guest note");
+  await expect(pb.locator(".note", { hasText: "guest note" })).toBeVisible();
+  const card = pa.locator(".note", { hasText: "guest note" });
+  await expect(card).toBeVisible();
+  await expect(card.locator(".note-quote")).toHaveCount(0);
+  await expect(card).not.toContainText("hello");
+  await expect(pb.locator(".note", { hasText: "guest note" }).getByRole("button", { name: "Resolve" })).toHaveCount(0);
+  await card.getByRole("button", { name: "Resolve" }).click();
+  await expect(pa.locator(".note", { hasText: "guest note" })).toHaveCount(0);
+  await expect(pb.locator(".note", { hasText: "guest note" })).toHaveCount(0);
+  await owner.close();
+  await guest.close();
+});
+
+test("touch selection shows a floating Comment bubble", async ({ browser }) => {
+  const ctx = await browser.newContext({ hasTouch: true, isMobile: true, viewport: { width: 400, height: 800 } });
+  const page = await ctx.newPage();
+  await newDoc(page);
+  await page.evaluate(() => window.__editor!.insertText("tap to comment"));
+  await expect(page.locator("#comment-bubble")).toBeHidden();
+  await page.evaluate(() => (window.__editor as unknown as { setSelection: (a: number, b: number) => void }).setSelection(0, 3));
+  await expect(page.locator("#comment-bubble")).toBeVisible();
+  await page.locator("#comment-bubble").click();
+  await expect(page.locator(".note textarea, .note input").last()).toBeVisible();
+  await ctx.close();
+});
+
+test("guest names come from the wallet, the browser id, or the FiFolders display name", async ({ browser }) => {
+  const wallet = "0x4893FfF3611240fbB4Be68eFe4AA0Ec634279331";
+  const names: string[] = [];
+  for (let i = 0; i < 2; i++) {
+    const ctx = await browser.newContext();
+    await ctx.addInitScript((addr) => {
+      (window as unknown as { ethereum: unknown }).ethereum = { request: async () => [addr] };
+    }, wallet);
+    const page = await ctx.newPage();
+    await newDoc(page);
+    await expect(page.locator("#name-btn")).toHaveText(/^[A-Z][a-z]+ [A-Z][a-z]+$/);
+    names.push((await page.locator("#name-btn").textContent()) || "");
+    await ctx.close();
+  }
+  expect(names[0]).toBe(names[1]);
+  const plain = await browser.newContext();
+  const page = await plain.newPage();
+  await newDoc(page);
+  const first = await page.locator("#name-btn").textContent();
+  expect(first).toMatch(/^[A-Z][a-z]+ [A-Z][a-z]+$/);
+  await page.reload();
+  await page.waitForFunction(() => window.__editor?.ready === true);
+  await expect(page.locator("#name-btn")).toHaveText(first!);
+  await page.evaluate(() => localStorage.setItem("fifolders:display-name", "Andy J"));
+  await page.reload();
+  await page.waitForFunction(() => window.__editor?.ready === true);
+  await expect(page.locator("#name-btn")).toHaveText("Andy J");
+  await plain.close();
+});

@@ -44,6 +44,7 @@ import { diffWords, encodeStrokes, lookupWord } from "../shared/tools.ts";
 import { loadQueue, saveQueue } from "./offline.ts";
 import { MB, ML, MR, MT, PAGE_H, PAGE_W, RULER_H, applyPage, currentPage } from "./layout.ts";
 import { Editor, decodeCommands, encodeCommands, type RemoteCaret } from "./editor.ts";
+import { learnWallet, resolveDisplayName } from "../shared/guest-name.ts";
 
 interface InitMsg {
   t: "init";
@@ -82,7 +83,7 @@ function sid(): string {
 }
 
 function displayName(): string {
-  return sessionStorage.getItem("felarumi-name") || sessionStorage.getItem("folio-name") || "Guest";
+  return resolveDisplayName();
 }
 
 function docIdFromPath(): string | null {
@@ -417,6 +418,7 @@ function mountEditor(id: string, shareToken = ""): void {
       refreshChrome();
       sendSel();
       chrome?.refresh();
+      syncCommentBubble();
     },
     onPaint: () => {
       rulerIndentPx = editor.leftIndent() * 36;
@@ -461,6 +463,9 @@ function mountEditor(id: string, shareToken = ""): void {
     },
     toast,
     people,
+    // Peer-hosted docs: only the owner resolves. The server build keeps its own access rules.
+    canResolve: () =>
+      !(window as unknown as { __FELARUMI_P2P__?: boolean }).__FELARUMI_P2P__ || localStorage.getItem("felarumi-owner:doc:" + id) === "1",
   });
 
   const applyZoom = (z: number) => {
@@ -471,6 +476,44 @@ function mountEditor(id: string, shareToken = ""): void {
   };
 
   nameBtn.textContent = displayName();
+  const renameSelf = () => {
+    nameBtn.textContent = displayName();
+    editor.name = displayName();
+    ws?.send(JSON.stringify({ t: "name", name: displayName() }));
+    paintAvatars(editor, session);
+  };
+  void learnWallet().then((changed) => {
+    if (changed) renameSelf();
+  });
+  window.addEventListener("storage", (event) => {
+    if (event.key === "fifolders:display-name") renameSelf();
+  });
+
+  // Touch: a floating Comment bubble over a selection (desktop uses the right-click menu).
+  const bubble = document.createElement("button");
+  bubble.type = "button";
+  bubble.id = "comment-bubble";
+  bubble.textContent = "💬 Comment";
+  bubble.hidden = true;
+  bubble.style.cssText = "position:fixed;z-index:70;padding:6px 12px;border-radius:16px;border:1px solid #dadce0;background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.25);font:500 14px system-ui,sans-serif";
+  document.body.append(bubble);
+  let lastPoint = { x: 0, y: 0 };
+  document.addEventListener("pointerup", (ev) => {
+    lastPoint = { x: ev.clientX, y: ev.clientY };
+  });
+  bubble.addEventListener("pointerdown", (ev) => ev.preventDefault());
+  bubble.addEventListener("click", () => {
+    bubble.hidden = true;
+    chrome.openComment();
+  });
+  const touchy = () => window.matchMedia?.("(pointer: coarse)").matches || navigator.maxTouchPoints > 0;
+  function syncCommentBubble(): void {
+    const show = touchy() && editor.anchor !== editor.head && editor.role !== "view";
+    bubble.hidden = !show;
+    if (!show) return;
+    bubble.style.left = Math.max(8, Math.min(lastPoint.x - 50, window.innerWidth - 130)) + "px";
+    bubble.style.top = Math.max(8, lastPoint.y - 56) + "px";
+  }
   nameBtn.addEventListener("click", () => {
     const next = window.prompt("Name shown on your cursor", displayName());
     if (!next) return;
@@ -689,10 +732,6 @@ function mountEditor(id: string, shareToken = ""): void {
     const value = (ev.target as HTMLSelectElement).value;
     if (value === "custom") openSpacing();
     else editor.setLineSpacing(Number(value));
-    editor.focus();
-  });
-  (document.querySelector("#mode") as HTMLSelectElement).addEventListener("change", (ev) => {
-    editor.setMode((ev.target as HTMLSelectElement).value as "edit" | "suggest" | "view");
     editor.focus();
   });
   (document.querySelector("#highlight") as HTMLInputElement).addEventListener("input", (ev) => {
@@ -1011,8 +1050,6 @@ function mountEditor(id: string, shareToken = ""): void {
   function applyAccess(role: Role, trashed: boolean): void {
     editor.setRole(trashed ? "view" : role);
     (document.querySelector("#trash-banner") as HTMLElement).hidden = !trashed;
-    const select = document.querySelector("#mode") as HTMLSelectElement;
-    select.disabled = editor.role !== "edit";
     syncMode();
     void loadTabs();
   }
