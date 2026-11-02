@@ -1150,33 +1150,19 @@ function mount(id: string, share: string): void {
   });
 
   document.querySelector("#share")!.addEventListener("click", () => {
-    if (role !== "edit") {
-      void navigator.clipboard.writeText(location.href);
-      return;
-    }
-    void fetch("/api/books/" + id + "/share")
-      .then((res) => res.json())
-      .then((body: { access: string; tokens: { edit: string; comment: string; view: string } }) => {
-        const card = document.querySelector("#dialog-card") as HTMLElement;
-        card.innerHTML = `<h2>Share</h2><p>General access</p><select id="access"><option value="edit">Editor</option><option value="comment">Commenter</option><option value="view">Viewer</option></select>
-          <button type="button" id="copy-edit">Copy editor link</button>
-          <button type="button" id="copy-comment">Copy commenter link</button>
-          <button type="button" id="copy-view">Copy viewer link</button>
-          <button type="button" id="dlg-close">Close</button>`;
-        (card.querySelector("#access") as HTMLSelectElement).value = body.access;
-        (document.querySelector("#dialog") as HTMLElement).hidden = false;
-        const origin = location.origin;
-        const copy = (token: string, kind: string) => void navigator.clipboard.writeText(origin + "/sheets/" + kind + "/" + token);
-        card.querySelector("#copy-edit")!.addEventListener("click", () => copy(body.tokens.edit, "e"));
-        card.querySelector("#copy-comment")!.addEventListener("click", () => copy(body.tokens.comment, "c"));
-        card.querySelector("#copy-view")!.addEventListener("click", () => copy(body.tokens.view, "v"));
-        card.querySelector("#access")!.addEventListener("change", (ev) => {
-          void fetch("/api/books/" + id + "/access", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ access: (ev.target as HTMLSelectElement).value }) });
-        });
-        card.querySelector("#dlg-close")!.addEventListener("click", () => {
-          (document.querySelector("#dialog") as HTMLElement).hidden = true;
-        });
+    const card = document.querySelector("#dialog-card") as HTMLElement;
+    card.innerHTML = `<h2>Share</h2><button type="button" id="copy-link">🔗 Copy Link</button><button type="button" id="dlg-close">Close</button>`;
+    (document.querySelector("#dialog") as HTMLElement).hidden = false;
+    const btn = card.querySelector("#copy-link") as HTMLButtonElement;
+    btn.addEventListener("click", () => {
+      void navigator.clipboard.writeText(location.href).then(() => {
+        btn.textContent = "Copied";
+        window.setTimeout(() => (btn.textContent = "🔗 Copy Link"), 1500);
       });
+    });
+    card.querySelector("#dlg-close")!.addEventListener("click", () => {
+      (document.querySelector("#dialog") as HTMLElement).hidden = true;
+    });
   });
 
   document.querySelector("#history-close")!.addEventListener("click", () => {

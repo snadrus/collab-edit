@@ -182,26 +182,51 @@ test("outside sockets such as Nostr relays are real WebSockets", async ({ page }
   expect(native).toBe(true);
 });
 
-test("FiFolders save button, title, and one consistent save status", async ({ page }) => {
+test("FiFolders saves only on Save, Cmd+S, or the dirty-only autosave", async ({ page }) => {
+  await page.addInitScript(() => {
+    (window as unknown as { __p2pAutosaveMs: number }).__p2pAutosaveMs = 3000;
+  });
   await page.goto("/?wire=test&fifolders=1&path=%2FFiPen%2Fnote.fipen&name=note.fipen");
   await page.waitForFunction(() => window.__editor?.ready === true);
   const status = page.locator("#status");
-  const save = page.locator("#p2p-save");
-  await expect(save).toBeVisible();
+  const ops = () => page.evaluate(() => JSON.parse(localStorage.getItem("fifolders:ops") || "{}").ops || []);
+  await expect(page.locator("#p2p-save")).toBeVisible();
   await expect(status).toHaveText("All changes saved");
+  // Status and Save sit to the right of the title.
+  const [title, save] = await Promise.all([page.locator("#title").boundingBox(), page.locator("#p2p-save").boundingBox()]);
+  expect(save!.x).toBeGreaterThan(title!.x + title!.width - 1);
+  await page.waitForTimeout(3500);
+  expect(await ops()).toHaveLength(0);
   await page.evaluate(() => window.__editor!.insertText("hi"));
   await page.locator("#title").fill("Renamed note");
+  await expect(status).toHaveText("Unsaved changes");
+  expect(await ops()).toHaveLength(0);
   await page.keyboard.press("ControlOrMeta+s");
-  const op = await page.evaluate(() => (JSON.parse(localStorage.getItem("fifolders:ops") || "{}").ops || [])[0]);
+  const op = (await ops())[0];
   expect(op.kind).toBe("fel-save");
   expect(op.title).toBe("Renamed note");
   await expect(status).toHaveText("Saving…");
-  // FiFolders drops the op once the bytes are in the volume.
-  await page.evaluate(() => {
-    localStorage.setItem("fifolders:ops", JSON.stringify({ v: 1, ops: [] }));
-  });
+  await page.evaluate(() => localStorage.setItem("fifolders:ops", JSON.stringify({ v: 1, ops: [] })));
   await expect(status).toHaveText("Saved to Filecoin");
   await page.keyboard.press("ControlOrMeta+s");
-  await expect(status).toHaveText("Saved to Filecoin");
-  await expect(page.getByText("Save pending")).toHaveCount(0);
+  await page.waitForTimeout(3500);
+  expect(await ops()).toHaveLength(0);
+  await page.evaluate(() => window.__editor!.insertText("!"));
+  await expect(status).toHaveText(/Unsaved changes|Saving…/);
+  await expect.poll(async () => (await ops()).length, { timeout: 8000 }).toBe(1);
+});
+
+test("Share offers only Copy Link with the live document link", async ({ browser }) => {
+  const ctx = await browser.newContext({ permissions: ["clipboard-read", "clipboard-write"] });
+  const page = await ctx.newPage();
+  const url = await newDoc(page);
+  await page.locator("#share").click();
+  const btn = page.getByRole("button", { name: "🔗 Copy Link" });
+  await expect(btn).toBeVisible();
+  await expect(page.getByText(/editor link|commenter link|viewer link/i)).toHaveCount(0);
+  await btn.click();
+  await expect(page.getByRole("button", { name: "Copied" })).toBeVisible();
+  const copied = await page.evaluate(() => navigator.clipboard.readText());
+  expect(new URL(copied).hash).toBe(new URL(url).hash);
+  await ctx.close();
 });

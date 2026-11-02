@@ -143,8 +143,6 @@ function installFetch(): void {
     if (url.pathname === "/api/books" && method === "POST") return jsonResponse(await createRoom("book"), 201);
     const tabs = url.pathname.match(/^\/api\/docs\/([A-Za-z0-9_-]+)\/tabs$/);
     if (tabs && method === "GET") return jsonResponse([{ id: tabs[1], title: "Tab" }]);
-    const share = url.pathname.match(/^\/api\/(?:docs|books)\/([A-Za-z0-9_-]+)\/share$/);
-    if (share && method === "GET") return jsonResponse({ access: "edit", tokens: { edit: "editor", comment: "comment", view: "viewer" } });
     return jsonResponse({ ok: true, access: "edit" });
   };
 }
@@ -582,6 +580,7 @@ async function saveFilecoin(network: FilecoinNetwork, privateKey: string): Promi
     const pieceCid = await adapter.put(bytes);
     await putBlob(pieceCid, bytes);
     setCid(pieceCid);
+    markFilecoinSaved(raw, activeTitle());
     return { pieceCid, path: "", notice: NO_REGISTRY_NOTICE };
   }
   const mock = mockSynapse();
@@ -600,12 +599,13 @@ async function saveFilecoin(network: FilecoinNetwork, privateKey: string): Promi
   });
   await putBlob(saved.pieceCid, bytes);
   setCid(saved.pieceCid);
+  markFilecoinSaved(raw, activeTitle());
   return { pieceCid: saved.pieceCid, path: saved.path, notice: "" };
 }
 
 function installUi(): void {
   const style = document.createElement("style");
-  style.textContent = "#p2p-wait{position:sticky;top:0;z-index:80;background:#fef7e0;color:#202124;padding:8px 16px;text-align:center}#p2p-dialog{position:fixed;inset:0;background:rgba(32,33,36,.32);display:grid;place-items:center;z-index:90}#p2p-dialog .card{background:#fff;border-radius:12px;padding:16px;width:min(520px,92vw);max-height:88vh;overflow:auto;display:grid;gap:8px}#p2p-dialog[hidden]{display:none}#p2p-files,#p2p-history{display:grid;gap:4px;font-size:12px;word-break:break-all}#p2p-registry{margin:0}.p2p-save{margin-left:8px;padding:2px 12px;border:1px solid #dadce0;border-radius:14px;background:#fff;color:#1a73e8;font:500 13px system-ui,sans-serif;cursor:pointer}.p2p-save:hover{background:#f1f3f4}";
+  style.textContent = "#p2p-wait{position:sticky;top:0;z-index:80;background:#fef7e0;color:#202124;padding:8px 16px;text-align:center}#p2p-dialog{position:fixed;inset:0;background:rgba(32,33,36,.32);display:grid;place-items:center;z-index:90}#p2p-dialog .card{background:#fff;border-radius:12px;padding:16px;width:min(520px,92vw);max-height:88vh;overflow:auto;display:grid;gap:8px}#p2p-dialog[hidden]{display:none}#p2p-files,#p2p-history{display:grid;gap:4px;font-size:12px;word-break:break-all}#p2p-registry{margin:0}.p2p-saverow{display:inline-flex;align-items:center;gap:6px;margin-left:8px;white-space:nowrap;vertical-align:middle}.p2p-saverow .status,.p2p-saverow #status{padding-left:0}.p2p-save{padding:2px 12px;border:1px solid #dadce0;border-radius:14px;background:#fff;color:#1a73e8;font:500 13px system-ui,sans-serif;cursor:pointer}.p2p-save:hover{background:#f1f3f4}";
   document.head.append(style);
   const bar = document.createElement("div");
   bar.id = "p2p-wait";
@@ -842,20 +842,33 @@ function installApi(): void {
   };
 }
 
-type SaveState = "saved" | "pending" | "saving" | "failed";
+type SaveState = "clean" | "saved" | "dirty" | "saving" | "failed";
 
 const SAVE_TEXT: Record<SaveState, string> = {
-  saved: "All changes saved",
-  pending: "Save pending",
+  clean: "All changes saved",
+  saved: "Saved to Filecoin",
+  dirty: "Unsaved changes",
   saving: "Saving…",
   failed: "Save failed",
 };
 
-/** The one writer of #status while FiFolders owns saving. The editors skip their own status text then. */
-function paintSave(state: SaveState, filecoin: boolean): void {
+/** Filecoin autosave period. Each save is a paid piece, so it only runs when there are unsaved changes. */
+export const AUTOSAVE_MS = 5 * 60 * 1000;
+
+/** Last content known to be on Filecoin. Standalone saves (the dialog) report here too. */
+const filecoinMark = { raw: "", title: "", saved: false };
+
+function markFilecoinSaved(raw: string, title: string): void {
+  filecoinMark.raw = raw;
+  filecoinMark.title = title;
+  filecoinMark.saved = true;
+}
+
+/** The one writer of #status. The editors skip their own status text once this owns it. */
+function paintSave(state: SaveState): void {
   const status = document.querySelector("#status");
   if (!status) return;
-  status.textContent = state === "saved" && filecoin ? "Saved to Filecoin" : SAVE_TEXT[state];
+  status.textContent = SAVE_TEXT[state];
   status.setAttribute("data-save", state);
 }
 
@@ -868,19 +881,25 @@ function activeTitle(): string {
   return (input?.value || docSession?.title || bookSession?.title || "").trim();
 }
 
-/** Adds a Save button beside the save status. FiFolders mode queues a save there; otherwise it opens the Filecoin dialog. */
+/** Puts the save status and a Save button to the right of the title, and binds Cmd/Ctrl+S. */
 function installSaveButton(save: () => void): void {
   const place = () => {
-    const status = document.querySelector("#status");
-    if (!status || document.querySelector("#p2p-save")) return !!status;
+    const status = document.querySelector("#status") as HTMLElement | null;
+    const title = document.querySelector("#title") as HTMLElement | null;
+    if (!status || !title) return false;
+    if (document.querySelector("#p2p-save")) return true;
+    const row = document.createElement("span");
+    row.id = "p2p-saverow";
+    row.className = "p2p-saverow";
+    title.after(row);
     const button = document.createElement("button");
     button.type = "button";
     button.id = "p2p-save";
     button.className = "p2p-save";
     button.textContent = "Save";
-    button.title = "Save (Ctrl+S)";
+    button.title = "Save to Filecoin (Ctrl+S)";
     button.addEventListener("click", save);
-    status.after(button);
+    row.append(status, button);
     return true;
   };
   if (!place()) {
@@ -901,22 +920,16 @@ function installSaveButton(save: () => void): void {
   );
 }
 
-function installFifoldersBridge(): void {
+function installSaveFlow(): void {
   const params = new URLSearchParams(location.search);
-  if (params.get("fifolders") !== "1") {
-    installSaveButton(() => {
-      const dialog = document.querySelector("#p2p-dialog") as HTMLElement | null;
-      if (dialog) dialog.hidden = false;
-    });
-    return;
-  }
-  document.documentElement.dataset.saveOwner = "fifolders";
+  const embedded = params.get("fifolders") === "1";
+  document.documentElement.dataset.saveOwner = embedded ? "fifolders" : "p2p";
   const path = params.get("path") || "";
   const id = "fel:" + path;
-  let savedRaw = "";
-  let savedTitle = "";
+  let baseRaw = "";
+  let baseTitle = "";
   let sent = "";
-  let filecoin = false;
+  let sentTitle = "";
   const readOps = (): { id?: string; kind?: string; path?: string; stage?: string; status?: string; content?: string }[] => {
     try {
       const parsed = JSON.parse(localStorage.getItem("fifolders:ops") || "{}") as { ops?: unknown };
@@ -925,39 +938,33 @@ function installFifoldersBridge(): void {
       return [];
     }
   };
+  const ownOp = () => readOps().find((item) => item.id === id || (item.kind === "fel-save" && item.path === path));
+  const dirty = (raw: string): boolean => {
+    const title = activeTitle();
+    const ref = filecoinMark.saved ? filecoinMark : { raw: baseRaw, title: baseTitle };
+    return raw !== ref.raw || title !== ref.title;
+  };
   const state = (raw: string): SaveState => {
-    const op = readOps().find((item) => item.id === id || (item.kind === "fel-save" && item.path === path));
-    if (!op && sent) {
-      // FiFolders drops the op once the bytes are in the volume.
-      savedRaw = sent;
-      sent = "";
-      filecoin = true;
-    } else if (op && (op.stage === "saved" || op.stage === "done" || op.status === "done")) {
-      savedRaw = op.content || raw;
-      sent = "";
-      filecoin = true;
+    if (embedded && sent) {
+      const op = ownOp();
+      if (!op || op.stage === "saved" || op.stage === "done" || op.status === "done") {
+        // FiFolders drops the op once the bytes are in the volume.
+        markFilecoinSaved(sent, sentTitle);
+        sent = "";
+      } else if (op.status === "error" || op.stage === "error" || op.stage === "interrupted") return "failed";
+      else if (op.content === raw) return "saving";
     }
-    if (raw === savedRaw && activeTitle() === savedTitle) return "saved";
-    if (op?.status === "error" || op?.stage === "error" || op?.stage === "interrupted") return "failed";
-    if (op && sent) return "saving";
-    return "pending";
+    if (!dirty(raw)) return filecoinMark.saved ? "saved" : "clean";
+    return "dirty";
   };
   const paint = () => {
     const raw = activeJson();
-    if (!raw) return;
-    paintSave(state(raw), filecoin);
+    if (raw) paintSave(state(raw));
   };
-  const publish = (force: boolean) => {
+  const queueSave = () => {
     const raw = activeJson();
     if (!raw) return;
     const title = activeTitle();
-    if (!savedRaw) {
-      savedRaw = raw;
-      savedTitle = title;
-      if (!force) return;
-    }
-    if (!force && raw === savedRaw && title === savedTitle) return;
-    if (!force && raw === sent) return;
     const name = params.get("name") || "";
     const now = Date.now();
     const ops = readOps().filter((op) => op.id !== id);
@@ -980,7 +987,7 @@ function installFifoldersBridge(): void {
     };
     localStorage.setItem("fifolders:ops", JSON.stringify({ v: 1, ops: [...ops, next] }));
     sent = raw;
-    savedTitle = title;
+    sentTitle = title;
     try {
       const channel = new BroadcastChannel("fifolders-ops");
       channel.postMessage({ v: 1 });
@@ -990,18 +997,34 @@ function installFifoldersBridge(): void {
     }
     paint();
   };
-  installSaveButton(() => {
+  const isDirty = () => {
     const raw = activeJson();
-    if (raw && raw === savedRaw && activeTitle() === savedTitle && !sent) {
+    return !!raw && !!baseRaw && dirty(raw) && sent !== raw;
+  };
+  const save = (auto: boolean) => {
+    if (!activeJson()) return;
+    if (!isDirty()) {
       paint();
       return;
     }
-    publish(true);
+    if (embedded) queueSave();
+    else if (!auto) {
+      const dialog = document.querySelector("#p2p-dialog") as HTMLElement | null;
+      if (dialog) dialog.hidden = false;
+    }
+  };
+  installSaveButton(() => save(false));
+  // Standalone autosave needs a signer the tab does not keep, so only the embedded mode autosaves.
+  window.setInterval(() => save(true), Number((window as unknown as { __p2pAutosaveMs?: number }).__p2pAutosaveMs) || AUTOSAVE_MS);
+  window.addEventListener("beforeunload", (event) => {
+    if (!isDirty()) return;
+    event.preventDefault();
+    event.returnValue = "";
   });
   const tick = () => {
     const title = document.querySelector("#title") as HTMLInputElement | null;
     const name = (params.get("name") || "").replace(/\.(felarumi|felanumio|fipen|figrid)$/i, "");
-    if (title && name && !title.dataset.fifolders) {
+    if (embedded && title && name && !title.dataset.fifolders) {
       title.dataset.fifolders = "1";
       title.value = name;
       title.dispatchEvent(new Event("input", { bubbles: true }));
@@ -1009,11 +1032,16 @@ function installFifoldersBridge(): void {
     }
     const home = document.querySelector("#home") as HTMLElement | null;
     const blank = document.querySelector("#blank") as HTMLButtonElement | null;
-    if (home && !home.hidden && blank && !blank.dataset.fifolders) {
+    if (embedded && home && !home.hidden && blank && !blank.dataset.fifolders) {
       blank.dataset.fifolders = "1";
       blank.click();
     }
-    publish(false);
+    const raw = activeJson();
+    if (raw && !baseRaw) {
+      // The first content (opened from FiFolders or local) is the clean baseline.
+      baseRaw = raw;
+      baseTitle = activeTitle();
+    }
     paint();
   };
   window.setInterval(tick, 1000);
@@ -1028,7 +1056,7 @@ if ((window as unknown as { __FELARUMI_P2P__?: boolean }).__FELARUMI_P2P__) {
   installFetch();
   installApi();
   installUi();
-  installFifoldersBridge();
+  installSaveFlow();
 }
 
 export {};

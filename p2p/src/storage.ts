@@ -15,8 +15,11 @@ export function normalizeNetwork(value: unknown): FilecoinNetwork {
   return value === "calibration" ? "calibration" : "mainnet";
 }
 
-export function trysteroOptions(secret: string): { appId: string; password: string } {
-  return { appId: TRYSTERO_APP_ID, password: secret };
+/** Nostr relays checked reachable (Nov 2026). Trystero's default list includes dead hosts that spam reconnect errors. */
+export const NOSTR_RELAYS = ["wss://relay.damus.io", "wss://nos.lol", "wss://relay.primal.net", "wss://relay.snort.social", "wss://nostr.mom"];
+
+export function trysteroOptions(secret: string): { appId: string; password: string; relayConfig: { urls: string[]; warnOnRelayFailure: boolean } } {
+  return { appId: TRYSTERO_APP_ID, password: secret, relayConfig: { urls: NOSTR_RELAYS, warnOnRelayFailure: false } };
 }
 
 export interface StorageAdapter {
