@@ -16,7 +16,7 @@ export function normalizeNetwork(value: unknown): FilecoinNetwork {
 }
 
 /** Nostr relays checked reachable (Nov 2026). Trystero's default list includes dead hosts that spam reconnect errors. */
-export const NOSTR_RELAYS = ["wss://relay.damus.io", "wss://nos.lol", "wss://relay.primal.net", "wss://relay.snort.social", "wss://nostr.mom"];
+export const NOSTR_RELAYS = ["wss://nos.lol", "wss://relay.primal.net", "wss://relay.snort.social", "wss://nostr.mom", "wss://offchain.pub"];
 
 export function trysteroOptions(secret: string): { appId: string; password: string; relayConfig: { urls: string[]; warnOnRelayFailure: boolean } } {
   return { appId: TRYSTERO_APP_ID, password: secret, relayConfig: { urls: NOSTR_RELAYS, warnOnRelayFailure: false } };
@@ -63,13 +63,13 @@ export async function synapseAdapter(opts: {
 }
 
 async function connectSynapse(network: FilecoinNetwork, privateKey?: string, provider?: Eip1193Provider): Promise<SynapseLike> {
-  const { Synapse } = await import("@filoz/synapse-sdk");
-  const chains = await import("@filoz/synapse-core/chains");
-  const { custom, http } = await import("viem");
+  const { Synapse } = await lazy(() => import("@filoz/synapse-sdk"));
+  const chains = await lazy(() => import("@filoz/synapse-core/chains"));
+  const { custom, http } = await lazy(() => import("viem"));
   const chain = network === "calibration" ? chains.calibration : chains.mainnet;
   const rpc = RPC_URLS[network];
   if (privateKey) {
-    const { privateKeyToAccount } = await import("viem/accounts");
+    const { privateKeyToAccount } = await lazy(() => import("viem/accounts"));
     const hex = (privateKey.startsWith("0x") ? privateKey : "0x" + privateKey) as `0x${string}`;
     return Synapse.create({
       account: privateKeyToAccount(hex),
@@ -92,10 +92,45 @@ async function connectSynapse(network: FilecoinNetwork, privateKey?: string, pro
 
 export const UNANCHORED = "unanchored";
 
+export const STALE_BUILD = "FiPen was updated. Reload the page to continue.";
+
+/** True for the browser errors a lazy chunk gives when a deploy replaced its hashed file. */
+export function isChunkLoadError(err: unknown): boolean {
+  const text = err instanceof Error ? err.message : String(err);
+  return /dynamically imported module|Importing a module script failed|error loading dynamically imported|Failed to fetch/i.test(text);
+}
+
+/** Loads a lazy chunk. A missing chunk means this tab predates a deploy, so say so instead of failing opaquely. */
+export async function lazy<T>(load: () => Promise<T>): Promise<T> {
+  try {
+    return await load();
+  } catch (err) {
+    if (isChunkLoadError(err)) throw new Error(STALE_BUILD);
+    throw err;
+  }
+}
+
+/** Fetches the wallet, Synapse, and piece chunks while they still match this page, so signing works after a later deploy. */
+export function warmSigningModules(): Promise<unknown> {
+  return Promise.all([
+    import("@filoz/synapse-sdk"),
+    import("@filoz/synapse-core/chains"),
+    import("@filoz/synapse-core/piece"),
+    import("viem"),
+    import("viem/accounts"),
+  ]).catch(() => undefined);
+}
+
 /** Local Filecoin CommP / PieceCID. Falls back to a sentinel when the calculator cannot run. */
 export async function commpOf(bytes: Uint8Array): Promise<string> {
+  let piece: typeof import("@filoz/synapse-core/piece");
   try {
-    const piece = await import("@filoz/synapse-core/piece");
+    piece = await lazy(() => import("@filoz/synapse-core/piece"));
+  } catch (err) {
+    if (err instanceof Error && err.message === STALE_BUILD) throw err;
+    return UNANCHORED;
+  }
+  try {
     return (await piece.calculate(bytes)).toString();
   } catch {
     return UNANCHORED;
