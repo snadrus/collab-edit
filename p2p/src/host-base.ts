@@ -23,6 +23,13 @@ export function routePath(): string {
 export function withKeptQuery(path: string, hash: string): string {
   const params = new URLSearchParams(location.search);
   params.delete("spa");
-  const query = params.toString();
-  return path + (query ? `?${query}` : "") + (hash ? `#${hash}` : "");
+  const base = hostBase();
+  // Under a Pages prefix only the prefix has an index.html; deep paths 404 before redirecting. Route in the query instead.
+  let target = path;
+  let query = params.toString();
+  if (base && path.startsWith(`${base}/`) && path.length > base.length + 1) {
+    target = `${base}/`;
+    query = `spa=${encodeURIComponent(path.slice(base.length))}` + (query ? `&${query}` : "");
+  }
+  return target + (query ? `?${query}` : "") + (hash ? `#${hash}` : "");
 }

@@ -1,9 +1,9 @@
-import { trysteroOptions } from "./storage.ts";
+import { lazy, trysteroOptions } from "./storage.ts";
 import type { Wire } from "./wire.ts";
 
 /** Product transport. Peers meet on public Nostr relays. The fragment secret is the room password. */
 export async function connectTrystero(roomId: string, secret: string): Promise<Wire> {
-  const { joinRoom, selfId } = await import("trystero");
+  const { joinRoom, selfId } = await lazy(() => import("trystero"));
   const room = joinRoom(trysteroOptions(secret), roomId);
   const act = room.makeAction("m");
   let message: (from: string, body: unknown) => void = () => undefined;

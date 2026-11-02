@@ -230,3 +230,39 @@ test("Share offers only Copy Link with the live document link", async ({ browser
   expect(new URL(copied).hash).toBe(new URL(url).hash);
   await ctx.close();
 });
+
+test("signing path loads all of its modules without 404s or import errors", async ({ page }) => {
+  const bad: string[] = [];
+  page.on("pageerror", (err) => bad.push("pageerror " + err.message));
+  page.on("console", (msg) => {
+    if (msg.type() === "error" && !/WebSocket connection/.test(msg.text())) bad.push("console " + msg.text());
+  });
+  page.on("response", (res) => {
+    if (res.status() >= 400 && res.url().startsWith("http://127.0.0.1")) bad.push(res.status() + " " + res.url());
+  });
+  await page.addInitScript(() => {
+    (window as unknown as { ethereum: unknown }).ethereum = {
+      request: async ({ method }: { method: string }) => {
+        if (method.endsWith("accounts") || method === "eth_requestAccounts") return ["0x4893FfF3611240fbB4Be68eFe4AA0Ec634279331"];
+        if (method === "eth_chainId") return "0x13a";
+        throw new Error("wallet mock: " + method);
+      },
+    };
+  });
+  await newDoc(page);
+  await page.evaluate(() => window.__editor!.insertText("sign me"));
+  const outcome = await page.evaluate(async () => {
+    const api = window.__p2p as unknown as { putUnsigned: (b: Uint8Array) => Promise<string>; pieceCidOf: (b: Uint8Array) => Promise<string> };
+    const cid = await api.pieceCidOf(new TextEncoder().encode("x".repeat(256)));
+    try {
+      await api.putUnsigned(new TextEncoder().encode("x".repeat(256)));
+      return cid + " | ok";
+    } catch (err) {
+      return cid + " | " + (err instanceof Error ? err.message : String(err));
+    }
+  });
+  // The wallet mock refuses chain calls, so success means every chunk loaded and the SDK reached the wallet.
+  expect(outcome).toMatch(/^bafkzcib/);
+  expect(outcome).not.toMatch(/dynamically imported|Importing a module|was updated/);
+  expect(bad).toEqual([]);
+});

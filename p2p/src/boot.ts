@@ -16,7 +16,7 @@ import {
   saveSnapshot,
   volumeHistory,
 } from "./folder-save.ts";
-import { DEFAULT_NETWORK, commpAdapter, commpOf, fileAdapter, ipfsAdapter, normalizeNetwork, savedVersionUrls, synapseAdapter, type FilecoinNetwork, type StorageAdapter, type SynapseLike } from "./storage.ts";
+import { DEFAULT_NETWORK, commpAdapter, commpOf, fileAdapter, ipfsAdapter, lazy, normalizeNetwork, savedVersionUrls, warmSigningModules, synapseAdapter, type FilecoinNetwork, type StorageAdapter, type SynapseLike } from "./storage.ts";
 import type { Wire } from "./wire.ts";
 
 const NativeWebSocket = globalThis.WebSocket;
@@ -197,7 +197,7 @@ function connectTest(room: string): Promise<Wire> {
 
 async function connectWire(room: string, secret: string): Promise<Wire> {
   if (new URLSearchParams(location.search).get("wire") === "test") return connectTest(room);
-  const { connectTrystero } = await import("./trystero-wire.ts");
+  const { connectTrystero } = await lazy(() => import("./trystero-wire.ts"));
   return connectTrystero(room, secret);
 }
 
@@ -1057,6 +1057,7 @@ if ((window as unknown as { __FELARUMI_P2P__?: boolean }).__FELARUMI_P2P__) {
   installApi();
   installUi();
   installSaveFlow();
+  window.setTimeout(() => void warmSigningModules(), 3000);
 }
 
 export {};
