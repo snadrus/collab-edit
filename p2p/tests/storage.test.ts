@@ -10,7 +10,11 @@ describe("filecoin defaults", () => {
     assert.equal(normalizeNetwork("calibration"), "calibration");
     assert.match(RPC_URLS.mainnet, /glif\.io/);
     assert.match(RPC_URLS.calibration, /calibration/);
-    assert.deepEqual(trysteroOptions("fragment-secret"), { appId: "felarumi.collab", password: "fragment-secret" });
+    const opts = trysteroOptions("fragment-secret");
+    assert.equal(opts.appId, "felarumi.collab");
+    assert.equal(opts.password, "fragment-secret");
+    assert.ok(opts.relayConfig.urls.length >= 3 && opts.relayConfig.urls.every((url) => url.startsWith("wss://")));
+    assert.ok(!opts.relayConfig.urls.some((url) => url.includes("flashapp")));
   });
 
   it("records a mock synapse piece cid and reads it back", async () => {

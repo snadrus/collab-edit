@@ -497,10 +497,7 @@ function mountEditor(id: string, shareToken = ""): void {
   }
 
   document.querySelector("#share")!.addEventListener("click", () => {
-    if (editor.role === "edit") void openShare();
-    else {
-      void navigator.clipboard.writeText(location.href).then(() => toast("Link copied")).catch(() => toast(location.href));
-    }
+    openShare();
   });
 
   document.querySelector("#toolbar")!.addEventListener("mousedown", (ev) => {
@@ -1078,57 +1075,25 @@ function mountEditor(id: string, shareToken = ""): void {
     location.href = "/";
   }
 
-  async function openShare(): Promise<void> {
-    const data = (await fetch("/api/docs/" + encodeURIComponent(id) + "/share").then((r) => r.json())) as {
-      access: string;
-      tokens: { edit: string; comment: string; view: string };
-    };
+  function openShare(): void {
     const wrap = document.createElement("div");
     wrap.className = "setup";
-    const label = document.createElement("label");
-    label.append("General access");
-    const select = document.createElement("select");
-    for (const [value, text] of [
-      ["edit", "Editor"],
-      ["comment", "Commenter"],
-      ["view", "Viewer"],
-    ] as const) {
-      const opt = document.createElement("option");
-      opt.value = value;
-      opt.textContent = text;
-      if (data.access === value) opt.selected = true;
-      select.append(opt);
-    }
-    label.append(select);
-    const hint = document.createElement("p");
-    hint.className = "hint";
-    hint.textContent = "Anyone with the document link gets this role. Editor, commenter, and viewer links keep that role.";
-    select.addEventListener("change", () => {
-      void fetch("/api/docs/" + encodeURIComponent(id) + "/access", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ access: select.value }),
-      });
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.id = "copy-link";
+    btn.textContent = "🔗 Copy Link";
+    btn.addEventListener("click", () => {
+      const url = location.origin + docUrl(id);
+      void navigator.clipboard
+        .writeText(url)
+        .then(() => {
+          btn.textContent = "Copied";
+          toast("Copied");
+          window.setTimeout(() => (btn.textContent = "🔗 Copy Link"), 1500);
+        })
+        .catch(() => toast(url));
     });
-    const links = document.createElement("div");
-    links.className = "share-links";
-    const origin = location.origin;
-    const entries: [string, string][] = [
-      ["document link", origin + docUrl(id)],
-      ["editor link", origin + "/e/" + data.tokens.edit],
-      ["commenter link", origin + "/c/" + data.tokens.comment],
-      ["viewer link", origin + "/v/" + data.tokens.view],
-    ];
-    for (const [name, url] of entries) {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.textContent = "Copy " + name;
-      btn.addEventListener("click", () => {
-        void navigator.clipboard.writeText(url).then(() => toast("Copied " + name)).catch(() => toast(url));
-      });
-      links.append(btn);
-    }
-    wrap.append(label, hint, links);
+    wrap.append(btn);
     openDialog("Share", wrap);
   }
 
@@ -2203,8 +2168,8 @@ function mountEditor(id: string, shareToken = ""): void {
   });
 
   loadPrefs();
-  void fetch("/words.txt")
-    .then((res) => res.text())
+  void fetch(hostBase() + "/words.txt")
+    .then((res) => (res.ok ? res.text() : ""))
     .then((text) => {
       loadWordText(text);
       editor.render();
