@@ -1,12 +1,17 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { ADJECTIVES, ANIMALS, MersenneTwister, guestName, seedOf } from "../src/shared/guest-name.ts";
+import { ADJECTIVES, ANIMALS, Xoshiro128pp, guestName, seedOf } from "../src/shared/guest-name.ts";
 
 describe("guest names", () => {
-  it("MT19937 matches the reference output for seed 5489", () => {
-    const rng = new MersenneTwister(5489);
-    assert.equal(rng.nextUint32(), 3499211612);
-    assert.equal(rng.nextUint32(), 581869302);
+  it("xoshiro128++ matches the reference C output for state 1,2,3,4", () => {
+    const rng = new Xoshiro128pp([1, 2, 3, 4]);
+    assert.deepEqual([rng.nextUint32(), rng.nextUint32(), rng.nextUint32(), rng.nextUint32()], [641, 1573767, 3222811527, 3517856514]);
+  });
+  it("never runs from an all-zero state and is deterministic per seed", () => {
+    assert.notEqual(new Xoshiro128pp([0, 0, 0, 0]).nextUint32(), 0);
+    const a = Xoshiro128pp.fromSeed(42);
+    const b = Xoshiro128pp.fromSeed(42);
+    for (let i = 0; i < 5; i++) assert.equal(a.nextUint32(), b.nextUint32());
   });
   it("same wallet gives the same name, case-insensitively", () => {
     const a = guestName("0x4893FfF3611240fbB4Be68eFe4AA0Ec634279331");
