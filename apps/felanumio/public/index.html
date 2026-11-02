@@ -3,7 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Felanumio</title>
+  <title>FiGrid</title>
+  <link rel="icon" href="/figrid.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/fonts/fonts.css">
   <link rel="stylesheet" href="/ui/shell.css">
   <link rel="stylesheet" href="/sheets/app.css">
@@ -11,9 +12,9 @@
 <body>
   <div id="home" hidden>
     <header class="topbar">
-      <a class="mark" href="/sheets">F</a>
-      <strong>Felanumio</strong>
-      <a class="text-link" href="/">Felarumi</a>
+      <a class="mark logo" href="/sheets" aria-label="FiGrid home"><img src="/figrid.svg" alt=""></a>
+      <strong>FiGrid</strong>
+      <a class="text-link" href="/">FiPen</a>
     </header>
     <main class="home-main">
       <button type="button" id="blank" class="blank">Blank spreadsheet</button>
@@ -23,7 +24,7 @@
   </div>
   <div id="app" hidden>
     <header class="topbar">
-      <a class="mark" href="/sheets">F</a>
+      <a class="mark logo" href="/sheets" aria-label="FiGrid home"><img src="/figrid.svg" alt=""></a>
       <input id="title" value="Untitled spreadsheet" maxlength="200">
       <span id="status"></span>
       <div id="avatars" class="avatars"></div>

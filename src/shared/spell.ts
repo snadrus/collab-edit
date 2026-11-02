@@ -15,7 +15,7 @@ export const DEFAULT_SUBS: Record<string, string> = {
   "...": "…",
 };
 
-const EXTRA = new Set(["felarumi", "felanumio"]);
+const EXTRA = new Set(["felarumi", "felanumio", "fipen", "figrid"]);
 
 export interface SpellHit {
   start: number;

@@ -358,5 +358,5 @@ server.on("upgrade", (req, socket, head) => {
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`Felarumi listening on http://${HOST}:${PORT}`);
+  console.log(`FiPen listening on http://${HOST}:${PORT}`);
 });

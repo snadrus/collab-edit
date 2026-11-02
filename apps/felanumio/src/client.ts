@@ -1,3 +1,4 @@
+import { hostBase, routePath, withKeptQuery } from "../../../p2p/src/host-base.ts";
 import { caretColor, selectionColor } from "../../../packages/core/src/presence.ts";
 import { hexAlpha } from "../../../packages/core/src/palette.ts";
 import { a1ToIndex, canonicalNumber, displayValue, evaluate, indexToCol, shiftFormula, type GridRead } from "./formula.ts";
@@ -25,13 +26,19 @@ interface Remote {
 function bookUrl(id: string): string {
   let hash = "";
   try {
-    const here = location.pathname === "/sheets/b/" + id || location.pathname.startsWith("/sheets/b/" + id + "/");
+    const path = routePath();
+    const here =
+      path === "/sheets/b/" + id ||
+      path.startsWith("/sheets/b/" + id + "/") ||
+      path === "/b/" + id ||
+      path.startsWith("/b/" + id + "/");
     hash = (here ? location.hash.replace(/^#/, "") : "") || localStorage.getItem("felarumi-secret:book:" + id) || "";
   } catch {
     hash = "";
   }
-  const wire = new URLSearchParams(location.search).get("wire");
-  return "/sheets/b/" + id + (wire ? "?wire=" + encodeURIComponent(wire) : "") + (hash ? "#" + hash : "");
+  const base = hostBase();
+  const prefix = base.endsWith("/felanumio") || base.endsWith("/figrid") ? base : base + "/sheets";
+  return withKeptQuery(prefix + "/b/" + id, hash);
 }
 
 const sid = sessionStorage.getItem("felanumio-sid") || crypto.randomUUID().replace(/-/g, "").slice(0, 16);
@@ -39,8 +46,9 @@ sessionStorage.setItem("felanumio-sid", sid);
 const displayName = () => sessionStorage.getItem("felarumi-name") || "Guest";
 
 function boot(): void {
-  const bookPath = location.pathname.match(/^\/sheets\/b\/([A-Za-z0-9_-]+)/);
-  const tokenPath = location.pathname.match(/^\/sheets\/([vce])\/([A-Za-z0-9_-]+)/);
+  const path = routePath();
+  const bookPath = path.match(/^\/(?:sheets\/)?b\/([A-Za-z0-9_-]+)/);
+  const tokenPath = path.match(/^\/(?:sheets\/)?([vce])\/([A-Za-z0-9_-]+)/);
   if (tokenPath) {
     void fetch("/api/books/open/" + tokenPath[2])
       .then((res) => res.json())

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- Original FiPen mark: fountain-pen nib over a folded-corner page. Not a third-party logo. -->
+  <path fill="#0090FF" d="M6 4h13l7 7v17H6z"/>
+  <path fill="#D6EBFF" d="M19 4v7h7z"/>
+  <path fill="#fff" d="M16 7.5c-3.4 4.2-4.6 8-4.6 11.2 0 2.55 2.05 4.6 4.6 4.6s4.6-2.05 4.6-4.6c0-3.2-1.2-7-4.6-11.2z"/>
+  <path fill="#0090FF" d="M15.25 12.2h1.5V20h-1.5z"/>
+  <circle cx="16" cy="14.1" r="1.15" fill="#0090FF"/>
+</svg>

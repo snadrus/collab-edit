@@ -8,6 +8,8 @@ import {
   CALIBRATION_REGISTRY,
   FELANUMIO_DIR,
   FELARUMI_DIR,
+  FIGRID_DIR,
+  FIPEN_DIR,
   NO_REGISTRY_NOTICE,
   listSnapshots,
   openCalibrationVolume,
@@ -493,7 +495,7 @@ async function exportActive(saveDownload = false): Promise<string> {
   const cid = await files.put(bytes);
   await putBlob(cid, bytes);
   setCid(cid);
-  if (saveDownload) download(bytes, docSession ? "felarumi.json" : "felanumio.json");
+  if (saveDownload) download(bytes, docSession ? "fipen.json" : "figrid.json");
   return raw;
 }
 
@@ -702,12 +704,12 @@ function installUi(): void {
       synapse: mock ?? undefined,
     });
     clearBrowser();
-    const docs = await listSnapshots(volume, FELARUMI_DIR);
-    const sheets = await listSnapshots(volume, FELANUMIO_DIR);
+    const docs = [...(await listSnapshots(volume, FIPEN_DIR)), ...(await listSnapshots(volume, FELARUMI_DIR))];
+    const sheets = [...(await listSnapshots(volume, FIGRID_DIR)), ...(await listSnapshots(volume, FELANUMIO_DIR))];
     const files = [...docs, ...sheets].filter((entry) => entry.type === "file");
     if (!files.length) {
       const empty = document.createElement("p");
-      empty.textContent = "No files in /Felarumi or /Felanumio";
+      empty.textContent = "No files in /FiPen, /FiGrid, /Felarumi, or /Felanumio";
       filesEl.append(empty);
     }
     for (const entry of files) {
@@ -727,7 +729,7 @@ function installUi(): void {
       filesEl.append(button);
     }
     await paintHistory(volume);
-    status.textContent = files.length ? "Choose a file" : "No files in /Felarumi or /Felanumio";
+    status.textContent = files.length ? "Choose a file" : "No files in /FiPen, /FiGrid, /Felarumi, or /Felanumio";
   }
 }
 
@@ -785,11 +787,100 @@ function installApi(): void {
   };
 }
 
+function installFifoldersBridge(): void {
+  const params = new URLSearchParams(location.search);
+  if (params.get("fifolders") !== "1") return;
+  let initial = "";
+  const paint = () => {
+    const status = document.querySelector("#status");
+    if (!status) return;
+    let stage = "pending";
+    try {
+      const raw = localStorage.getItem("fifolders:ops");
+      const file = raw ? (JSON.parse(raw) as { ops?: { path?: string; stage?: string; kind?: string }[] }) : {};
+      const op = (file.ops ?? []).find((item) => item.kind === "fel-save" && item.path === (params.get("path") || ""));
+      if (op?.stage) stage = op.stage;
+    } catch {
+      stage = "pending";
+    }
+    status.textContent = stage === "saving" ? "Saving" : stage === "saved" || stage === "done" ? "Saved to Filecoin" : "Save pending";
+  };
+  const publish = () => {
+    const raw = docSession ? docSession.exportJson() : bookSession ? bookSession.exportJson() : "";
+    if (!raw) return;
+    if (!initial) {
+      initial = raw;
+      return;
+    }
+    if (raw === initial) return;
+    const path = params.get("path") || "";
+    const name = params.get("name") || "";
+    const now = Date.now();
+    let ops: { id?: string }[] = [];
+    try {
+      const parsed = JSON.parse(localStorage.getItem("fifolders:ops") || "{}") as { ops?: { id?: string }[] };
+      ops = Array.isArray(parsed.ops) ? parsed.ops : [];
+    } catch {
+      ops = [];
+    }
+    const id = "fel:" + path;
+    const next = {
+      id,
+      v: 1,
+      kind: "fel-save",
+      label: name || path || "Save",
+      status: "pending",
+      stage: "saving",
+      path,
+      name,
+      content: raw,
+      volume: params.get("volume") || "",
+      owner: params.get("owner") || "",
+      pieceCid: params.get("pieceCid") || undefined,
+      created: now,
+      updated: now,
+    };
+    localStorage.setItem("fifolders:ops", JSON.stringify({ v: 1, ops: [...ops.filter((op) => op.id !== id), next] }));
+    try {
+      const channel = new BroadcastChannel("fifolders-ops");
+      channel.postMessage({ v: 1 });
+      channel.close();
+    } catch {
+      // The storage write is enough for the FiFolders tab.
+    }
+    paint();
+  };
+  const tick = () => {
+    const title = document.querySelector("#title") as HTMLInputElement | null;
+    const name = (params.get("name") || "").replace(/\.(felarumi|felanumio)$/i, "");
+    if (title && name && !title.dataset.fifolders) {
+      title.dataset.fifolders = "1";
+      title.value = name;
+      title.dispatchEvent(new Event("input", { bubbles: true }));
+      title.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    const home = document.querySelector("#home") as HTMLElement | null;
+    const blank = document.querySelector("#blank") as HTMLButtonElement | null;
+    if (home && !home.hidden && blank && !blank.dataset.fifolders) {
+      blank.dataset.fifolders = "1";
+      blank.click();
+    }
+    paint();
+    publish();
+  };
+  window.setInterval(tick, 1000);
+  window.setTimeout(tick, 50);
+  window.addEventListener("storage", (event) => {
+    if (event.key === "fifolders:ops") paint();
+  });
+}
+
 if ((window as unknown as { __FELARUMI_P2P__?: boolean }).__FELARUMI_P2P__) {
   window.WebSocket = shimWebSocket as unknown as typeof WebSocket;
   installFetch();
   installApi();
   installUi();
+  installFifoldersBridge();
 }
 
 export {};

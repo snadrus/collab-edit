@@ -92,6 +92,11 @@ if (process.env.SKIP_BUILD === "1" && fs.existsSync(path.join(DIST, "index.html"
   await buildStatic();
 }
 
+if (process.env.BUILD_ONLY === "1") {
+  console.log(`static build written to ${DIST}`);
+  process.exit(0);
+}
+
 const rooms = new Map<string, Map<string, import("ws").WebSocket>>();
 const wss = new WebSocketServer({ noServer: true });
 const server = createServer((req, res) => {
@@ -160,5 +165,5 @@ server.on("upgrade", (req, socket, head) => {
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`Felarumi static host on http://${HOST}:${PORT}`);
+  console.log(`FiPen static host on http://${HOST}:${PORT}`);
 });
