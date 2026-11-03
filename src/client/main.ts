@@ -293,6 +293,9 @@ function mountEditor(id: string, shareToken = ""): void {
     getText: () => editor.getText(),
     setSelection: (a: number, b: number) => editor.setSelection(a, b),
     selection: () => ({ anchor: editor.anchor, head: editor.head }),
+    caretStats: () => ({ ...editor.caretStats }),
+    checkCaret: (reason = "test") => editor.checkCaret(reason),
+    setEmacsKeys: (on: boolean) => { editor.emacsKeys = on; },
     insertText: (text: string) => editor.insertText(text),
     remoteCount: () => editor.remotes.size,
     color: () => editor.color,
@@ -2289,7 +2292,19 @@ function mountEditor(id: string, shareToken = ""): void {
     });
     const note = document.createElement("p");
     note.textContent = "Substitutions such as teh, recieve, (c), and ... apply as you type.";
-    wrap.append(box, note);
+    const emacs = document.createElement("label");
+    const emacsCheck = document.createElement("input");
+    emacsCheck.type = "checkbox";
+    emacsCheck.id = "pref-emacs";
+    emacsCheck.checked = editor.emacsKeys;
+    emacs.append(emacsCheck, document.createTextNode(" Emacs keys (Ctrl+A/E/B/F/P/N/D/H/K/Y)"));
+    emacsCheck.addEventListener("change", () => {
+      editor.emacsKeys = emacsCheck.checked;
+      localStorage.setItem("fipen:emacs-keys", emacsCheck.checked ? "1" : "0");
+    });
+    const emacsNote = document.createElement("p");
+    emacsNote.textContent = "On by default on Mac, like native text fields; Cmd shortcuts are unchanged. Elsewhere, turning this on replaces Ctrl+A/B/E/… commands.";
+    wrap.append(box, note, emacs, emacsNote);
     openDialog("Preferences", wrap);
   }
 

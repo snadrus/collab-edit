@@ -177,8 +177,15 @@ export class DocSession {
     this.persist();
   }
 
-  replace(snapshot: Snapshot, title?: string, contentCid?: string): void {
+  replace(snapshot: Snapshot, title?: string, contentCid?: string, threads?: Thread[]): void {
     if (title) this.title = title.slice(0, 200);
+    if (Array.isArray(threads)) {
+      this.threads.clear();
+      for (const thread of threads) {
+        const clean = sanitizeThread(thread);
+        if (clean) this.threads.set(clean.id, clean);
+      }
+    }
     this.contentCid = contentCid || "";
     this.server = new ServerDoc(restoreDoc(snapshot));
     this.server.gate = signatureGate(this.id, () => ({ contentCid: this.contentCid, locked: this.locked }));
@@ -193,6 +200,8 @@ export class DocSession {
       title: this.title,
       contentCid: this.contentCid,
       snapshot: snapshotDoc(this.server.doc),
+      // Comments travel with the file so they survive Save → reload (only when there are any: older files stay byte-identical).
+      ...(this.threads.size ? { threads: [...this.threads.values()] } : {}),
     });
   }
 

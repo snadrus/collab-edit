@@ -249,6 +249,8 @@ export function mountChrome(
       return;
     }
     const id = nid("c");
+    // Keep the selection the comment is for: typing in the box must not lose it.
+    const range = { anchor: editor.anchor, head: editor.head };
     const card = el("form", "note composer");
     const point = editor.selectionPoint();
     card.style.top = point.y + "px";
@@ -267,8 +269,13 @@ export function mountChrome(
       ev.preventDefault();
       const text = input.value.trim();
       if (!text) return;
+      editor.anchor = range.anchor;
+      editor.head = range.head;
       const quote = editor.addCommentMark(id);
-      if (quote == null) return;
+      if (quote == null) {
+        opts.toast("Select text to comment");
+        return;
+      }
       const thread: Thread = {
         id,
         sid: editor.sync.sid,

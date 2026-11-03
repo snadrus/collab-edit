@@ -1009,6 +1009,33 @@ function mount(id: string, share: string): void {
     formula.focus();
   });
 
+  // Emacs keys while editing a cell (same "fipen:emacs-keys" setting as FiPen; default on for Mac).
+  let killed = "";
+  formula.addEventListener("keydown", (ev) => {
+    const saved = localStorage.getItem("fipen:emacs-keys");
+    const on = saved ? saved === "1" : /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+    if (!on || !ev.ctrlKey || ev.metaKey || ev.altKey || ev.shiftKey) return;
+    const v = formula.value;
+    const a = formula.selectionStart ?? 0;
+    const b = formula.selectionEnd ?? a;
+    const put = (text: string, from: number, to: number, caret: number) => {
+      formula.setRangeText(text, from, to);
+      formula.setSelectionRange(caret, caret);
+      formula.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    const k = ev.key.toLowerCase();
+    if (k === "a") formula.setSelectionRange(0, 0);
+    else if (k === "e") formula.setSelectionRange(v.length, v.length);
+    else if (k === "b") formula.setSelectionRange(Math.max(0, a - 1), Math.max(0, a - 1));
+    else if (k === "f") formula.setSelectionRange(Math.min(v.length, b + 1), Math.min(v.length, b + 1));
+    else if (k === "d") (a !== b ? put("", a, b, a) : a < v.length && put("", a, a + 1, a));
+    else if (k === "h") (a !== b ? put("", a, b, a) : a > 0 && put("", a - 1, a, a - 1));
+    else if (k === "k") { killed = v.slice(a); put("", a, v.length, a); }
+    else if (k === "y") put(killed, a, b, a + killed.length);
+    else return;
+    ev.preventDefault();
+    ev.stopImmediatePropagation();
+  });
   formula.addEventListener("keydown", (ev) => {
     if (ev.key === "Enter") {
       ev.preventDefault();
