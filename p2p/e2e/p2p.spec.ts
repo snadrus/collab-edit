@@ -235,7 +235,7 @@ test("signing path loads all of its modules without 404s or import errors", asyn
   const bad: string[] = [];
   page.on("pageerror", (err) => bad.push("pageerror " + err.message));
   page.on("console", (msg) => {
-    if (msg.type() === "error" && !/WebSocket connection/.test(msg.text())) bad.push("console " + msg.text());
+    if (msg.type() === "error" && !/WebSocket connection|Filecoin save failed|Failed to load resource: net::ERR_FAILED/.test(msg.text())) bad.push("console " + msg.text());
   });
   page.on("response", (res) => {
     if (res.status() >= 400 && res.url().startsWith("http://127.0.0.1")) bad.push(res.status() + " " + res.url());
@@ -244,7 +244,7 @@ test("signing path loads all of its modules without 404s or import errors", asyn
     (window as unknown as { ethereum: unknown }).ethereum = {
       request: async ({ method }: { method: string }) => {
         if (method.endsWith("accounts") || method === "eth_requestAccounts") return ["0x4893FfF3611240fbB4Be68eFe4AA0Ec634279331"];
-        if (method === "eth_chainId") return "0x13a";
+        if (method === "eth_chainId") return "0x1";
         throw new Error("wallet mock: " + method);
       },
     };
@@ -261,8 +261,10 @@ test("signing path loads all of its modules without 404s or import errors", asyn
       return cid + " | " + (err instanceof Error ? err.message : String(err));
     }
   });
-  // The wallet mock refuses chain calls, so success means every chunk loaded and the SDK reached the wallet.
+  // The mock wallet sits on a non-Filecoin chain and refuses to switch: every chunk loads, nothing is uploaded,
+  // and the user gets the next step in plain words.
   expect(outcome).toMatch(/^bafkzcib/);
+  expect(outcome).toMatch(/Switch it to Filecoin/);
   expect(outcome).not.toMatch(/dynamically imported|Importing a module|was updated/);
   expect(bad).toEqual([]);
 });

@@ -282,7 +282,7 @@ test("a failed upload unfreezes the document", async ({ browser }) => {
   await page.evaluate(() => window.__editor!.insertText("Hello"));
   await signAs(page, "Ada Lovelace");
   await expect(page.locator("#sig-sign")).toBeEnabled();
-  await expect(page.locator("#toast")).toHaveText("upload failed");
+  await expect(page.locator("#toast")).toContainText("upload failed");
   await expect(page.locator("#sign-banner")).toBeHidden();
   expect(await page.evaluate(() => window.__editor!.contentCid())).toBe("");
   expect(await page.evaluate(() => window.__editor!.signed())).toBe(false);

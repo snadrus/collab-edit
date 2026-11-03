@@ -14,7 +14,7 @@ import {
   type Volume,
 } from "fil-folders";
 import type { Address, Hex } from "viem";
-import { RPC_URLS, lazy, type Eip1193Provider } from "./storage.ts";
+import { RPC_URLS, ensureWalletChain, lazy, type Eip1193Provider } from "./storage.ts";
 
 /** Volume name. The registry key is keccak256("default"). */
 export const VOLUME_NAME = "default";
@@ -140,7 +140,8 @@ async function liveCalibration(opts: { privateKey?: string; provider?: Eip1193Pr
     const address = accounts[0];
     if (!address) throw new Error("The wallet did not return an account");
     account = address as Address;
-    transport = custom(opts.provider);
+    await ensureWalletChain(opts.provider, "calibration");
+    transport = custom(opts.provider, { retryCount: 0 });
   } else {
     throw new Error("Connect a wallet or enter a key");
   }
@@ -149,12 +150,12 @@ async function liveCalibration(opts: { privateKey?: string; provider?: Eip1193Pr
   const walletClient = createWalletClient({ account, chain, transport });
   const synapse = opts.synapse
     ? opts.synapse
-    : Synapse.create({
-        account,
-        chain,
-        transport,
+    : new Synapse({
+        // Reads use the public RPC; only signing goes to the wallet.
+        client: Synapse.create({ account, chain, transport, source: "felarumi" }).client,
+        readClient: publicClient,
         source: "felarumi",
-      });
+      } as unknown as ConstructorParameters<typeof Synapse>[0]);
   return {
     storage: createSynapseStorage(synapse),
     registry: createViemRegistry({
