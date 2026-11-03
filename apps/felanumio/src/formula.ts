@@ -136,7 +136,7 @@ function tokenize(input: string): Tok[] {
       out.push({ t: "str", s });
       continue;
     }
-    if ("+-*/&><=:".includes(ch)) {
+    if ("+-*/^%&><=:".includes(ch)) {
       const two = src.slice(i, i + 2);
       if (two === ">=" || two === "<=" || two === "<>") {
         out.push({ t: "op", s: two });
@@ -215,10 +215,19 @@ class Parser {
     return left;
   }
   mul(): Expr {
-    let left = this.unary();
+    let left = this.power();
     while (this.peek().t === "op" && ["*", "/"].includes((this.peek() as { s: string }).s)) {
       const op = (this.take() as { s: string }).s;
-      left = { k: "bin", op, l: left, r: this.unary() };
+      left = { k: "bin", op, l: left, r: this.power() };
+    }
+    return left;
+  }
+  /** `^` binds tighter than * and /, looser than unary minus (Sheets: -2^2 = 4), left to right. */
+  power(): Expr {
+    let left = this.unary();
+    while (this.peek().t === "op" && (this.peek() as { s: string }).s === "^") {
+      this.take();
+      left = { k: "bin", op: "^", l: left, r: this.unary() };
     }
     return left;
   }
@@ -227,7 +236,13 @@ class Parser {
       this.take();
       return { k: "neg", x: this.unary() };
     }
-    return this.primary();
+    let x = this.primary();
+    // Postfix percent: 50% = 0.5.
+    while (this.peek().t === "op" && (this.peek() as { s: string }).s === "%") {
+      this.take();
+      x = { k: "bin", op: "*", l: x, r: { k: "num", n: 0.01 } };
+    }
+    return x;
   }
   primary(): Expr {
     const tok = this.take();
@@ -574,6 +589,7 @@ export function evaluate(grid: GridRead, sheet: string, raw: string, stack: stri
     if (op === "+") return { t: "n", n: ln + rn };
     if (op === "-") return { t: "n", n: ln - rn };
     if (op === "*") return { t: "n", n: ln * rn };
+    if (op === "^") return { t: "n", n: ln ** rn };
     if (op === "/") return rn === 0 ? { t: "e", e: "#DIV/0!" } : { t: "n", n: ln / rn };
     if (op === ">") return { t: "b", b: ln > rn };
     if (op === "<") return { t: "b", b: ln < rn };
@@ -739,6 +755,41 @@ export function evaluate(grid: GridRead, sheet: string, raw: string, stack: stri
       if (start == null || count == null) return { t: "e", e: "#VALUE!" };
       const at = Math.max(0, start - 1);
       return { t: "s", s: text(value).slice(at, at + Math.max(0, count)) };
+    }
+    if (name === "COUNTA") return { t: "n", n: args.flatMap((arg) => cellsOf(arg, seen)).filter((value) => value.t !== "z" && !(value.t === "s" && value.s === "")).length };
+    if (name === "CONCATENATE") return { t: "s", s: args.flatMap((arg) => cellsOf(arg, seen)).map(text).join("") };
+    if (name === "UPPER" || name === "LOWER" || name === "TRIM") {
+      const value = evalExpr(args[0], seen);
+      if (value.t === "e") return value;
+      const s = text(value);
+      return { t: "s", s: name === "UPPER" ? s.toUpperCase() : name === "LOWER" ? s.toLowerCase() : s.trim().replace(/ +/g, " ") };
+    }
+    if (name === "NOT") {
+      const value = evalExpr(args[0], seen);
+      return value.t === "e" ? value : { t: "b", b: !truthy(value) };
+    }
+    if (name === "ABS" || name === "SQRT" || name === "INT") {
+      const n = num(evalExpr(args[0], seen));
+      if (n == null) return { t: "e", e: "#VALUE!" };
+      if (name === "SQRT" && n < 0) return { t: "e", e: "#NUM!" };
+      return { t: "n", n: name === "ABS" ? Math.abs(n) : name === "SQRT" ? Math.sqrt(n) : Math.floor(n) };
+    }
+    if (name === "MOD" || name === "POWER") {
+      const a = num(evalExpr(args[0], seen));
+      const b = num(evalExpr(args[1], seen));
+      if (a == null || b == null) return { t: "e", e: "#VALUE!" };
+      if (name === "MOD") return b === 0 ? { t: "e", e: "#DIV/0!" } : { t: "n", n: a - b * Math.floor(a / b) };
+      return { t: "n", n: a ** b };
+    }
+    if (name === "PRODUCT") {
+      const ns = numbers(args, seen);
+      return { t: "n", n: ns.length ? ns.reduce((a, b) => a * b, 1) : 0 };
+    }
+    if (name === "MEDIAN") {
+      const ns = numbers(args, seen).sort((a, b) => a - b);
+      if (!ns.length) return { t: "e", e: "#NUM!" };
+      const mid = ns.length >> 1;
+      return { t: "n", n: ns.length % 2 ? ns[mid] : (ns[mid - 1] + ns[mid]) / 2 };
     }
     if (name === "IFERROR") {
       const value = evalExpr(args[0], seen);
