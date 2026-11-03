@@ -157,8 +157,49 @@ function mount(id: string, share: string): void {
   const send = (msg: unknown) => {
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
   };
+  // Local undo/redo for cell edits (values and styles), like Sheets' Ctrl+Z / Ctrl+Y. Row/column/sheet
+  // changes (ours or a peer's) shift coordinates, so they clear the history rather than undo the wrong cell.
+  type UndoStep = { undo: GridOp[]; redo: GridOp[] };
+  let undoStack: UndoStep[] = [];
+  let redoStack: UndoStep[] = [];
+  const clearHistory = () => { undoStack = []; redoStack = []; };
+  const inverseOf = (ops: GridOp[]): GridOp[] | null => {
+    const out: GridOp[] = [];
+    for (const op of ops) {
+      if (op.t !== "set" || op.r == null || op.c == null) return null;
+      const target = book().sheets.find((item) => item.id === op.sheet);
+      const prev = target?.cells[cellKey(op.r, op.c)];
+      const back: GridOp = { t: "set", sheet: op.sheet, r: op.r, c: op.c };
+      if ("v" in op) back.v = prev?.v ?? null;
+      if ("style" in op) back.style = prev?.style ? { ...prev.style } : null;
+      out.unshift(back);
+    }
+    return out;
+  };
+  const send0 = (ops: GridOp[]) => {
+    sizeVersion++;
+    const wire = client.push({ ops });
+    if (wire) send({ t: "op", reqId: wire.reqId, rev: wire.baseRev, delta: wire.delta });
+    paint();
+  };
+  const undoRedo = (redo: boolean) => {
+    if (!canEdit()) return;
+    const step = (redo ? redoStack : undoStack).pop();
+    if (!step) return;
+    (redo ? undoStack : redoStack).push(step);
+    const ops = redo ? step.redo : step.undo;
+    const first = ops[0];
+    if (first?.r != null && first.c != null) { anchor = { r: first.r, c: first.c }; head = { ...anchor }; }
+    send0(ops);
+  };
   const submit = (ops: GridOp[]) => {
     if (!canEdit() || !ops.length) return;
+    const inverse = inverseOf(ops);
+    if (inverse) {
+      undoStack.push({ undo: inverse, redo: ops });
+      if (undoStack.length > 200) undoStack.shift();
+      redoStack = [];
+    } else clearHistory();
     sizeVersion++;
     const wire = client.push({ ops });
     if (wire) send({ t: "op", reqId: wire.reqId, rev: wire.baseRev, delta: wire.delta });
@@ -951,6 +992,9 @@ function mount(id: string, share: string): void {
     } else if (ev.key === "Escape") {
       editing = false;
       paint();
+    } else if (!editing && (ev.ctrlKey || ev.metaKey) && (ev.key.toLowerCase() === "z" || ev.key.toLowerCase() === "y")) {
+      ev.preventDefault();
+      undoRedo(ev.key.toLowerCase() === "y" || ev.shiftKey);
     } else if (ev.key === "Tab") {
       ev.preventDefault();
       commitFormula();
@@ -1142,6 +1186,8 @@ function mount(id: string, share: string): void {
     bold: () => setStyle({ b: !styleOf().b }),
     italic: () => setStyle({ i: !styleOf().i }),
     freeze: () => submit([{ t: "freeze", sheet: sheet().id, rows: head.r, cols: head.c }]),
+    undo: () => undoRedo(false),
+    redo: () => undoRedo(true),
     copy: () => {
       const grid = selectionGrid();
       const tsv = gridTsv(grid);
@@ -1390,10 +1436,12 @@ function mount(id: string, share: string): void {
         paint();
       } else if (msg.t === "op") {
         client.remote(String(msg.sid), msg.delta as { ops: GridOp[] }, Number(msg.rev));
+        if ((msg.delta as { ops: GridOp[] }).ops.some((op) => op.t !== "set")) clearHistory();
         sizeVersion++;
         paint();
       } else if (msg.t === "reset") {
         client.load(msg.book as Book, Number(msg.rev));
+        clearHistory();
         preview = null;
         sizeVersion++;
         paint();
