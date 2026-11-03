@@ -86,3 +86,31 @@ export function selfPerson(): { address?: string; displayName: string; avatar?: 
 export function showSelfIdentity(anchor: HTMLElement, onLocalRename?: () => void): HTMLElement {
   return openIdentityPopup(anchor, { person: self() as ResolvedIdentity, href: identityUrl(), onLocalRename });
 }
+
+type WalletEvents = { on?: (event: string, fn: (value: unknown) => void) => void };
+
+/**
+ * Wallet account or network switch: restart the person in place (no reload, no prompt).
+ * accountsChanged → remember the new wallet (or forget it), re-read its identity, call `onChange`.
+ * chainChanged → `onChange` too (the network decides which identity registry is read). Also follows
+ * another tab (FiFolders) writing the wallet key. Returns a test hook that applies a change directly.
+ */
+export function watchWallet(onChange: () => void, eth: WalletEvents | undefined = (globalThis as unknown as { ethereum?: WalletEvents }).ethereum): (accounts: string[]) => Promise<void> {
+  const apply = async (accounts: string[]) => {
+    const address = String(accounts?.[0] || "").toLowerCase();
+    try {
+      if (isAddress(address)) localStorage.setItem(WALLET_KEY, address);
+      else localStorage.removeItem(WALLET_KEY);
+    } catch {
+      /* storage blocked: names fall back to guest */
+    }
+    onChange();
+    if (await refreshIdentity(myWallet()).catch(() => false)) onChange();
+  };
+  eth?.on?.("accountsChanged", (value) => void apply(value as string[]));
+  eth?.on?.("chainChanged", () => onChange());
+  window.addEventListener("storage", (event) => {
+    if (event.key === WALLET_KEY) onChange();
+  });
+  return apply;
+}

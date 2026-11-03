@@ -98,3 +98,34 @@ test("FiGrid: clicking your avatar opens the identity pop-up", async ({ browser 
   await expect(page.locator("#identity-pop")).toContainText("Configure your identity");
   await ctx.close();
 });
+
+test("FiPen: wallet account switch renames you in place (no reload, no prompt); chain switch keeps the doc", async ({ browser }) => {
+  const OTHER = "0x4444444444444444444444444444444444444444";
+  const ctx = await browser.newContext();
+  await ctx.addInitScript(
+    ({ a, b }) => {
+      const handlers: Record<string, ((v: unknown) => void)[]> = {};
+      const w = window as unknown as Record<string, unknown>;
+      w.__calls = [] as string[];
+      w.ethereum = {
+        request: async ({ method }: { method: string }) => ((w.__calls as string[]).push(method), [a]),
+        on: (e: string, f: (v: unknown) => void) => ((handlers[e] ??= []).push(f)),
+      };
+      w.__emit = (e: string, v: unknown) => handlers[e]?.forEach((f) => f(v));
+      for (const addr of [a, b])
+        localStorage.setItem("fil-identity:v1:" + addr, JSON.stringify({ identity: addr === b ? { v: 1, schema: "fil-identity/profile", address: addr, displayName: "Switched Person", updatedAt: "2026-11-03T00:00:00Z" } : null, pieceCid: "", version: "0", checkedAt: Date.now() }));
+    },
+    { a: WALLET, b: OTHER },
+  );
+  const page = await ctx.newPage();
+  await openDoc(page);
+  const before = await page.locator("#name-btn").innerText();
+  await page.evaluate(() => ((window as any).__marker = 1));
+  await page.evaluate((b) => (window as any).__emit("accountsChanged", [b]), OTHER);
+  await expect(page.locator("#name-btn")).not.toHaveText(before);
+  expect(await page.evaluate(() => localStorage.getItem("fifolders:wallet") ?? Object.keys(localStorage).find((k) => localStorage.getItem(k) === "0x4444444444444444444444444444444444444444"))).toBeTruthy();
+  await page.evaluate(() => (window as any).__emit("chainChanged", "0x13a"));
+  expect(await page.evaluate(() => (window as any).__marker)).toBe(1); // no reload
+  expect(await page.evaluate(() => (window as any).__calls.filter((m: string) => m === "eth_requestAccounts" || m.startsWith("eth_sign")).length)).toBe(0);
+  await ctx.close();
+});

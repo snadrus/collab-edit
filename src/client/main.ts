@@ -44,7 +44,7 @@ import { diffWords, encodeStrokes, lookupWord } from "../shared/tools.ts";
 import { loadQueue, saveQueue } from "./offline.ts";
 import { MB, ML, MR, MT, PAGE_H, PAGE_W, RULER_H, applyPage, currentPage } from "./layout.ts";
 import { Editor, decodeCommands, encodeCommands, type RemoteCaret } from "./editor.ts";
-import { avatarInnerHtml, learnWallet, myWallet, refreshIdentity, resolveDisplayName, selfPerson, showSelfIdentity } from "../shared/person.ts";
+import { avatarInnerHtml, learnWallet, myWallet, refreshIdentity, resolveDisplayName, selfPerson, showSelfIdentity, watchWallet } from "../shared/person.ts";
 
 interface InitMsg {
   t: "init";
@@ -497,6 +497,8 @@ function mountEditor(id: string, shareToken = ""): void {
   window.addEventListener("storage", (event) => {
     if (event.key === "fifolders:display-name" || event.key?.startsWith("fil-identity:")) renameSelf();
   });
+  // Wallet account/network switch: rename in place for peers, no reload or prompt.
+  (window as unknown as { __walletSwitch?: (a: string[]) => Promise<void> }).__walletSwitch = watchWallet(renameSelf);
 
   // Touch: a floating Comment bubble over a selection (desktop uses the right-click menu).
   const bubble = document.createElement("button");
