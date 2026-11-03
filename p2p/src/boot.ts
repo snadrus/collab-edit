@@ -261,7 +261,8 @@ function showStale(err: unknown): void {
   const bar = document.querySelector("#p2p-wait") as HTMLElement | null;
   if (!bar) return;
   bar.hidden = false;
-  bar.textContent = stale ? STALE_BUILD + " " : "Could not connect. ";
+  const app = location.pathname.includes("/figrid") || new URLSearchParams(location.search).get("spa")?.startsWith("/s/") ? "FiGrid" : "FiPen";
+  bar.textContent = stale ? STALE_BUILD.replace("FiPen", app) + " " : "Could not connect. ";
   const button = document.createElement("button");
   button.type = "button";
   button.id = "p2p-reload";
@@ -395,10 +396,10 @@ function joinDoc(sock: AppSocket, wire: Wire, id: string): void {
       ownerPeer = from;
       lastOwner = from;
       if (rejoin) {
-        // Ops queued for the old hub are based on its revisions; the new init replaces them.
+        // A reloaded owner is a new hub. Ops queued for the old one are dropped; the editor says hello
+        // again with its unacked edits (resume + since), gets the ops after that revision and replays its own.
         queue.length = 0;
-        const again = JSON.parse(hello) as Record<string, unknown>;
-        wire.send(from, { ...again, resume: false, since: undefined });
+        sock.open();
       }
       flush();
       unlock();
@@ -977,9 +978,10 @@ function installApi(): void {
   };
 }
 
-type SaveState = "clean" | "saved" | "dirty" | "saving" | "queued" | "failed";
+type SaveState = "fresh" | "clean" | "saved" | "dirty" | "saving" | "queued" | "failed";
 
 const SAVE_TEXT: Record<SaveState, string> = {
+  fresh: "New, unsaved",
   clean: "All changes saved",
   saved: "Saved to Filecoin",
   dirty: "Unsaved changes",
@@ -1158,7 +1160,11 @@ function installSaveFlow(): void {
         return "queued";
       }
     }
-    if (!dirty(raw)) return filecoinMark.saved || savedHash() ? "saved" : "clean";
+    if (!dirty(raw)) {
+      if (filecoinMark.saved || savedHash()) return "saved";
+      // Never on Filecoin yet (no ?cid/?pieceCid and no confirmed save): say so instead of "All changes saved".
+      return params.get("cid") || params.get("pieceCid") ? "clean" : "fresh";
+    }
     return "dirty";
   };
   const paint = () => {

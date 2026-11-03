@@ -25,6 +25,8 @@ export class ServerDoc {
   rev = 0;
   doc: Doc;
   log: LogEntry[] = [];
+  /** Revision of log[0]. A doc restored from a snapshot at rev N has no ops before N. */
+  logBase = 0;
   acks = new Map<string, number | null>();
   /** Return an error to refuse the canonical delta. Runs before it is stored. */
   gate: ((doc: Doc, delta: Delta) => string | null) | null = null;
@@ -43,12 +45,12 @@ export class ServerDoc {
         delta: null,
       };
     }
-    if (!Number.isInteger(baseRev) || baseRev < 0 || baseRev > this.rev) {
+    if (!Number.isInteger(baseRev) || baseRev < this.logBase || baseRev > this.rev) {
       return { duplicate: false, assignedRev: null, serverRev: this.rev, delta: null, error: "bad revision" };
     }
     let d = delta;
     for (let i = baseRev; i < this.rev; i++) {
-      const hist = this.log[i];
+      const hist = this.log[i - this.logBase];
       d = transform(d, hist.delta, sid < hist.sid);
     }
     d = canon(d);
