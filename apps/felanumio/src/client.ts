@@ -1066,11 +1066,50 @@ function mount(id: string, share: string): void {
     }
     return grid;
   }
+  /** What the cells show (values), for other apps — Sheets puts values, not formulas, in text/plain. */
+  function selectionShown(): string[][] {
+    const box = bounds();
+    const s = sheet();
+    const out: string[][] = [];
+    for (let r = box.r1; r <= box.r2; r++) {
+      const line: string[] = [];
+      for (let c = box.c1; c <= box.c2; c++) line.push(shown(s, r, c));
+      out.push(line);
+    }
+    return out;
+  }
+  /** HTML table of shown values; FiGrid-to-FiGrid paste reads the raw cells (formulas) from data attributes. */
+  function copyHtml(): string {
+    const box = bounds();
+    const raw = selectionGrid();
+    const vis = selectionShown();
+    return `<table data-figrid-origin="${box.r1},${box.c1}">` + vis.map((row, i) => "<tr>" + row.map((value, j) => `<td data-figrid-raw="${esc(raw[i][j])}">${esc(value)}</td>`).join("") + "</tr>").join("") + "</table>";
+  }
+  /** Raw cells from a FiGrid copy, formulas shifted to the paste position like Sheets; null for other sources. */
+  function figridPaste(html: string): string[][] | null {
+    if (!html.includes("data-figrid-origin")) return null;
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    const table = doc.querySelector("table[data-figrid-origin]");
+    if (!table) return null;
+    const [sr, sc] = (table.getAttribute("data-figrid-origin") || "0,0").split(",").map(Number);
+    const dest = bounds();
+    const dr = dest.r1 - (sr || 0);
+    const dc = dest.c1 - (sc || 0);
+    return [...table.querySelectorAll("tr")].map((tr) => [...tr.querySelectorAll("td")].map((td) => {
+      const raw = td.getAttribute("data-figrid-raw") ?? td.textContent ?? "";
+      return raw.startsWith("=") ? shiftFormula(raw, dr, dc) : raw;
+    }));
+  }
+  /** Paste raw FiGrid cells verbatim (no CSV/number conversion of formulas). */
+  function pasteRaw(grid: string[][]): void {
+    editing = false;
+    const origin = bounds();
+    const ops: GridOp[] = [];
+    for (let r = 0; r < grid.length; r++) for (let c = 0; c < grid[r].length; c++) ops.push({ t: "set", sheet: sheet().id, r: origin.r1 + r, c: origin.c1 + c, v: grid[r][c] });
+    submit(ops);
+  }
   function gridTsv(grid: string[][]): string {
     return grid.map((row) => row.map((value) => quoteField(value, "\t")).join("\t")).join("\n");
-  }
-  function gridHtml(grid: string[][]): string {
-    return "<table>" + grid.map((row) => "<tr>" + row.map((value) => "<td>" + esc(value) + "</td>").join("") + "</tr>").join("") + "</table>";
   }
   function pasteGrid(grid: string[][], sep: string): void {
     editing = false;
@@ -1196,9 +1235,8 @@ function mount(id: string, share: string): void {
     undo: () => undoRedo(false),
     redo: () => undoRedo(true),
     copy: () => {
-      const grid = selectionGrid();
-      const tsv = gridTsv(grid);
-      const html = gridHtml(grid);
+      const tsv = gridTsv(selectionShown());
+      const html = copyHtml();
       const item = new ClipboardItem({
         "text/plain": new Blob([tsv], { type: "text/plain" }),
         "text/html": new Blob([html], { type: "text/html" }),
@@ -1207,10 +1245,20 @@ function mount(id: string, share: string): void {
     },
     paste: () => {
       editing = false;
-      void navigator.clipboard.readText().then((text) => {
+      void (async () => {
+        try {
+          for (const item of await navigator.clipboard.read()) {
+            if (!item.types.includes("text/html")) continue;
+            const own = figridPaste(await (await item.getType("text/html")).text());
+            if (own) return pasteRaw(own);
+          }
+        } catch {
+          // fall back to plain text below
+        }
+        const text = await navigator.clipboard.readText();
         const sep = text.includes("\t") ? "\t" : detectSeparator(text);
         pasteGrid(parseDelimited(text, sep), sep);
-      });
+      })();
     },
     import: () => openImport("replace", "Import"),
     open: () => openImport("replace", "Open"),
@@ -1264,6 +1312,12 @@ function mount(id: string, share: string): void {
     if (!data) return;
     const html = data.getData("text/html");
     const plain = data.getData("text/plain");
+    const own = html ? figridPaste(html) : null;
+    if (own && own.length) {
+      ev.preventDefault();
+      pasteRaw(own);
+      return;
+    }
     const table = html ? parseHtmlTable(html) : null;
     const sep = plain.includes("\t") ? "\t" : detectSeparator(plain || "");
     const grid = table && table.length ? table : plain ? parseDelimited(plain, sep) : null;
@@ -1276,10 +1330,9 @@ function mount(id: string, share: string): void {
   document.addEventListener("copy", (ev) => {
     if (editing && document.activeElement === formula) return;
     if (!ev.clipboardData) return;
-    const grid = selectionGrid();
     ev.preventDefault();
-    ev.clipboardData.setData("text/plain", gridTsv(grid));
-    ev.clipboardData.setData("text/html", gridHtml(grid));
+    ev.clipboardData.setData("text/plain", gridTsv(selectionShown()));
+    ev.clipboardData.setData("text/html", copyHtml());
   });
   for (const type of ["dragenter", "dragover", "drop"] as const) {
     stage.addEventListener(type, (ev) => {

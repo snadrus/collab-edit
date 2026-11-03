@@ -98,3 +98,19 @@ test("FiGrid browser tab shows the sheet title (yours and a peer's rename), like
   await expect(a).toHaveTitle("Budget 2027 - FiGrid");
   await expect(b).toHaveTitle("Budget 2027 - FiGrid");
 });
+
+test("FiGrid copy: other apps get values (text/plain), FiGrid paste keeps formulas shifted like Sheets", async ({ browser }) => {
+  const ctx = await browser.newContext({ permissions: ["clipboard-read", "clipboard-write"] });
+  const page = await ctx.newPage();
+  await page.goto("/sheets?wire=test");
+  await page.locator("#blank").click();
+  await page.waitForFunction(() => (window as unknown as { __sheet?: { ready: boolean } }).__sheet?.ready === true && location.hash.length > 1);
+  type S = { setCell(r: number, c: number, v: string): void; raw(r: number, c: number): string; display(r: number, c: number): string; selectRange(r1: number, c1: number, r2: number, c2: number): void };
+  await page.evaluate(() => { const s = (window as unknown as { __sheet: S }).__sheet; s.setCell(0, 0, "5"); s.setCell(1, 0, "=A1*2"); s.selectRange(0, 0, 1, 0); });
+  await page.keyboard.press("Control+c");
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("5\n10");
+  await page.evaluate(() => (window as unknown as { __sheet: S }).__sheet.selectRange(0, 2, 0, 2));
+  await page.keyboard.press("Control+v");
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __sheet: S }).__sheet.raw(1, 2))).toBe("=C1*2");
+  expect(await page.evaluate(() => (window as unknown as { __sheet: S }).__sheet.display(1, 2))).toBe("10");
+});
