@@ -150,7 +150,7 @@ test("two peers sign, lock, and show the gold signature", async ({ browser }) =>
   await installSynapse(pa, pieces);
   await installSynapse(pb, pieces);
   const url = await newDoc(pa);
-  await pa.evaluate(() => window.__editor!.insertText("Hello"));
+  await pa.evaluate(() => window.__editor!.insertText("Hello. " + "This signed agreement has enough words to clear the Filecoin minimum piece size of one hundred twenty seven bytes. ".repeat(2)));
   await signAs(pa, "Ada Lovelace");
 
   await pb.goto(url);
@@ -279,7 +279,7 @@ test("a failed upload unfreezes the document", async ({ browser }) => {
   await installWallet(page, KEY_A);
   await installSynapse(page, new Map(), true);
   await newDoc(page);
-  await page.evaluate(() => window.__editor!.insertText("Hello"));
+  await page.evaluate(() => window.__editor!.insertText("Hello. " + "This signed agreement has enough words to clear the Filecoin minimum piece size of one hundred twenty seven bytes. ".repeat(2)));
   await signAs(page, "Ada Lovelace");
   await expect(page.locator("#sig-sign")).toBeEnabled();
   await expect(page.locator("#toast")).toContainText("upload failed");

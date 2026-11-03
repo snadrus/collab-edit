@@ -18,8 +18,10 @@ import {
 } from "./folder-save.ts";
 import { DEFAULT_NETWORK, commpAdapter, commpOf, fileAdapter, ipfsAdapter, explainFilecoinError, innerReason, isChunkLoadError, lazy, STALE_BUILD, normalizeNetwork, savedVersionUrls, walletNetwork, warmSigningModules, synapseAdapter, type FilecoinNetwork, type StorageAdapter, type SynapseLike } from "./storage.ts";
 import type { Wire } from "./wire.ts";
+import { installGuestCopy, receiveCopy } from "./guest-copy.ts";
 
 const NativeWebSocket = globalThis.WebSocket;
+
 const WAIT = "Waiting for the owner. This document is read-only until they are online.";
 const files = fileAdapter();
 const pieceMemory = new Map<string, Uint8Array>();
@@ -271,6 +273,25 @@ function showStale(err: unknown): void {
   bar.append(button);
 }
 
+/** Owner: a participant handed over the copy they saved while this owner was away. */
+function noticeCopy(from: string): void {
+  let el = document.querySelector("#p2p-copy-notice") as HTMLElement | null;
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "p2p-copy-notice";
+    el.setAttribute("role", "status");
+    el.style.cssText =
+      "position:fixed;right:16px;bottom:16px;z-index:50;max-width:340px;background:#fff;color:#202124;border:1px solid #dadce0;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.15);padding:12px 14px;font:14px/1.4 system-ui,sans-serif";
+    document.body.append(el);
+  }
+  el.textContent = `${from} saved a copy while you were away. Find it in FiFolders under Participant copies. `;
+  const ok = document.createElement("button");
+  ok.type = "button";
+  ok.textContent = "OK";
+  ok.addEventListener("click", () => el!.remove());
+  el.append(ok);
+}
+
 function showWait(): void {
   const bar = document.querySelector("#p2p-wait") as HTMLElement | null;
   if (!bar) return;
@@ -332,6 +353,11 @@ async function hostDoc(sock: AppSocket, wire: Wire, id: string): Promise<void> {
       wire.send(from, { k: "owner" });
       return;
     }
+    if (rec.k === "copy" && docSession) {
+      if (receiveCopy("doc", id, rec, docSession.server.rev)) noticeCopy(String(rec.from || "A participant"));
+      wire.send(from, { k: "copy-ack" });
+      return;
+    }
     if (rec.k === "owner" || !docSession) return;
     // Only the owner resolves comments.
     if (rec.t === "resolve") return;
@@ -360,6 +386,15 @@ function joinDoc(sock: AppSocket, wire: Wire, id: string): void {
   // The editor's handshake. A reloaded owner is a new peer with a fresh hub, so the guest repeats it there.
   let hello = "";
   let lastOwner: string | null = null;
+  const guestCopy = installGuestCopy({
+    kind: "doc",
+    id,
+    ownerOnline: () => !!ownerPeer,
+    ownerName: () => "",
+    sendToOwner: (body) => {
+      if (ownerPeer) wire.send(ownerPeer, body);
+    },
+  });
   const flush = () => {
     if (!ownerPeer) return;
     for (const data of queue.splice(0)) wire.send(ownerPeer, JSON.parse(data) as unknown);
@@ -403,6 +438,11 @@ function joinDoc(sock: AppSocket, wire: Wire, id: string): void {
       }
       flush();
       unlock();
+      guestCopy.ownerBack();
+      return;
+    }
+    if (rec?.k === "copy-ack") {
+      guestCopy.acked();
       return;
     }
     if (!rec || rec.k) return;
@@ -509,6 +549,11 @@ async function hostBook(sock: AppSocket, wire: Wire, id: string): Promise<void> 
       wire.send(from, { k: "owner" });
       return;
     }
+    if (rec.k === "copy" && bookSession) {
+      if (receiveCopy("book", id, rec, bookSession.server.rev)) noticeCopy(String(rec.from || "A participant"));
+      wire.send(from, { k: "copy-ack" });
+      return;
+    }
     if (rec.k === "owner" || !bookSession) return;
     let remote = remotes.get(from);
     if (!remote) {
@@ -535,6 +580,15 @@ function joinBook(sock: AppSocket, wire: Wire, id: string): void {
   // The editor's handshake. A reloaded owner is a new peer with a fresh hub, so the guest repeats it there.
   let hello = "";
   let lastOwner: string | null = null;
+  const guestCopy = installGuestCopy({
+    kind: "book",
+    id,
+    ownerOnline: () => !!ownerPeer,
+    ownerName: () => "",
+    sendToOwner: (body) => {
+      if (ownerPeer) wire.send(ownerPeer, body);
+    },
+  });
   const flush = () => {
     if (!ownerPeer) return;
     for (const data of queue.splice(0)) wire.send(ownerPeer, JSON.parse(data) as unknown);
@@ -578,6 +632,11 @@ function joinBook(sock: AppSocket, wire: Wire, id: string): void {
       }
       flush();
       unlock();
+      guestCopy.ownerBack();
+      return;
+    }
+    if (rec?.k === "copy-ack") {
+      guestCopy.acked();
       return;
     }
     if (!rec || rec.k) return;
