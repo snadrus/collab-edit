@@ -1290,6 +1290,8 @@ function mount(id: string, share: string): void {
         remotes = [];
         api.ready = true;
         sizeVersion++;
+        // Ready to type: the selected cell (A1 on open) takes keystrokes without a click, like a new sheet elsewhere.
+        if (role === "edit" && !document.activeElement?.closest("input, textarea, select, [contenteditable]")) formula.focus();
         (document.querySelector("#banner") as HTMLElement).hidden = role === "edit";
         (document.querySelector("#banner") as HTMLElement).textContent = role === "view" ? "Viewing" : role === "comment" ? "Commenting" : "";
         paintAvatars(sid);

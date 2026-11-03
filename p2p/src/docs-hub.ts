@@ -48,7 +48,10 @@ export class DocSession {
     this.contentCid = record?.contentCid || "";
     this.server = new ServerDoc(record ? restoreDoc(record.snapshot) : emptyDoc());
     this.server.gate = signatureGate(this.id, () => ({ contentCid: this.contentCid, locked: this.locked }));
-    if (record) this.server.rev = record.rev;
+    if (record) {
+      this.server.rev = record.rev;
+      this.server.logBase = record.rev;
+    }
     for (const thread of record?.threads || []) {
       const clean = sanitizeThread(thread);
       if (clean) this.threads.set(clean.id, clean);
@@ -74,7 +77,8 @@ export class DocSession {
       head: 0,
     };
     this.conns.push(conn);
-    this.pushInit(conn);
+    const since = typeof hello.since === "number" && Number.isInteger(hello.since) ? hello.since : null;
+    this.pushInit(conn, hello.resume === true ? since : null);
     this.broadcast({ t: "join", sid, name, color: conn.color }, conn);
     return conn;
   }
@@ -189,7 +193,17 @@ export class DocSession {
     });
   }
 
-  pushInit(conn: DocConn): void {
+  /** `since`: the client's base revision when it reconnects with unacked edits; it gets the ops after it and resends its own. */
+  pushInit(conn: DocConn, since: number | null = null): void {
+    const server = this.server;
+    const catchup: { rev: number; sid: string; reqId: number; commands: Command[] }[] = [];
+    const resume = since != null && since >= server.logBase && since <= server.rev;
+    if (resume) {
+      for (let rev = since + 1; rev <= server.rev; rev++) {
+        const entry = server.log[rev - 1 - server.logBase];
+        if (entry) catchup.push({ rev, sid: entry.sid, reqId: entry.reqId, commands: deltaToCommands(entry.delta) });
+      }
+    }
     this.send(conn, {
       t: "init",
       rev: this.server.rev,
@@ -204,8 +218,8 @@ export class DocSession {
       locked: this.locked,
       role: "edit",
       trashed: false,
-      resume: false,
-      catchup: [],
+      resume: resume && catchup.length === server.rev - (since ?? 0),
+      catchup,
     });
   }
 
