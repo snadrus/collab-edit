@@ -1,4 +1,4 @@
-import { avatarInnerHtml, learnWallet, myWallet, refreshIdentity, resolveDisplayName, selfPerson, showSelfIdentity } from "../../../src/shared/person.ts";
+import { avatarInnerHtml, learnWallet, myWallet, refreshIdentity, resolveDisplayName, selfPerson, showSelfIdentity, watchWallet } from "../../../src/shared/person.ts";
 import { hostBase, routePath, withKeptQuery } from "../../../p2p/src/host-base.ts";
 import { caretColor, selectionColor } from "../../../packages/core/src/presence.ts";
 import { hexAlpha } from "../../../packages/core/src/palette.ts";
@@ -1273,6 +1273,8 @@ function mount(id: string, share: string): void {
   window.addEventListener("storage", (event) => {
     if (event.key?.startsWith("fil-identity:")) paintAvatars(sid);
   });
+  // Wallet account/network switch: repaint self in place (peers get it on the next hello), no reload or prompt.
+  (window as unknown as { __walletSwitch?: (a: string[]) => Promise<void> }).__walletSwitch = watchWallet(() => paintAvatars(sid));
 
   let socketGen = 0;
   function connect(): void {
