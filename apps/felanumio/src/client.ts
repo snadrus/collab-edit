@@ -795,6 +795,9 @@ function mount(id: string, share: string): void {
 
   let resizing: { edge: "col" | "row"; index: number; start: number; size: number } | null = null;
   let filling = false;
+  // The canvas is not focusable: without this the click's default focus change moves focus from the formula bar to <body>,
+  // and typing into the selected cell goes nowhere.
+  canvas.addEventListener("mousedown", (ev) => ev.preventDefault());
   canvas.addEventListener("pointerdown", (ev) => {
     const rect = canvas.getBoundingClientRect();
     const x = ev.clientX - rect.left;

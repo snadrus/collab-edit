@@ -16,7 +16,7 @@ import {
   saveSnapshot,
   volumeHistory,
 } from "./folder-save.ts";
-import { DEFAULT_NETWORK, commpAdapter, commpOf, fileAdapter, ipfsAdapter, explainFilecoinError, innerReason, lazy, normalizeNetwork, savedVersionUrls, walletNetwork, warmSigningModules, synapseAdapter, type FilecoinNetwork, type StorageAdapter, type SynapseLike } from "./storage.ts";
+import { DEFAULT_NETWORK, commpAdapter, commpOf, fileAdapter, ipfsAdapter, explainFilecoinError, innerReason, isChunkLoadError, lazy, STALE_BUILD, normalizeNetwork, savedVersionUrls, walletNetwork, warmSigningModules, synapseAdapter, type FilecoinNetwork, type StorageAdapter, type SynapseLike } from "./storage.ts";
 import type { Wire } from "./wire.ts";
 
 const NativeWebSocket = globalThis.WebSocket;
@@ -201,11 +201,41 @@ async function connectWire(room: string, secret: string): Promise<Wire> {
   return connectTrystero(room, secret);
 }
 
+/** Asks the FiFolders tab that opened this file for its bytes (same origin; works for encrypted volumes too). */
+function askFiFolders(cid: string, path: string, timeoutMs = 4000): Promise<Uint8Array | null> {
+  return new Promise((resolve) => {
+    let channel: BroadcastChannel;
+    try {
+      channel = new BroadcastChannel("fifolders-ops");
+    } catch {
+      resolve(null);
+      return;
+    }
+    const nonce = Math.random().toString(36).slice(2);
+    const done = (value: Uint8Array | null) => {
+      window.clearTimeout(timer);
+      window.clearInterval(again);
+      channel.close();
+      resolve(value);
+    };
+    channel.onmessage = (event: MessageEvent) => {
+      const data = event.data as { have?: string; nonce?: string; bytes?: Uint8Array } | null;
+      if (data && data.nonce === nonce && data.bytes instanceof Uint8Array) done(data.bytes);
+    };
+    const ask = () => channel.postMessage({ want: cid, path, nonce });
+    ask();
+    // FiFolders may still be loading its tree; ask again until the timeout.
+    const again = window.setInterval(ask, 700);
+    const timer = window.setTimeout(() => done(null), timeoutMs);
+  });
+}
+
 async function readSavedVersion(): Promise<Record<string, unknown> | null> {
   const params = new URLSearchParams(location.search);
   const cid = params.get("cid") || params.get("pieceCid") || "";
   if (!cid) return null;
   let bytes = await getBlob(cid).catch(() => null);
+  if (!bytes && params.get("fifolders") === "1") bytes = await askFiFolders(cid, params.get("path") || "");
   for (const url of bytes ? [] : savedVersionUrls(cid, params.get("owner") || "", currentNetwork())) {
     try {
       const res = await fetch(url);
@@ -223,6 +253,21 @@ async function readSavedVersion(): Promise<Record<string, unknown> | null> {
   } catch {
     return null;
   }
+}
+
+/** A deploy replaced this tab's lazy chunks (or the network dropped them): say so, with a Reload button. */
+function showStale(err: unknown): void {
+  const stale = (err instanceof Error && err.message === STALE_BUILD) || isChunkLoadError(err);
+  const bar = document.querySelector("#p2p-wait") as HTMLElement | null;
+  if (!bar) return;
+  bar.hidden = false;
+  bar.textContent = stale ? STALE_BUILD + " " : "Could not connect. ";
+  const button = document.createElement("button");
+  button.type = "button";
+  button.id = "p2p-reload";
+  button.textContent = "Reload";
+  button.addEventListener("click", () => location.reload());
+  bar.append(button);
 }
 
 function showWait(): void {
@@ -244,7 +289,13 @@ async function attachDoc(sock: AppSocket, id: string): Promise<void> {
   }
   const owner = isOwner("doc", id);
   const secret = rememberSecret("doc", id);
-  const wire = await connectWire("doc:" + id, secret);
+  let wire: Wire;
+  try {
+    wire = await connectWire("doc:" + id, secret);
+  } catch (err) {
+    showStale(err);
+    throw err;
+  }
   if (owner) await hostDoc(sock, wire, id);
   else joinDoc(sock, wire, id);
   sock.open();
@@ -256,14 +307,12 @@ async function hostDoc(sock: AppSocket, wire: Wire, id: string): Promise<void> {
   docSession = DocSession.create(id, data && data.snapshot ? data : null, (record) => {
     void saveRecord({ key: "doc:" + id, kind: "doc", id, title: record.title, updated: Date.now(), rev: record.rev, data: record });
   });
-  const cid = new URLSearchParams(location.search).get("cid");
-  if (cid && docSession.server.rev === 0) {
-    const bytes = await getBlob(cid);
-    if (bytes) {
-      const parsed = JSON.parse(new TextDecoder().decode(bytes)) as { snapshot?: Snapshot; title?: string; contentCid?: string };
-      if (parsed.snapshot) docSession.replace(parsed.snapshot, parsed.title, parsed.contentCid);
-    }
+  if (docSession.server.rev === 0 && !data?.snapshot) {
+    // Opened from a saved piece (?cid= or FiFolders' ?pieceCid=): start from its content.
+    const parsed = (await readSavedVersion()) as { snapshot?: Snapshot; title?: string; contentCid?: string } | null;
+    if (parsed?.snapshot) docSession.replace(parsed.snapshot, parsed.title, parsed.contentCid);
   }
+  markBaseline();
   const remotes = new Map<string, { conn: ReturnType<DocSession["connect"]> | null; socket: { send(data: string): void } }>();
   let local: ReturnType<DocSession["connect"]> | null = null;
   const bridge = { send: (data: string) => sock.deliver(data) };
@@ -307,11 +356,21 @@ function joinDoc(sock: AppSocket, wire: Wire, id: string): void {
   let inited = false;
   let locked = false;
   const queue: string[] = [];
+  // The editor's handshake. A reloaded owner is a new peer with a fresh hub, so the guest repeats it there.
+  let hello = "";
+  let lastOwner: string | null = null;
   const flush = () => {
     if (!ownerPeer) return;
     for (const data of queue.splice(0)) wire.send(ownerPeer, JSON.parse(data) as unknown);
   };
   sock.toHub = (data: string) => {
+    if (data.includes('"hello"')) {
+      try {
+        if ((JSON.parse(data) as { t?: string }).t === "hello") hello = data;
+      } catch {
+        // Not JSON; pass through.
+      }
+    }
     queue.push(data);
     flush();
   };
@@ -332,7 +391,15 @@ function joinDoc(sock: AppSocket, wire: Wire, id: string): void {
   wire.onMessage((from, body) => {
     const rec = body as Record<string, unknown>;
     if (rec?.k === "owner") {
+      const rejoin = !!hello && lastOwner !== null && lastOwner !== from;
       ownerPeer = from;
+      lastOwner = from;
+      if (rejoin) {
+        // Ops queued for the old hub are based on its revisions; the new init replaces them.
+        queue.length = 0;
+        const again = JSON.parse(hello) as Record<string, unknown>;
+        wire.send(from, { ...again, resume: false, since: undefined });
+      }
       flush();
       unlock();
       return;
@@ -402,7 +469,13 @@ async function attachBook(sock: AppSocket, id: string): Promise<void> {
   }
   const owner = isOwner("book", id);
   const secret = rememberSecret("book", id);
-  const wire = await connectWire("book:" + id, secret);
+  let wire: Wire;
+  try {
+    wire = await connectWire("book:" + id, secret);
+  } catch (err) {
+    showStale(err);
+    throw err;
+  }
   if (owner) await hostBook(sock, wire, id);
   else joinBook(sock, wire, id);
   sock.open();
@@ -414,6 +487,11 @@ async function hostBook(sock: AppSocket, wire: Wire, id: string): Promise<void> 
   bookSession = BookSession.create(id, data && data.book ? data : null, (record) => {
     void saveRecord({ key: "book:" + id, kind: "book", id, title: record.title, updated: Date.now(), rev: record.rev, data: record });
   });
+  if (!data?.book) {
+    const parsed = (await readSavedVersion()) as { book?: Book; title?: string } | null;
+    if (parsed?.book) bookSession.replace(parsed.book, parsed.title);
+  }
+  markBaseline();
   const remotes = new Map<string, { conn: ReturnType<BookSession["connect"]> | null }>();
   let local: ReturnType<BookSession["connect"]> | null = null;
   const bridge = { send: (data: string) => sock.deliver(data) };
@@ -453,11 +531,21 @@ function joinBook(sock: AppSocket, wire: Wire, id: string): void {
   let inited = false;
   let locked = false;
   const queue: string[] = [];
+  // The editor's handshake. A reloaded owner is a new peer with a fresh hub, so the guest repeats it there.
+  let hello = "";
+  let lastOwner: string | null = null;
   const flush = () => {
     if (!ownerPeer) return;
     for (const data of queue.splice(0)) wire.send(ownerPeer, JSON.parse(data) as unknown);
   };
   sock.toHub = (data: string) => {
+    if (data.includes('"hello"')) {
+      try {
+        if ((JSON.parse(data) as { t?: string }).t === "hello") hello = data;
+      } catch {
+        // Not JSON; pass through.
+      }
+    }
     queue.push(data);
     flush();
   };
@@ -478,7 +566,15 @@ function joinBook(sock: AppSocket, wire: Wire, id: string): void {
   wire.onMessage((from, body) => {
     const rec = body as Record<string, unknown>;
     if (rec?.k === "owner") {
+      const rejoin = !!hello && lastOwner !== null && lastOwner !== from;
       ownerPeer = from;
+      lastOwner = from;
+      if (rejoin) {
+        // Ops queued for the old hub are based on its revisions; the new init replaces them.
+        queue.length = 0;
+        const again = JSON.parse(hello) as Record<string, unknown>;
+        wire.send(from, { ...again, resume: false, since: undefined });
+      }
       flush();
       unlock();
       return;
@@ -939,6 +1035,8 @@ function installSaveButton(save: () => void): void {
     button.className = "p2p-save";
     button.textContent = "Save";
     button.title = "Save to Filecoin (Ctrl+S)";
+    // Keep the editor's focus and caret: clicking Save must not steal typing from the document.
+    button.addEventListener("mousedown", (event) => event.preventDefault());
     button.addEventListener("click", save);
     row.append(status, button);
     return true;
@@ -961,6 +1059,37 @@ function installSaveButton(save: () => void): void {
   );
 }
 
+/** Set by the save flow: the session's opening content is the clean baseline. */
+let markBaseline: () => void = () => {};
+
+/** The saved content without its title (the title is compared on its own). */
+function bodyOf(raw: string): string {
+  try {
+    const { title: _title, ...rest } = JSON.parse(raw) as Record<string, unknown>;
+    return JSON.stringify(rest);
+  } catch {
+    return raw;
+  }
+}
+
+/** True for a document or sheet with no content yet. */
+function isBlankBody(raw: string): boolean {
+  try {
+    const parsed = JSON.parse(raw) as { snapshot?: { text?: string }; book?: { sheets?: { cells?: Record<string, unknown> }[] } };
+    if (parsed.snapshot) return !(parsed.snapshot.text || "").trim();
+    if (parsed.book) return (parsed.book.sheets || []).every((sheet) => !sheet.cells || Object.keys(sheet.cells).length === 0);
+  } catch {
+    // Unknown shape: not blank.
+  }
+  return false;
+}
+
+function hashText(text: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193) >>> 0;
+  return h.toString(16) + ":" + text.length;
+}
+
 function installSaveFlow(): void {
   const params = new URLSearchParams(location.search);
   const embedded = params.get("fifolders") === "1";
@@ -971,6 +1100,8 @@ function installSaveFlow(): void {
   let baseTitle = "";
   let sent = "";
   let sentTitle = "";
+  // A new embedded doc that FiFolders has never confirmed: any content is unsaved, even after a reload.
+  let neverSaved = false;
   const readOps = (): { id?: string; kind?: string; path?: string; stage?: string; status?: string; content?: string }[] => {
     try {
       const parsed = JSON.parse(localStorage.getItem("fifolders:ops") || "{}") as { ops?: unknown };
@@ -979,23 +1110,55 @@ function installSaveFlow(): void {
       return [];
     }
   };
-  const ownOp = () => readOps().find((item) => item.id === id || (item.kind === "fel-save" && item.path === path));
+  // Only this editor's own row: FiFolders' "Save pending" placeholder for the same path has no content and is not ours.
+  // Only this editor's own row: FiFolders' "Save pending" placeholder for the same path has no content and is not ours.
+  const ownOp = () => readOps().find((item) => item.id === id);
+  // Embedded docs remember what FiFolders last confirmed, so a reload still knows saved from unsaved.
+  const savedKey = "fipen:saved:" + path;
+  const savedHash = (): string => {
+    try {
+      return (embedded && path && localStorage.getItem(savedKey)) || "";
+    } catch {
+      return "";
+    }
+  };
+  const rememberSaved = (raw: string, title: string) => {
+    markFilecoinSaved(raw, title);
+    try {
+      if (embedded && path) localStorage.setItem(savedKey, hashText(bodyOf(raw)) + "|" + title);
+    } catch {
+      // Storage full: the in-memory mark still works for this tab.
+    }
+  };
   const dirty = (raw: string): boolean => {
     const title = activeTitle();
-    const ref = filecoinMark.saved ? filecoinMark : { raw: baseRaw, title: baseTitle };
-    return raw !== ref.raw || title !== ref.title;
+    if (filecoinMark.saved) return bodyOf(raw) !== bodyOf(filecoinMark.raw) || title !== filecoinMark.title;
+    const stored = savedHash();
+    if (stored) {
+      const [hash, ...rest] = stored.split("|");
+      return hashText(bodyOf(raw)) !== hash || title !== rest.join("|");
+    }
+    if (neverSaved) return !isBlankBody(raw);
+    return bodyOf(raw) !== bodyOf(baseRaw) || title !== baseTitle;
   };
   const state = (raw: string): SaveState => {
-    if (embedded && sent) {
+    if (embedded) {
       const op = ownOp();
-      if (!op || op.stage === "saved" || op.stage === "done" || op.status === "done") {
+      if (sent && (!op || op.stage === "saved" || op.stage === "done" || op.status === "done")) {
         // FiFolders drops the op once the bytes are in the volume.
-        markFilecoinSaved(sent, sentTitle);
+        rememberSaved(sent, sentTitle);
         sent = "";
-      } else if (op.status === "error" || op.stage === "error" || op.stage === "interrupted") return "failed";
-      else if (op.content === raw) return "queued";
+      } else if (op && (op.status === "error" || op.stage === "error" || op.stage === "interrupted")) return "failed";
+      else if (op && op.content === raw) {
+        // Also after a reload: remember what was queued so its commit flips the status to saved.
+        if (!sent) {
+          sent = raw;
+          sentTitle = op.title || activeTitle();
+        }
+        return "queued";
+      }
     }
-    if (!dirty(raw)) return filecoinMark.saved ? "saved" : "clean";
+    if (!dirty(raw)) return filecoinMark.saved || savedHash() ? "saved" : "clean";
     return "dirty";
   };
   const paint = () => {
@@ -1055,6 +1218,18 @@ function installSaveFlow(): void {
     }
   };
   installSaveButton(() => save(false));
+  // Test hook: read-only view of the save state.
+  (window as unknown as { __p2pSave?: unknown }).__p2pSave = {
+    state: () => {
+      const raw = activeJson();
+      return raw ? state(raw) : "none";
+    },
+    dirty: () => isDirty(),
+    baseLen: () => baseRaw.length,
+    rawLen: () => activeJson().length,
+    base: () => baseRaw,
+    raw: () => activeJson(),
+  };
   // Standalone autosave needs a signer the tab does not keep, so only the embedded mode autosaves.
   window.setInterval(() => save(true), Number((window as unknown as { __p2pAutosaveMs?: number }).__p2pAutosaveMs) || AUTOSAVE_MS);
   window.addEventListener("beforeunload", (event) => {
@@ -1077,12 +1252,16 @@ function installSaveFlow(): void {
       blank.dataset.fifolders = "1";
       blank.click();
     }
+    paint();
+  };
+  markBaseline = () => {
+    // Called once the host session holds its opening content, before any edit can land.
     const raw = activeJson();
-    if (raw && !baseRaw) {
-      // The first content (opened from FiFolders or local) is the clean baseline.
-      baseRaw = raw;
-      baseTitle = activeTitle();
-    }
+    if (!raw || baseRaw) return;
+    baseRaw = raw;
+    neverSaved = embedded && !params.get("pieceCid") && !params.get("cid");
+    const name = (params.get("name") || "").replace(/\.(felarumi|felanumio|fipen|figrid)$/i, "");
+    baseTitle = embedded && name ? name : activeTitle();
     paint();
   };
   window.setInterval(tick, 1000);
