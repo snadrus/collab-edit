@@ -25,6 +25,8 @@ test("FiPen: no identity -> clicking your name opens 'Configure your identity' l
   const page = await ctx.newPage();
   await openDoc(page);
   await expect(page.locator("#name-btn")).toHaveText(/^[A-Z][a-z]+ [A-Z][a-z]+$/);
+  // No emoji: your avatar is the wallet's deterministic pixel art.
+  await expect(page.locator("#avatars .avatar.self svg.fiperson-pixel")).toHaveCount(1);
   await page.locator("#name-btn").click();
   const pop = page.locator("#identity-pop");
   await expect(pop).toContainText("Configure your identity");

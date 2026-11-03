@@ -44,8 +44,7 @@ import { diffWords, encodeStrokes, lookupWord } from "../shared/tools.ts";
 import { loadQueue, saveQueue } from "./offline.ts";
 import { MB, ML, MR, MT, PAGE_H, PAGE_W, RULER_H, applyPage, currentPage } from "./layout.ts";
 import { Editor, decodeCommands, encodeCommands, type RemoteCaret } from "./editor.ts";
-import { WALLET_KEY, learnWallet, resolveDisplayName } from "../shared/guest-name.ts";
-import { cachedIdentity, openIdentityPopup, refreshIdentity } from "../shared/identity.ts";
+import { avatarInnerHtml, learnWallet, myWallet, refreshIdentity, resolveDisplayName, selfPerson, showSelfIdentity } from "../shared/person.ts";
 
 interface InitMsg {
   t: "init";
@@ -81,14 +80,6 @@ function sid(): string {
   if (!id) id = crypto.randomUUID();
   sessionStorage.setItem("felarumi-sid", id);
   return id;
-}
-
-function myWallet(): string | null {
-  try {
-    return localStorage.getItem(WALLET_KEY);
-  } catch {
-    return null;
-  }
 }
 
 function displayName(): string {
@@ -531,7 +522,7 @@ function mountEditor(id: string, shareToken = ""): void {
     sessionStorage.setItem("felarumi-name", next.trim().slice(0, 40) || "Guest");
     renameSelf();
   };
-  const showIdentity = (anchor: HTMLElement) => openIdentityPopup(anchor, { address: myWallet(), currentName: displayName(), onLocalRename: localRename });
+  const showIdentity = (anchor: HTMLElement) => showSelfIdentity(anchor, localRename);
   nameBtn.addEventListener("click", () => showIdentity(nameBtn));
   (window as unknown as { __showIdentity?: (el: HTMLElement) => void }).__showIdentity = showIdentity;
 
@@ -2278,12 +2269,15 @@ function paintAvatars(editor: Editor, selfSid: string): void {
     el.style.boxShadow = mine ? "none" : `0 0 0 2px ${person.color}`;
     el.title = person.name;
     el.dataset.sid = person.sid;
-    const own = mine ? cachedIdentity(myWallet()) : null;
-    el.textContent = own?.avatar?.emoji || (person.name.trim()[0] || "?").toUpperCase();
-    if (own?.avatar?.color) {
-      el.style.background = own.avatar.color;
-      el.style.color = "#fff";
-    }
+    const own = mine ? selfPerson() : null;
+    if (own && (own.avatar?.emoji || own.address)) {
+      el.innerHTML = avatarInnerHtml(own, 32);
+      el.style.overflow = "hidden";
+      if (own.avatar?.color && own.avatar.emoji) {
+        el.style.background = own.avatar.color;
+        el.style.color = "#fff";
+      }
+    } else el.textContent = (person.name.trim()[0] || "?").toUpperCase();
     el.addEventListener("mouseenter", () => {
       editor.hoverSid = person.sid;
       editor.syncFlags();
