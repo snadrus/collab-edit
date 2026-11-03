@@ -44,6 +44,7 @@ import { diffWords, encodeStrokes, lookupWord } from "../shared/tools.ts";
 import { loadQueue, saveQueue } from "./offline.ts";
 import { MB, ML, MR, MT, PAGE_H, PAGE_W, RULER_H, applyPage, currentPage } from "./layout.ts";
 import { Editor, decodeCommands, encodeCommands, type RemoteCaret } from "./editor.ts";
+import { openNotifyPanel, openPersonCardAt } from "./mentions.ts";
 import { avatarInnerHtml, learnWallet, myWallet, refreshIdentity, resolveDisplayName, selfPerson, showSelfIdentity, watchWallet } from "../shared/person.ts";
 
 interface InitMsg {
@@ -278,6 +279,13 @@ function mountEditor(id: string, shareToken = ""): void {
   let chrome: Chrome;
   let anchorWait: (() => void) | null = null;
   const people = () => [{ sid: session, name: displayName(), color: editor.color }, ...editor.remotes.values()];
+  const lastPointer = { x: 0, y: 0 };
+  document.addEventListener("pointerdown", (e) => Object.assign(lastPointer, { x: e.clientX, y: e.clientY }), true);
+  /** After an @-mention (or Notify on a card): offer to notify them. Sending needs the user's click. */
+  const notifyPerson = (address: string) => {
+    if (address === myWallet()) return;
+    openNotifyPanel(address, { docTitle: () => title.value, docUrl: () => location.href, toast });
+  };
   const api = {
     ready: false,
     getText: () => editor.getText(),
@@ -460,6 +468,7 @@ function mountEditor(id: string, shareToken = ""): void {
       else if (st.embed === "img") openAlt(index);
       else if (st.embed === "eq") openEquation(index);
       else if (st.embed === "sig") openSignatureDetails(index);
+      else if (st.embed === "person") openPersonCardAt(lastPointer.x, lastPointer.y, st.addr, st.label || "Person", notifyPerson);
     },
     onSuggestion: (meta) => send({ t: "suggest", suggestion: meta }),
     onMargin: (which) => openMargin(which),
@@ -471,6 +480,12 @@ function mountEditor(id: string, shareToken = ""): void {
     },
     toast,
     people,
+    participants: () => {
+      const out = [...editor.remotes.values()].filter((r) => r.addr).map((r) => ({ address: r.addr!, name: r.name }));
+      for (const st of editor.doc.styles) if (st?.embed === "person" && st.addr) out.push({ address: st.addr, name: st.label || "" });
+      return out;
+    },
+    onMention: (address) => notifyPerson(address),
     // Peer-hosted docs: only the owner resolves. The server build keeps its own access rules.
     canResolve: () =>
       !(window as unknown as { __FELARUMI_P2P__?: boolean }).__FELARUMI_P2P__ || localStorage.getItem("felarumi-owner:doc:" + id) === "1",
@@ -873,7 +888,7 @@ function mountEditor(id: string, shareToken = ""): void {
     ws.onopen = () => {
       const queued = editor.sync.exportQueue();
       const resume = !!(queued && !queued.transformed);
-      ws?.send(JSON.stringify({ t: "hello", sid: session, name: displayName(), resume, since: resume ? queued!.baseRev : undefined, share: shareToken || undefined }));
+      ws?.send(JSON.stringify({ t: "hello", sid: session, name: displayName(), addr: myWallet() || undefined, resume, since: resume ? queued!.baseRev : undefined, share: shareToken || undefined }));
     };
     ws.onmessage = (ev) => {
       const msg = JSON.parse(ev.data as string) as Record<string, unknown>;
@@ -883,7 +898,7 @@ function mountEditor(id: string, shareToken = ""): void {
           editor.applyRemote(decodeCommands(msg.commands as Command[]), String(msg.sid), Number(msg.rev), Number(msg.reqId));
         } catch (err) {
           console.error(err);
-          ws?.send(JSON.stringify({ t: "hello", sid: session, name: displayName(), share: shareToken || undefined }));
+          ws?.send(JSON.stringify({ t: "hello", sid: session, name: displayName(), addr: myWallet() || undefined, share: shareToken || undefined }));
         }
       } else if (msg.t === "ack") editor.ack(Number(msg.reqId), (msg.assignedRev as number | null) ?? null, Number(msg.serverRev));
       else if (msg.t === "sel") {
@@ -891,6 +906,7 @@ function mountEditor(id: string, shareToken = ""): void {
           sid: String(msg.sid),
           name: String(msg.name || "Guest"),
           color: String(msg.color || "#188038"),
+          addr: typeof msg.addr === "string" ? msg.addr : undefined,
           anchor: Number(msg.anchor),
           head: Number(msg.head),
         });
@@ -901,6 +917,7 @@ function mountEditor(id: string, shareToken = ""): void {
           sid: String(msg.sid),
           name: String(msg.name || "Guest"),
           color: String(msg.color || "#188038"),
+          addr: typeof msg.addr === "string" ? msg.addr : existing?.addr,
           anchor: existing?.anchor ?? 0,
           head: existing?.head ?? 0,
         });

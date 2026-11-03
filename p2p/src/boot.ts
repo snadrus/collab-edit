@@ -130,7 +130,8 @@ function installFetch(): void {
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const href = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     const url = new URL(href, location.origin);
-    if (!url.pathname.startsWith("/api/")) return orig(input, init);
+    // Only this origin's /api/ (the old server API); other hosts such as slack.com/api/* go to the network.
+    if (url.origin !== location.origin || !url.pathname.startsWith("/api/")) return orig(input, init);
     const method = (init?.method || "GET").toUpperCase();
     if (url.pathname === "/api/docs" && method === "GET") {
       if (url.searchParams.get("trash") === "1") return jsonResponse([]);

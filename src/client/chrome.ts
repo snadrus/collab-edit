@@ -1,8 +1,17 @@
+import { findClubsUrl, needsClubScan, suggest } from "fiperson/people";
 import { dropOptions } from "../shared/doc.ts";
 import type { Thread } from "../shared/threads.ts";
 import type { Editor } from "./editor.ts";
 import { loadImages } from "./images.ts";
 import { contentWidth } from "./layout.ts";
+
+interface AtItem {
+  label: string;
+  detail: string;
+  run: () => void;
+  icon?: string;
+  person?: boolean;
+}
 
 export interface Person {
   sid: string;
@@ -36,7 +45,19 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, t
   return node;
 }
 
-export function mountChrome(editor: Editor, opts: { send: (msg: unknown) => void; toast: (s: string) => void; people: () => Person[]; canResolve?: () => boolean }): Chrome {
+export function mountChrome(
+  editor: Editor,
+  opts: {
+    send: (msg: unknown) => void;
+    toast: (s: string) => void;
+    people: () => Person[];
+    canResolve?: () => boolean;
+    /** Doc participants with a wallet (peers + people already mentioned), for FiPerson suggestions. */
+    participants?: () => { address: string; name?: string }[];
+    /** A person chip was inserted from the @ menu. */
+    onMention?: (address: string, name: string) => void;
+  },
+): Chrome {
   const notes = document.querySelector("#notes") as HTMLElement;
   const findBar = document.querySelector("#findbar") as HTMLElement;
   const findQ = document.querySelector("#find-q") as HTMLInputElement;
@@ -53,7 +74,7 @@ export function mountChrome(editor: Editor, opts: { send: (msg: unknown) => void
   const addBtn = document.querySelector("#comment-add") as HTMLButtonElement;
   const tableTools = document.querySelector("#table-tools") as HTMLElement;
   let atIndex = 0;
-  let atItems: { label: string; detail: string; run: () => void }[] = [];
+  let atItems: AtItem[] = [];
   let composerFor: string | null = null;
 
   notes.addEventListener("keydown", (ev) => {
@@ -270,9 +291,9 @@ export function mountChrome(editor: Editor, opts: { send: (msg: unknown) => void
     input.focus();
   }
 
-  function atEntries(query: string): { label: string; detail: string; run: () => void }[] {
+  function atEntries(query: string): AtItem[] {
     const q = query.toLowerCase();
-    const items: { label: string; detail: string; run: () => void }[] = [
+    const items: AtItem[] = [
       { label: "Voting chip", detail: "Emoji ballot", run: () => editor.insertVote("👍") },
       { label: "Date", detail: "Today", run: () => editor.insertEmbed({ embed: "date", iso: new Date().toISOString().slice(0, 10) }) },
       { label: "Dropdown", detail: "Yes / No / Maybe", run: () => editor.insertEmbed({ embed: "drop", opts: JSON.stringify(["Yes", "No", "Maybe"]), val: "Yes" }) },
@@ -281,15 +302,27 @@ export function mountChrome(editor: Editor, opts: { send: (msg: unknown) => void
       { label: "Horizontal line", detail: "", run: () => editor.insertRule() },
       { label: "Page break", detail: "", run: () => editor.insertPageBreak() },
     ];
-    const people = [{ name: editor.name, detail: "You" }, ...opts.people().filter((p) => p.sid !== editor.sync.sid).map((p) => ({ name: p.name, detail: "Person" }))];
-    for (const person of people) {
-      items.splice(1, 0, {
-        label: person.name,
-        detail: person.detail,
-        run: () => editor.insertEmbed({ embed: "person", label: person.name }),
-      });
-    }
-    return items.filter((item) => !q || item.label.toLowerCase().includes(q) || item.detail.toLowerCase().includes(q));
+    // FiPerson owns who can be mentioned (club-mates + participants); FiPen only renders suggest() results.
+    const found = suggest(query, { participants: opts.participants?.() ?? [], limit: 6 });
+    const people: AtItem[] = found.map((p) => ({
+      label: p.name,
+      detail: p.hint || "Person",
+      icon: p.iconUrl,
+      person: true,
+      run: () => {
+        editor.insertEmbed({ embed: "person", label: p.name, addr: p.id });
+        opts.onMention?.(p.id, p.name);
+      },
+    }));
+    // Peers without a wallet still get a name-only chip (no card or notify).
+    const known = new Set(found.map((p) => p.name));
+    for (const p of opts.people().filter((x) => x.sid !== editor.sync.sid && !known.has(x.name)))
+      if (!q || p.name.toLowerCase().includes(q)) people.push({ label: p.name, detail: "In this document", person: true, run: () => editor.insertEmbed({ embed: "person", label: p.name }) });
+    if (!people.length && needsClubScan())
+      people.push({ label: "Find my club-mates", detail: "FiPerson: Find all my Clubs", icon: "", person: true, run: () => (editor.closeAt(), window.open(findClubsUrl(), "_blank", "noopener")) });
+    const rest = items.filter((item) => !q || item.label.toLowerCase().includes(q) || item.detail.toLowerCase().includes(q));
+    // People first while typing a name (Google Docs), the insert menu first for a bare "@".
+    return [...people, ...rest];
   }
 
   function paintAt(): void {
@@ -302,6 +335,17 @@ export function mountChrome(editor: Editor, opts: { send: (msg: unknown) => void
     atItems.forEach((item, n) => {
       const btn = el("button", n === atIndex ? "at-item active" : "at-item");
       btn.type = "button";
+      if (item.person) {
+        btn.classList.add("at-person");
+        const av = el("span", "at-avatar");
+        if (item.icon) {
+          const img = document.createElement("img");
+          img.src = item.icon;
+          img.alt = "";
+          av.append(img);
+        } else av.textContent = item.label === "Find my club-mates" ? "+" : (item.label.trim()[0] || "?").toUpperCase();
+        btn.append(av);
+      }
       btn.append(el("span", "", item.label), el("small", "", item.detail));
       btn.addEventListener("mousedown", (ev) => ev.preventDefault());
       btn.addEventListener("click", () => item.run());

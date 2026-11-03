@@ -46,6 +46,8 @@ export interface CharStyle {
   alt?: string;
   /** Image rotation in degrees. */
   rot?: number;
+  /** Wallet address of a person chip (FiPerson id). */
+  addr?: string;
   /** PieceCID of the unsigned document this signature commits to. */
   cid?: string;
   h?: Heading;
