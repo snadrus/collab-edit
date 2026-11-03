@@ -291,6 +291,7 @@ function mountEditor(id: string, shareToken = ""): void {
     ready: false,
     getText: () => editor.getText(),
     setSelection: (a: number, b: number) => editor.setSelection(a, b),
+    selection: () => ({ anchor: editor.anchor, head: editor.head }),
     insertText: (text: string) => editor.insertText(text),
     remoteCount: () => editor.remotes.size,
     color: () => editor.color,
