@@ -1,3 +1,4 @@
+import type { Thread } from "../../src/shared/threads.ts";
 import { type Book } from "../../apps/felanumio/src/ot.ts";
 import { type Snapshot } from "../../src/shared/doc.ts";
 import { BookSession, type BookRecord } from "./book-hub.ts";
@@ -332,8 +333,8 @@ async function hostDoc(sock: AppSocket, wire: Wire, id: string): Promise<void> {
   });
   if (docSession.server.rev === 0 && !data?.snapshot) {
     // Opened from a saved piece (?cid= or FiFolders' ?pieceCid=): start from its content.
-    const parsed = (await readSavedVersion()) as { snapshot?: Snapshot; title?: string; contentCid?: string } | null;
-    if (parsed?.snapshot) docSession.replace(parsed.snapshot, parsed.title, parsed.contentCid);
+    const parsed = (await readSavedVersion()) as { snapshot?: Snapshot; title?: string; contentCid?: string; threads?: Thread[] } | null;
+    if (parsed?.snapshot) docSession.replace(parsed.snapshot, parsed.title, parsed.contentCid, parsed.threads);
   }
   markBaseline();
   const remotes = new Map<string, { conn: ReturnType<DocSession["connect"]> | null; socket: { send(data: string): void } }>();
@@ -720,8 +721,8 @@ async function loadActive(raw: string): Promise<void> {
   await putBlob(cid, bytes);
   setCid(cid);
   if (parsed.snapshot && docSession) {
-    const contentCid = (parsed as { contentCid?: string }).contentCid;
-    docSession.replace(parsed.snapshot, parsed.title, contentCid);
+    const { contentCid, threads } = parsed as { contentCid?: string; threads?: Thread[] };
+    docSession.replace(parsed.snapshot, parsed.title, contentCid, threads);
   }
   else if (parsed.book && bookSession) bookSession.replace(parsed.book, parsed.title);
   else throw new Error("This file does not match the open editor");

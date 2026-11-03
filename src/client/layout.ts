@@ -242,8 +242,18 @@ function ensureScriptFont(): void {
   void document.fonts.load('20px "Dancing Script"').then(() => repaint?.());
 }
 
+let fontWatch = false;
+
 export function onNeedPaint(fn: () => void): void {
   repaint = fn;
+  // Canvas text is measured with whatever font is loaded at paint time. When a web font (Roboto, Arial
+  // substitutes, …) finishes later, lines rewrap; without a relayout the caret, Home/End and hit-testing use
+  // stale line breaks — one of the FiPen caret desync causes. Relayout whenever fonts finish loading.
+  if (!fontWatch && typeof document !== "undefined" && document.fonts) {
+    fontWatch = true;
+    document.fonts.addEventListener?.("loadingdone", () => repaint?.());
+    void document.fonts.ready.then(() => repaint?.());
+  }
 }
 
 function loadImage(src: string): HTMLImageElement {

@@ -34,7 +34,7 @@ import { bibliographyLines, citeLabel } from "../shared/tools.ts";
 import { addColumnDelta, addRowDelta, insertTableDelta, removeColumnDelta, removeRowDelta, tableAt, tableRowAt } from "../shared/table.ts";
 import { spellHits, spellSuggestions, dictReady } from "./dict.ts";
 import { caretBox, contentWidth, drawPage, hitTest, imageBox, layoutDoc, markerHit, onNeedPaint, pageSize, PAGE_H, PAGE_W, setImageDraft, setLayoutRange, signatureChipRect, stackOffset, type Layout } from "./layout.ts";
-import { type Tab, FIRST_TAB_ID, addTabDelta, deleteTabDelta, moveTabDelta, newTabId, renameTabDelta, tabRange, tabsOf, tocOf } from "../shared/tabs.ts";
+import { type Tab, FIRST_TAB_ID, tabAt, addTabDelta, deleteTabDelta, moveTabDelta, newTabId, renameTabDelta, tabRange, tabsOf, tocOf } from "../shared/tabs.ts";
 import { clipboardToDelta } from "./paste.ts";
 import { type ImageData, imageSources, loadImages } from "./images.ts";
 
@@ -248,6 +248,7 @@ export class Editor {
     this.hooks.onOutbound();
     this.hooks.onChange();
     this.render();
+    this.queueCaretCheck("remote op");
   }
 
   ack(reqId: number, assigned: number | null, serverRev: number): void {
@@ -311,10 +312,12 @@ export class Editor {
   }
 
   pastePlain(text: string): void {
+    this.queueCaretCheck("paste");
     this.paste("", text);
   }
 
   paste(html: string, plain: string): void {
+    this.queueCaretCheck("paste");
     if (!this.canEdit()) return;
     const lo = Math.min(this.anchor, this.head);
     const hi = Math.max(this.anchor, this.head);
@@ -399,6 +402,60 @@ export class Editor {
     if (this.anchor !== this.head) this.applyText(wipe);
     this.setParagraph({ h: "normal", align: "left", list: null, lv: null, lh: null, sb: null, sa: null, ind: null, hr: null, check: null });
     this.typing = {};
+  }
+
+  /** Cursor integrity: how often the drawn caret was checked against the model, and how often they disagreed. */
+  caretStats = { checks: 0, mismatches: 0, last: "" };
+  #caretQueued = "";
+
+  /** Check after the current handler finishes (and its paint), so the drawn caret is final. */
+  queueCaretCheck(reason: string): void {
+    if (this.#caretQueued) return;
+    this.#caretQueued = reason;
+    queueMicrotask(() => {
+      const why = this.#caretQueued;
+      this.#caretQueued = "";
+      this.checkCaret(why);
+    });
+  }
+
+  /**
+   * The model offset (chars before the caret) must be where the caret is drawn: the caret must sit in the
+   * tab on screen, the drawn caret must match the current layout, and hit-testing the drawn spot must give
+   * the same offset back. On a mismatch, resync the drawn caret from the model and warn.
+   */
+  checkCaret(reason: string): string {
+    if (this.preview || !this.layout) return "";
+    this.freshLayout();
+    this.caretStats.checks++;
+    let problem = "";
+    const tab = tabRange(this.currentTab());
+    if (this.head < tab.from || this.head > tab.last) problem = `caret ${this.head} is outside the tab on screen (${tab.from}–${tab.last})`;
+    else {
+      const box = caretBox(this.layout, this.head);
+      const left = parseFloat(this.localCaret.style.left || "NaN");
+      const top = parseFloat(this.localCaret.style.top || "NaN");
+      if (!(Math.abs(left - box.x) < 0.5 && Math.abs(top - stackOffset(box.page, box.y)) < 0.5)) problem = `drawn caret (${left},${top}) is stale for offset ${this.head}`;
+      else {
+        const back = this.clamp(hitTest(this.doc, this.layout, box.page, box.x + 0.01, box.y + box.h / 2));
+        const same = back === this.head || this.doc.text.slice(Math.min(back, this.head), Math.max(back, this.head)).replace(/[\u200b\ufffc]/g, "") === "";
+        if (!same) problem = `caret at offset ${this.head} is drawn where offset ${back} is`;
+      }
+    }
+    if (!problem) return "";
+    this.caretStats.mismatches++;
+    this.caretStats.last = `${reason}: ${problem}`;
+    console.warn("FiPen caret desync", { reason, problem, head: this.head, anchor: this.anchor, tab: this.tabId, mismatches: this.caretStats.mismatches });
+    const w = window as unknown as { __caretStrict?: boolean; __caretErrors?: string[] };
+    if (w.__caretStrict) (w.__caretErrors ??= []).push(this.caretStats.last);
+    // Resync the screen from the model: show the tab that holds the caret, then redraw.
+    if (this.head < tab.from || this.head > tab.last) {
+      const home = tabAt(this.doc, this.head);
+      this.tabId = home.id;
+      this.tabFrom = home.from;
+    }
+    this.paint();
+    return problem;
   }
 
   selectAll(): void {
@@ -620,7 +677,10 @@ export class Editor {
 
   private bindInput(): void {
     const input = this.input;
-    input.addEventListener("keydown", (ev) => this.onKey(ev as KeyboardEvent));
+    input.addEventListener("keydown", (ev) => {
+      this.onKey(ev as KeyboardEvent);
+      this.queueCaretCheck("key " + (ev as KeyboardEvent).key);
+    });
     input.addEventListener("input", () => {
       if (this.preview) {
         input.textContent = "";
@@ -636,6 +696,7 @@ export class Editor {
       input.textContent = "";
       this.ignoreInput = false;
       this.insertText(text);
+      this.queueCaretCheck("input");
     });
     input.addEventListener("compositionstart", () => {
       this.composing = true;
@@ -750,8 +811,9 @@ export class Editor {
       }
       const img = this.imageAt(page, point.x, point.y);
       if (img != null && !(ev as MouseEvent).shiftKey) {
+        // Like Docs: clicking an image selects it as a one-object range, so Delete/Backspace/cut/typing act on it.
         this.anchor = img;
-        this.head = img;
+        this.head = img + 1;
         this.dragging = false;
         this.render();
         this.hooks.onSelection();
@@ -893,6 +955,7 @@ export class Editor {
       this.render();
     });
     window.addEventListener("mouseup", () => {
+      this.queueCaretCheck("click");
       if (this.resize) {
         const held = this.resize;
         this.resize = null;
@@ -946,6 +1009,7 @@ export class Editor {
       e.preventDefault();
       return;
     }
+    if (this.emacsKey(e)) return;
     if (this.handleShortcut(e)) return;
     const meta = e.metaKey || e.ctrlKey;
     const key = e.key;
@@ -1007,6 +1071,40 @@ export class Editor {
       e.preventDefault();
       this.move(key, e.shiftKey, meta);
     }
+  }
+
+  /**
+   * Emacs / macOS Cocoa text bindings (Ctrl, never Cmd): A/E line start/end, B/F char, P/N line, D/H delete, K kill, Y yank.
+   * On by default on Mac, where Docs and every native text field honour them; elsewhere Ctrl is the command key, so opt-in.
+   */
+  emacsKeys = defaultEmacsKeys();
+  private killRing = "";
+
+  private emacsKey(e: KeyboardEvent): boolean {
+    if (!this.emacsKeys || !e.ctrlKey || e.metaKey || e.altKey) return false;
+    const k = e.key.toLowerCase();
+    const shift = e.shiftKey;
+    const nav: Record<string, string> = { a: "Home", e: "End", b: "ArrowLeft", f: "ArrowRight", p: "ArrowUp", n: "ArrowDown" };
+    if (nav[k]) this.move(nav[k], shift, false);
+    else if (shift) return false;
+    else if (k === "d") this.delKey();
+    else if (k === "h") this.backspace();
+    else if (k === "k") {
+      const from = this.head;
+      const lineEnd = this.doc.text.indexOf("\n", from);
+      let end = lineEnd < 0 ? this.doc.text.length - 1 : lineEnd;
+      if (end === from) end = from + 1;
+      end = Math.min(end, tabRange(this.currentTab()).last);
+      if (end <= from) return (e.preventDefault(), true);
+      this.killRing = this.doc.text.slice(from, end);
+      this.anchor = from;
+      this.head = from;
+      this.deleteRange(from, end);
+    } else if (k === "y") {
+      if (this.killRing) this.insertText(this.killRing);
+    } else return false;
+    e.preventDefault();
+    return true;
   }
 
   /** Scroll the caret into view after this paint: "near" scrolls the minimum (with margin), centering when the jump lands far off-screen. */
@@ -1554,6 +1652,7 @@ export class Editor {
   }
 
   insertEmbed(attrs: Attrs): void {
+    this.queueCaretCheck("chip insert");
     this.commitQuery([{ t: "i", s: EMBED, a: attrs }]);
   }
 
@@ -1632,6 +1731,7 @@ export class Editor {
   }
 
   insertImage(src: string, alt: string, w: number, h: number): void {
+    this.queueCaretCheck("image insert");
     this.insertEmbed({ embed: "img", src, alt, iw: Math.round(w), ih: Math.round(h) });
   }
 
@@ -2154,6 +2254,7 @@ export class Editor {
     }
     this.hooks.onSelection();
     this.focus();
+    this.queueCaretCheck("tab switch");
   }
 
   addTab(opts: { afterId?: string; child?: boolean; name?: string } = {}): string | null {
@@ -2426,8 +2527,10 @@ export class Editor {
   }
 
   selectedImage(): number | null {
-    if (this.anchor !== this.head) return null;
-    return this.doc.styles[this.head]?.embed === "img" ? this.head : null;
+    const lo = Math.min(this.anchor, this.head);
+    const hi = Math.max(this.anchor, this.head);
+    if (hi - lo > 1) return null;
+    return this.doc.styles[lo]?.embed === "img" ? lo : null;
   }
 
   addBookmark(): string {
@@ -2642,4 +2745,10 @@ export function encodeCommands(delta: Delta): Command[] {
 
 export function decodeCommands(commands: Command[]): Delta {
   return commandsToDelta(commands);
+}
+
+function defaultEmacsKeys(): boolean {
+  const saved = typeof localStorage !== "undefined" ? localStorage.getItem("fipen:emacs-keys") : null;
+  if (saved === "1" || saved === "0") return saved === "1";
+  return typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 }

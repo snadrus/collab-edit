@@ -333,6 +333,9 @@ test("Home/End move to the start/end of the visual (wrapped) line, like Docs", a
   await page.evaluate((t) => (window as unknown as { __editor: { insertText: (t: string) => void } }).__editor.insertText(t), words);
   const sel = () => page.evaluate(() => (window as unknown as { __editor: { selection: () => { head: number } } }).__editor.selection().head);
   void ed;
+  // The canvas requests the text font on first draw; when it lands lines rewrap (and FiPen relayouts). Wait for it.
+  await page.waitForFunction(() => document.fonts.status === "loaded");
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
   await page.keyboard.press("ControlOrMeta+Home");
   await page.keyboard.press("End");
   const firstEnd = await sel();
