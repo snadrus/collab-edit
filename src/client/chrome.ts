@@ -1,6 +1,8 @@
 import { dropOptions } from "../shared/doc.ts";
 import type { Thread } from "../shared/threads.ts";
 import type { Editor } from "./editor.ts";
+import { loadImages } from "./images.ts";
+import { contentWidth } from "./layout.ts";
 
 export interface Person {
   sid: string;
@@ -419,6 +421,17 @@ export function mountChrome(editor: Editor, opts: { send: (msg: unknown) => void
     atMenu.hidden = false;
   }
 
+  // Google Docs: Enter / Shift+Enter step through hits with focus kept in the box; Escape closes and returns to the text.
+  findQ.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      editor.findStep(e.shiftKey ? -1 : 1);
+      refreshFindCount();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      (document.querySelector("#find-close") as HTMLElement).click();
+    }
+  });
   findQ.addEventListener("input", () => {
     editor.setFind(findQ.value, 0);
     refreshFindCount();
@@ -467,31 +480,23 @@ export function mountChrome(editor: Editor, opts: { send: (msg: unknown) => void
   document.querySelector("#image-insert")!.addEventListener("click", () => {
     const src = imageUrl.value.trim();
     if (!src) return;
-    editor.insertImage(src, "Image", 320, 200);
     imagePop.hidden = true;
     imageUrl.value = "";
-    editor.focus();
+    void loadImages({ files: [], urls: [{ url: src, alt: "Image" }] }, Math.min(contentWidth(), 624)).then((images) => {
+      if (images.length) editor.placeImages(images, null);
+      else {
+        editor.insertImage(src, "Image", 320, 200);
+        editor.focus();
+      }
+    });
   });
   (document.querySelector("#image-file") as HTMLInputElement).addEventListener("change", () => {
-    const file = (document.querySelector("#image-file") as HTMLInputElement).files?.[0];
-    if (!file) return;
-    if (file.size > 1_200_000) {
-      opts.toast("Image is over 1.2 MB");
-      return;
-    }
-    const reader = new FileReader();
-    reader.onload = () => {
-      const src = String(reader.result || "");
-      const probe = new Image();
-      probe.onload = () => {
-        const scale = Math.min(1, 420 / Math.max(1, probe.naturalWidth));
-        editor.insertImage(src, file.name, Math.round(probe.naturalWidth * scale), Math.round(probe.naturalHeight * scale));
-        imagePop.hidden = true;
-        editor.focus();
-      };
-      probe.src = src;
-    };
-    reader.readAsDataURL(file);
+    const input = document.querySelector("#image-file") as HTMLInputElement;
+    const files = [...(input.files || [])].filter((f) => f.type.startsWith("image/"));
+    input.value = "";
+    if (!files.length) return;
+    imagePop.hidden = true;
+    void loadImages({ files, urls: [] }, Math.min(contentWidth(), 624)).then((images) => editor.placeImages(images, null));
   });
   document.querySelector("#image-close")!.addEventListener("click", () => {
     imagePop.hidden = true;
