@@ -325,3 +325,29 @@ test("toolbar image button picks a file; corner resize keeps the aspect ratio; i
   await ca.close();
   await cb.close();
 });
+
+test("Home/End move to the start/end of the visual (wrapped) line, like Docs", async ({ page }) => {
+  await newDoc(page);
+  const ed = () => page.evaluate(() => (window as unknown as { __editor: { selection: () => { head: number }; getText: () => string } }).__editor);
+  const words = Array.from({ length: 60 }, (_, i) => `word${i}`).join(" ");
+  await page.evaluate((t) => (window as unknown as { __editor: { insertText: (t: string) => void } }).__editor.insertText(t), words);
+  const sel = () => page.evaluate(() => (window as unknown as { __editor: { selection: () => { head: number } } }).__editor.selection().head);
+  void ed;
+  await page.keyboard.press("ControlOrMeta+Home");
+  await page.keyboard.press("End");
+  const firstEnd = await sel();
+  expect(firstEnd).toBeGreaterThan(5);
+  expect(firstEnd).toBeLessThan(words.length - 5); // wrapped line end, not the paragraph end
+  // Caret a few characters into the second visual line: Home goes to that line's start, not the paragraph's.
+  for (let i = 0; i < 4; i++) await page.keyboard.press("ArrowRight");
+  await page.keyboard.press("Home");
+  const secondStart = await sel();
+  expect(secondStart).toBeGreaterThan(firstEnd - 1);
+  expect(secondStart).toBeLessThan(firstEnd + 3);
+  await page.keyboard.press("End");
+  expect(await sel()).toBeGreaterThan(secondStart + 5);
+  expect(await sel()).toBeLessThan(words.length - 5);
+  // Ctrl/Cmd+End still goes to the end of the document.
+  await page.keyboard.press("ControlOrMeta+End");
+  expect(await sel()).toBe(words.length);
+});

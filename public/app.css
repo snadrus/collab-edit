@@ -591,3 +591,11 @@ body.print-preview #scroll { background: #e8eaed; }
 #person-card small { display: block; color: #5f6368; font-size: 12px; }
 #person-card .pc-actions { display: flex; gap: 8px; }
 #person-card .pc-actions a, #person-card .pc-actions button { font: inherit; font-weight: 500; border-radius: 18px; padding: 6px 14px; cursor: pointer; border: 1px solid #dadce0; background: #fff; color: #1a73e8; text-decoration: none; }
+
+/* Phone reflow: the text is laid out to the screen width, so hide page rulers and side gutters. */
+body.phone-fit #ruler, body.phone-fit #vruler { display: none !important; }
+body.phone-fit #scroll { overflow-x: hidden; }
+body.phone-fit #stack { width: auto; margin: 8px; }
+body.phone-fit #comment-add { left: auto; right: 4px; }
+body.phone-fit #notes { left: auto; right: 0; width: min(280px, 90vw); }
+body.phone-fit .menubar { overflow-x: auto; scrollbar-width: none; }

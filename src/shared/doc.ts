@@ -50,6 +50,8 @@ export interface CharStyle {
   addr?: string;
   /** PieceCID of the unsigned document this signature commits to. */
   cid?: string;
+  /** Plain-language purpose of a v2 signature ("I approve this contract"). Absent on v1 signatures. */
+  pur?: string;
   h?: Heading;
   align?: Align;
   list?: ListKind;

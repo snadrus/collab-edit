@@ -43,7 +43,8 @@ test("guest with unsaved edits is offered a copy after the owner goes away; the 
   await expect(pb.locator("#p2p-copy-open")).toBeVisible();
   const op = (await ops(pb)).find((item) => item.id?.startsWith("copy:doc:"))!;
   expect(op.kind).toBe("fel-save");
-  expect(op.path).toMatch(/^\/FiPen\/.*\(my copy\)\.fipen$/);
+  expect(op.path).toMatch(/^\/Copies\/.*\(my copy\)\.fipen$/);
+  await expect(pb.locator("#p2p-guest-status")).toContainText(/Copy (waiting|saved)/);
   const file = JSON.parse(op.content) as { snapshot: unknown; copyOf: { doc: string; baseRev: number; by: string } };
   expect(JSON.stringify(file.snapshot)).toContain("plus my edits");
   expect(file.copyOf.doc).toMatch(/^doc:/);
@@ -78,7 +79,7 @@ test("FiGrid guest gets the same offer", async ({ browser }) => {
   await expect(pb.locator("#p2p-copy")).toBeVisible({ timeout: 15_000 });
   await pb.locator("#p2p-copy-save").click();
   const op = (await ops(pb)).find((item) => item.id?.startsWith("copy:book:"))!;
-  expect(op.path).toMatch(/^\/FiGrid\/.*\(my copy\)\.figrid$/);
+  expect(op.path).toMatch(/^\/Copies\/.*\(my copy\)\.figrid$/);
   expect(op.content).toContain("guest value");
   await owner.close();
   await guest.close();

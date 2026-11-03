@@ -1073,14 +1073,34 @@ export class Editor {
     return next;
   }
 
+  /**
+   * Home/End like Docs: the start or end of the visual (wrapped) line the caret is on, not the paragraph.
+   * A soft-wrapped line ends before its trailing space so the caret stays on that line.
+   */
+  private visualLineEdge(from: number, dir: -1 | 1): number {
+    const para = paraBounds(this.doc, from);
+    const box = caretBox(this.layout, from);
+    const line = this.layout.lines.find((ln) => !ln.table && ln.page === box.page && ln.y === box.y && ln.glyphs.length > 0);
+    if (!line) return dir < 0 ? para.start : para.end;
+    let first = Infinity;
+    let last = -1;
+    for (const g of line.glyphs) {
+      if (g.i < first) first = g.i;
+      if (g.i > last) last = g.i;
+    }
+    if (dir < 0) return Math.max(para.start, first);
+    if (line.hard || last + 1 >= para.end) return para.end;
+    return this.doc.text[last] === " " ? last : last + 1;
+  }
+
   private move(key: string, shift: boolean, meta: boolean): void {
     this.freshLayout();
     const doc = this.doc;
     let next = this.head;
     if (key === "ArrowLeft") next = meta ? wordBounds(doc, Math.max(0, this.head - 1))[0] : Math.max(0, this.head - 1);
     else if (key === "ArrowRight") next = meta ? wordBounds(doc, this.head)[1] : Math.min(doc.text.length - 1, this.head + 1);
-    else if (key === "Home") next = meta ? 0 : paraBounds(doc, this.head).start;
-    else if (key === "End") next = meta ? doc.text.length - 1 : paraBounds(doc, this.head).end;
+    else if (key === "Home") next = meta ? 0 : this.visualLineEdge(this.head, -1);
+    else if (key === "End") next = meta ? doc.text.length - 1 : this.visualLineEdge(this.head, 1);
     else if (key === "PageUp" || key === "PageDown") next = this.pageTarget(this.head, key === "PageUp" ? -1 : 1);
     else if (meta && (key === "ArrowUp" || key === "ArrowDown") && navigator.platform.startsWith("Mac")) next = key === "ArrowUp" ? 0 : doc.text.length - 1;
     else if (key === "ArrowUp" || key === "ArrowDown") {

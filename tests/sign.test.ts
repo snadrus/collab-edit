@@ -208,3 +208,39 @@ function flip(hex: string): string {
   chars[10] = chars[10] === "a" ? "b" : "a";
   return chars.join("");
 }
+
+describe("v2 signatures carry a plain-language purpose (Andy decision 5)", () => {
+  async function sign(purpose: string | undefined) {
+    const doc = restoreDoc({ text: "Lease for 12 Elm St", runs: [{ n: 19, s: {} }] });
+    const account = privateKeyToAccount(KEY_A);
+    const fields = {
+      ...(purpose !== undefined ? { purpose } : {}),
+      docId: DOC,
+      contentHash: contentHashOf(doc),
+      contentCid: CID,
+      signerName: "Andy",
+      signer: account.address,
+      timestamp: 1700000000000n,
+      chainId: CHAIN_CALIBRATION,
+    };
+    const signature = await account.signTypedData(typedDataFor(fields) as never);
+    return { doc, attrs: signatureAttrs({ ...fields, signature }) };
+  }
+  it("v2 verifies, names its purpose and uses domain version 2", async () => {
+    const { doc, attrs } = await sign("I approve this lease");
+    assert.equal(attrs.pur, "I approve this lease");
+    assert.equal(verifyStored(attrs as CharStyle, DOC, contentHashOf(doc), CID), null);
+    assert.equal(typedDataFor({ purpose: "x", docId: DOC, contentHash: "", contentCid: CID, signerName: "a", signer: "0x0000000000000000000000000000000000000001", timestamp: 1n, chainId: CHAIN_CALIBRATION }).domain.version, "2");
+  });
+  it("a changed purpose no longer verifies", async () => {
+    const { doc, attrs } = await sign("I approve this lease");
+    assert.equal(verifyStored({ ...(attrs as CharStyle), pur: "I reject this lease" }, DOC, contentHashOf(doc), CID), "signer mismatch");
+  });
+  it("old v1 signatures (no purpose) still verify", async () => {
+    const { doc, attrs } = await sign(undefined);
+    assert.equal(attrs.pur, undefined);
+    assert.equal(verifyStored(attrs as CharStyle, DOC, contentHashOf(doc), CID), null);
+    // Adding a purpose to a v1 signature must not verify (it would be a forged statement).
+    assert.notEqual(verifyStored({ ...(attrs as CharStyle), pur: "anything" }, DOC, contentHashOf(doc), CID), null);
+  });
+});

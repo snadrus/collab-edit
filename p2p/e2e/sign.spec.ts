@@ -57,6 +57,7 @@ async function signPayload(key: Hex, raw: string): Promise<string> {
     types: { Document: data.types.Document },
     primaryType: "Document",
     message: {
+      ...((data.message as { purpose?: string }).purpose !== undefined ? { purpose: (data.message as { purpose?: string }).purpose } : {}),
       docId: data.message.docId,
       contentHash: data.message.contentHash,
       contentCid: data.message.contentCid,
@@ -152,6 +153,7 @@ test("two peers sign, lock, and show the gold signature", async ({ browser }) =>
   const url = await newDoc(pa);
   await pa.evaluate(() => window.__editor!.insertText("Hello. " + "This signed agreement has enough words to clear the Filecoin minimum piece size of one hundred twenty seven bytes. ".repeat(2)));
   await signAs(pa, "Ada Lovelace");
+  // v2 typed data: the wallet shows the plain-language purpose first.
 
   await pb.goto(url);
   await pb.waitForFunction(() => window.__editor?.ready === true);
@@ -225,7 +227,11 @@ test("two peers sign, lock, and show the gold signature", async ({ browser }) =>
   await expect(details).toContainText(sig.signature);
   await expect(pa.locator("#sig-typed")).toContainText(sig.hash);
   await expect(pa.locator("#sig-typed")).toContainText(sig.contentCid);
-  await expect(details.locator("button", { hasText: "Copy" })).toHaveCount(8);
+  // v2 signatures add a plain-language Purpose row (and it is part of the signed typed data).
+  await expect(details.locator("button", { hasText: "Copy" })).toHaveCount(9);
+  await expect(details).toContainText("Purpose");
+  await expect(details).toContainText("I sign this document.");
+  await expect(pa.locator("#sig-typed")).toContainText('"purpose"');
   const second = await pa.evaluate(() => window.__editor!.signatures().find((item) => item.name === "Grace Hopper")!);
   expect(second.address).toBe(addressB);
   expect(second.verified).toBe(true);

@@ -1222,8 +1222,9 @@ function installSaveFlow(): void {
     }
     if (!dirty(raw)) {
       if (filecoinMark.saved || savedHash()) return "saved";
-      // "New, unsaved" only for a fresh standalone doc; a FiFolders file (embedded, has a path) already lives in the folder.
-      return embedded && path ? "clean" : params.get("cid") || params.get("pieceCid") ? "clean" : "fresh";
+      // "New, unsaved" until the first Filecoin save: a fresh standalone doc, or a FiFolders New doc
+      // (embedded with a path but no stored piece yet). An existing FiFolders file opens with its pieceCid.
+      return params.get("cid") || params.get("pieceCid") ? "clean" : "fresh";
     }
     return "dirty";
   };

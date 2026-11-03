@@ -89,8 +89,11 @@ export function copyTitle(title: string): string {
 }
 
 /** Queue the copy into this browser's FiFolders drive (the guest's own wallet commits it). */
+/** Guest copies wait in the guest's own drive under one clear folder. */
+export const COPIES_DIR = "/Copies";
+
 export function queueCopy(kind: CopyKind, id: string, content: string, title: string): string {
-  const dir = kind === "doc" ? "/FiPen" : "/FiGrid";
+  const dir = COPIES_DIR;
   const ext = kind === "doc" ? ".fipen" : ".figrid";
   const name = copyTitle(title).replace(/[\\/:*?"<>|]+/g, " ").trim() + ext;
   const path = `${dir}/${name}`;
@@ -160,10 +163,12 @@ export function installGuestCopy(h: GuestCopyHooks): { ownerBack: () => void; ac
     const origin: CopyOrigin = { doc: `${h.kind}:${h.id}`, owner: h.ownerName(), baseRev: state.rev, by: myName(), at: Date.now() };
     const content = copyFile(state, origin);
     const path = queueCopy(h.kind, h.id, content, state.title);
+    copyPath = path;
+    copyOp = `copy:${h.kind}:${h.id}`;
     localStorage.setItem(pendingKey(h.kind, h.id), JSON.stringify({ content, title: state.title, origin }));
     if (!bar) show();
     const text = bar!.querySelector("#p2p-copy-text") as HTMLElement;
-    text.textContent = `Copy queued for your drive (${path}). `;
+    text.textContent = `Copy queued for your drive in Copies (${path}). `;
     const link = document.createElement("a");
     link.id = "p2p-copy-open";
     link.href = new URL("/", location.href).href;
@@ -182,8 +187,51 @@ export function installGuestCopy(h: GuestCopyHooks): { ownerBack: () => void; ac
     bar!.append(ok);
     dismissedAt = Number.MAX_SAFE_INTEGER;
   };
+  let copyPath = "";
+  let copyOp = "";
+  const copyStatus = (): string => {
+    if (!copyOp) return "";
+    try {
+      const parsed = JSON.parse(localStorage.getItem("fifolders:ops") || "{}") as { ops?: Record<string, unknown>[] };
+      const op = (parsed.ops || []).find((item) => item.id === copyOp);
+      if (!op || op.stage === "saved" || op.stage === "done" || op.status === "done") return `Copy saved to your drive (${copyPath})`;
+      if (op.status === "error" || op.stage === "error" || op.stage === "interrupted") return "Copy not saved yet. Open FiFolders to retry";
+      return `Copy waiting in your drive (${copyPath}). Open FiFolders to finish saving`;
+    } catch {
+      return "";
+    }
+  };
+  /** Guest save status, always visible: are my edits with the owner, waiting for them, or copied to my drive? */
+  const paintGuestStatus = (state: CopyState | null) => {
+    const status = document.querySelector("#status") as HTMLElement | null;
+    if (!status) return;
+    let chip = document.querySelector("#p2p-guest-status") as HTMLElement | null;
+    if (!chip) {
+      chip = document.createElement("span");
+      chip.id = "p2p-guest-status";
+      chip.setAttribute("role", "status");
+      chip.className = status.className;
+      status.after(chip);
+      status.style.display = "none";
+    }
+    const copy = copyStatus();
+    const text = copy
+      ? copy
+      : !state
+        ? "Connecting to the owner…"
+        : state.dirty
+          ? h.ownerOnline()
+            ? "Sending your edits to the owner…"
+            : "Owner offline. Your edits are kept here and wait for them"
+          : h.ownerOnline()
+            ? "Your edits are saved with the owner"
+            : "Owner offline";
+    if (chip.textContent !== text) chip.textContent = text;
+    chip.dataset.guestSave = copy ? "copy" : state?.dirty ? (h.ownerOnline() ? "sending" : "waiting") : "synced";
+  };
   window.setInterval(() => {
     const state = copyState(h.kind);
+    paintGuestStatus(state);
     // Edits the owner has not acknowledged. A present owner acks within moments, so unsaved edits that stay
     // unacknowledged (owner gone, asleep, or offline) for the offer delay mean the owner is away.
     const waiting = !!state?.dirty;

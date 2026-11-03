@@ -14,6 +14,7 @@ import {
   readStored,
   signatureAttrs,
   typedDataJson,
+  DEFAULT_PURPOSE,
   unsignedBytes,
   verifyStored,
 } from "../shared/sign.ts";
@@ -42,7 +43,7 @@ import { mountChrome, type Chrome } from "./chrome.ts";
 import { loadWordText, wordKnown } from "./dict.ts";
 import { diffWords, encodeStrokes, lookupWord } from "../shared/tools.ts";
 import { loadQueue, saveQueue } from "./offline.ts";
-import { MB, ML, MR, MT, PAGE_H, PAGE_W, RULER_H, applyPage, currentPage } from "./layout.ts";
+import { MB, ML, MR, MT, PAGE_H, PAGE_W, RULER_H, applyPage, currentPage, setViewFit } from "./layout.ts";
 import { Editor, decodeCommands, encodeCommands, type RemoteCaret } from "./editor.ts";
 import { openNotifyPanel, openPersonCardAt } from "./mentions.ts";
 import { avatarInnerHtml, learnWallet, myWallet, refreshIdentity, resolveDisplayName, selfPerson, showSelfIdentity, watchWallet } from "../shared/person.ts";
@@ -499,6 +500,21 @@ function mountEditor(id: string, shareToken = ""): void {
     (document.querySelector("#zoom") as HTMLSelectElement).value = String(nearestZoom(zoom));
     editor.render();
   };
+
+  // Phones: reflow text to the screen width (view only; the document keeps its page size) like Docs mobile.
+  const PHONE_MAX = 640;
+  const fitPhone = () => {
+    const scroll = document.querySelector("#scroll") as HTMLElement | null;
+    const phone = window.innerWidth <= PHONE_MAX;
+    const width = phone ? Math.max(240, Math.min(window.innerWidth, scroll?.clientWidth || window.innerWidth) - 16) : null;
+    document.body.classList.toggle("phone-fit", phone);
+    if (setViewFit(width)) {
+      if (phone && zoom !== 1) applyZoom(1);
+      else editor.render();
+    }
+  };
+  fitPhone();
+  window.addEventListener("resize", fitPhone);
 
   nameBtn.textContent = displayName();
   const renameSelf = () => {
@@ -1353,13 +1369,19 @@ function mountEditor(id: string, shareToken = ""): void {
     input.id = "sig-name";
     input.placeholder = "Written name";
     input.value = displayName() === "Guest" ? "" : displayName();
+    const purpose = document.createElement("input");
+    purpose.id = "sig-purpose";
+    purpose.maxLength = 200;
+    purpose.placeholder = "What are you signing for? e.g. I approve this contract";
+    purpose.value = DEFAULT_PURPOSE;
+    purpose.setAttribute("aria-label", "Purpose (shown in your wallet)");
     const go = document.createElement("button");
     go.type = "button";
     go.id = "sig-sign";
     go.textContent = "Sign with wallet";
     go.addEventListener("click", () => {
       go.disabled = true;
-      void signDocument(input.value).then(
+      void signDocument(input.value, undefined, purpose.value).then(
         () => undefined,
         (err: unknown) => {
           go.disabled = false;
@@ -1367,13 +1389,14 @@ function mountEditor(id: string, shareToken = ""): void {
         },
       );
     });
-    wrap.append(input, go);
+    wrap.append(input, purpose, go);
     openDialog("Signature", wrap);
     window.setTimeout(() => input.focus(), 0);
   }
 
-  async function signDocument(name: string, overrideCid?: string): Promise<void> {
+  async function signDocument(name: string, overrideCid?: string, purposeText = DEFAULT_PURPOSE): Promise<void> {
     const written = name.trim().slice(0, 80);
+    const purpose = purposeText.replace(/[\n\uFFFC]/g, " ").trim().slice(0, 200) || DEFAULT_PURPOSE;
     if (!written) throw new Error("Type your name");
     const eth = (window as unknown as { ethereum?: { request?: (args: { method: string; params?: unknown[] }) => Promise<unknown> } }).ethereum;
     if (!eth?.request) throw new Error("Connect a wallet such as MetaMask");
@@ -1406,6 +1429,7 @@ function mountEditor(id: string, shareToken = ""): void {
     const accounts = (await eth.request({ method: "eth_requestAccounts" })) as string[];
     const signer = normalizeAddress(accounts?.[0] || "");
     const fields = {
+      purpose,
       docId: id,
       contentHash: contentHashOf(editor.doc),
       contentCid,
@@ -1437,6 +1461,7 @@ function mountEditor(id: string, shareToken = ""): void {
     const wrap = document.createElement("div");
     wrap.id = "sig-details";
     const rows: [string, string][] = [
+      ...(stored.purpose !== undefined ? [["Purpose", stored.purpose] as [string, string]] : []),
       ["Name", stored.signerName],
       ["Address", stored.signer],
       ["Chain", chainLabel(stored.chainId)],
