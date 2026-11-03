@@ -336,6 +336,7 @@ function mountEditor(id: string, shareToken = ""): void {
     exportDocx: async () => bytesToBase64(await toDocx(editor.doc)),
     importDocx: async (b64: string) => editor.replaceDocument(await fromDocx(base64ToBytes(b64))),
     styleAt: (index: number) => editor.styleAt(index),
+    paraAt: (index: number) => editor.paraAt(index),
     toggleBold: () => editor.toggleMark("b"),
     dirty: () => editor.dirty(),
     /** The doc as this client sees it (unacked edits included), for a guest's "Save a copy" while the owner is away. */

@@ -300,6 +300,7 @@ export class Editor {
     this.head = at;
     if (opening) this.atMark = lo;
     this.maybeAutocorrect();
+    if (text === " ") this.maybeAutolist();
     this.sampleTyping();
     this.afterEdit();
   }
@@ -368,6 +369,11 @@ export class Editor {
 
   setAlign(align: Align): void {
     this.setParagraph({ align });
+  }
+
+  /** Paragraph attributes at a position (test API). */
+  paraAt(index: number): ReturnType<typeof paragraphStyle> {
+    return paragraphStyle(this.doc, index);
   }
 
   toggleList(kind: ListKind): void {
@@ -1192,7 +1198,13 @@ export class Editor {
     const lo = Math.min(this.anchor, this.head);
     const hi = Math.max(this.anchor, this.head);
     const para = paragraphStyle(this.doc, lo);
-    const end = paraBounds(this.doc, lo).end;
+    const bounds = paraBounds(this.doc, lo);
+    const end = bounds.end;
+    // Docs: Enter on an empty list item ends the list instead of adding another empty bullet.
+    if (para.list && lo === hi && bounds.start === end) {
+      this.setParagraph({ list: null, lv: null, check: null });
+      return;
+    }
     const breakAttrs = this.paraAttrs();
     if (this.mode === "suggest") breakAttrs.sug = this.ensureOpenSug();
     let delta = splice(lo, hi, [{ t: "i", s: "\n", a: breakAttrs }], this.doc.text.length);
@@ -2406,6 +2418,24 @@ export class Editor {
       this.resize = { index, corner: "rot", x: ev.clientX, y: ev.clientY, w: st?.iw || box.w, h: st?.ih || box.h, rot: st?.rot || 0 };
     });
     this.overlay.appendChild(knob);
+  }
+
+  /** Docs: "* " or "- " at the start of a paragraph makes a bulleted list, "1. " or "1) " a numbered one. */
+  private maybeAutolist(): void {
+    if (this.mode !== "edit" || !this.autocorrect) return;
+    let start = this.head;
+    while (start > 0 && !isBreak(this.doc.text[start - 1]!) && this.doc.text[start - 1] !== CELL) start--;
+    if (start > 0 && this.doc.text[start - 1] === CELL) return;
+    const marker = this.doc.text.slice(start, this.head);
+    const kind: ListKind | null = /^[*-] $/.test(marker) ? "bullet" : /^1[.)] $/.test(marker) ? "numbered" : null;
+    if (!kind || paragraphStyle(this.doc, this.head).list) return;
+    const ops = [];
+    if (start > 0) ops.push({ t: "r" as const, n: start });
+    ops.push({ t: "d" as const, n: marker.length });
+    this.sync.local({ ops });
+    this.head = this.clamp(start);
+    this.anchor = this.head;
+    this.toggleList(kind);
   }
 
   private maybeAutocorrect(): void {
