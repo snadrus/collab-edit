@@ -110,8 +110,23 @@ function store(): Storage | null {
   }
 }
 
-/** Name order: one typed in this editor, the FiFolders display name, then a wallet- or browser-derived guest name. */
+function identityName(local: Storage | null, wallet: string): string {
+  try {
+    const raw = local?.getItem("fil-identity:v1:" + wallet.toLowerCase());
+    const id = raw ? (JSON.parse(raw) as { identity?: { v?: number; address?: string; displayName?: unknown } }).identity : null;
+    if (id?.v !== 1 || id.address?.toLowerCase() !== wallet.toLowerCase() || typeof id.displayName !== "string") return "";
+    return id.displayName.trim().slice(0, 60);
+  } catch {
+    return "";
+  }
+}
+
+/** Name order: the wallet identity, one typed in this editor, the legacy FiFolders display name, then a wallet- or browser-derived guest name. */
 export function resolveDisplayName(): string {
+  const early = store();
+  const w = early?.getItem(WALLET_KEY) || "";
+  const own = /^0x[0-9a-fA-F]{40}$/.test(w) ? identityName(early, w) : "";
+  if (own) return own;
   try {
     const typed = sessionStorage.getItem("felarumi-name") || sessionStorage.getItem("folio-name");
     if (typed) return typed;
@@ -119,6 +134,10 @@ export function resolveDisplayName(): string {
     // Fall through to stored names.
   }
   const local = store();
+  const wallet0 = local?.getItem(WALLET_KEY) || "";
+  // Wallet identity from /identity/ (chain-backed, cached by every app on the origin).
+  const identity = /^0x[0-9a-fA-F]{40}$/.test(wallet0) ? identityName(local, wallet0) : "";
+  if (identity) return identity;
   const shared = local?.getItem(FIFOLDERS_NAME_KEY)?.trim();
   if (shared) return shared.slice(0, 60);
   const wallet = local?.getItem(WALLET_KEY) || "";
