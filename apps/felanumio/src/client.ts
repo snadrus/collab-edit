@@ -1,4 +1,5 @@
-import { learnWallet, resolveDisplayName } from "../../../src/shared/guest-name.ts";
+import { WALLET_KEY, learnWallet, resolveDisplayName } from "../../../src/shared/guest-name.ts";
+import { cachedIdentity, openIdentityPopup, refreshIdentity } from "../../../src/shared/identity.ts";
 import { hostBase, routePath, withKeptQuery } from "../../../p2p/src/host-base.ts";
 import { caretColor, selectionColor } from "../../../packages/core/src/presence.ts";
 import { hexAlpha } from "../../../packages/core/src/palette.ts";
@@ -45,7 +46,14 @@ function bookUrl(id: string): string {
 const sid = sessionStorage.getItem("felanumio-sid") || crypto.randomUUID().replace(/-/g, "").slice(0, 16);
 sessionStorage.setItem("felanumio-sid", sid);
 const displayName = () => resolveDisplayName();
-void learnWallet();
+const myWallet = (): string | null => {
+  try {
+    return localStorage.getItem(WALLET_KEY);
+  } catch {
+    return null;
+  }
+};
+const identityReady = learnWallet().then(() => refreshIdentity(myWallet()));
 
 function boot(): void {
   const path = routePath();
@@ -697,7 +705,29 @@ function mount(id: string, share: string): void {
       const el = document.createElement("div");
       const mine = person.sid === selfSid;
       el.className = mine ? "avatar self" : "avatar";
-      el.textContent = (person.name[0] || "?").toUpperCase();
+      const own = mine ? cachedIdentity(myWallet()) : null;
+      el.textContent = own?.avatar?.emoji || (person.name[0] || "?").toUpperCase();
+      el.title = person.name;
+      if (own?.avatar?.color) {
+        el.style.background = own.avatar.color;
+        el.style.color = "#fff";
+      }
+      if (mine) {
+        el.dataset.testid = "self-avatar";
+        el.style.cursor = "pointer";
+        el.addEventListener("click", () =>
+          openIdentityPopup(el, {
+            address: myWallet(),
+            currentName: displayName(),
+            onLocalRename: () => {
+              const next = window.prompt("Name shown to others", displayName());
+              if (!next) return;
+              sessionStorage.setItem("felarumi-name", next.trim().slice(0, 40) || "Guest");
+              paintAvatars(selfSid);
+            },
+          }),
+        );
+      }
       if (!mine) {
         el.style.background = hexAlpha(person.color, 0.16);
         el.style.color = person.color;
@@ -1234,6 +1264,14 @@ function mount(id: string, share: string): void {
     frameMs: () => lastFrame,
     threads: () => threads.map((thread) => thread.text),
   };
+
+  // A fresh browser learns the identity from chain; repaint self (peers get it on the next hello).
+  void identityReady.then((changed) => {
+    if (changed) paintAvatars(sid);
+  });
+  window.addEventListener("storage", (event) => {
+    if (event.key?.startsWith("fil-identity:")) paintAvatars(sid);
+  });
 
   let socketGen = 0;
   function connect(): void {
