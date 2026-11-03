@@ -46,6 +46,7 @@ import { MB, ML, MR, MT, PAGE_H, PAGE_W, RULER_H, applyPage, currentPage } from 
 import { Editor, decodeCommands, encodeCommands, type RemoteCaret } from "./editor.ts";
 import { openNotifyPanel, openPersonCardAt } from "./mentions.ts";
 import { avatarInnerHtml, learnWallet, myWallet, refreshIdentity, resolveDisplayName, selfPerson, showSelfIdentity, watchWallet } from "../shared/person.ts";
+import { mountOfflineChip } from "../shared/offline.ts";
 
 interface InitMsg {
   t: "init";
@@ -514,6 +515,7 @@ function mountEditor(id: string, shareToken = ""): void {
   });
   // Wallet account/network switch: rename in place for peers, no reload or prompt.
   (window as unknown as { __walletSwitch?: (a: string[]) => Promise<void> }).__walletSwitch = watchWallet(renameSelf);
+  mountOfflineChip();
 
   // Touch: a floating Comment bubble over a selection (desktop uses the right-click menu).
   const bubble = document.createElement("button");
