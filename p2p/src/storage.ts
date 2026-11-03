@@ -42,6 +42,10 @@ export function pieceCidOf(value: { toString(): string } | string): string {
   return typeof value === "string" ? value : value.toString();
 }
 
+/** Filecoin's smallest piece (synapse-core SIZE_CONSTANTS.MIN_UPLOAD_SIZE). */
+export const MIN_PIECE_BYTES = 127;
+export const TOO_SMALL = "This document is too short to store on Filecoin (127 bytes minimum). Add a little more text, then try again.";
+
 /** Uploads through a Synapse client. Pass `client` in tests; the live path connects a wallet or a runtime key. */
 export async function synapseAdapter(opts: {
   network?: FilecoinNetwork;
@@ -53,8 +57,13 @@ export async function synapseAdapter(opts: {
   const client = opts.client ?? (await connectSynapse(network, opts.privateKey, opts.provider));
   return {
     async put(bytes: Uint8Array): Promise<string> {
-      const result = await client.storage.upload(bytes);
-      return pieceCidOf(result.pieceCid);
+      // Same provider choice as FiFolders and the folder save: reuse the wallet's existing datasets
+      // (no new-dataset fee) and size the payment check for this upload.
+      // Providers reject pieces under 127 bytes with a bare network error.
+      if (bytes.byteLength < MIN_PIECE_BYTES) throw new Error(TOO_SMALL);
+      const { createSynapseStorage } = await lazy(() => import("fil-folders"));
+      const stat = await createSynapseStorage(client as never).put(bytes);
+      return pieceCidOf(stat.pieceCid);
     },
     get(pieceCid: string): Promise<Uint8Array> {
       return client.storage.download({ pieceCid });
@@ -146,6 +155,7 @@ export function explainFilecoinError(err: unknown, network: FilecoinNetwork): st
   const text = (innerReason(err) + " " + (err instanceof Error ? err.message : String(err))).toLowerCase();
   const label = network === "mainnet" ? "Filecoin mainnet" : "Filecoin Calibration";
   if (/user (rejected|denied)|4001|cancel/.test(text)) return "You cancelled in your wallet. Nothing was saved.";
+  if (text.includes("127 bytes minimum")) return TOO_SMALL;
   if (/another network|chain mismatch|chainid|does not match the target chain/.test(text)) return `Your wallet is on another network. Switch it to ${label} and try again.`;
   if (/returned no data|is not a contract|exit=\[33\]|reverted/.test(text) && /getclientdatasets|getproviders|0x$|no data/.test(text))
     return `The storage contracts did not answer on ${label}. Check that your wallet is on ${label} and try again.`;
