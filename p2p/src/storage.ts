@@ -82,12 +82,78 @@ async function connectSynapse(network: FilecoinNetwork, privateKey?: string, pro
   const accounts = (await provider.request({ method: "eth_requestAccounts" })) as string[];
   const address = accounts[0];
   if (!address) throw new Error("The wallet did not return an account");
-  return Synapse.create({
+  await ensureWalletChain(provider, network);
+  const { createPublicClient } = await lazy(() => import("viem"));
+  // Signing goes to the wallet once (no blind retries); every read goes to the public RPC for this network.
+  const base = Synapse.create({
     account: address as `0x${string}`,
     chain,
-    transport: custom(provider),
+    transport: custom(provider, { retryCount: 0 }),
     source: "felarumi",
   });
+  return new Synapse({
+    client: base.client,
+    readClient: createPublicClient({ chain, transport: http(rpc) }),
+    source: "felarumi",
+  } as unknown as ConstructorParameters<typeof Synapse>[0]);
+}
+
+export const CHAIN_IDS: Record<FilecoinNetwork, number> = { mainnet: 314, calibration: 314159 };
+
+/** Filecoin network the wallet is on, or null for any other chain. */
+export async function walletNetwork(provider: Eip1193Provider): Promise<FilecoinNetwork | null> {
+  try {
+    const id = Number(await provider.request({ method: "eth_chainId" }));
+    if (id === CHAIN_IDS.mainnet) return "mainnet";
+    if (id === CHAIN_IDS.calibration) return "calibration";
+  } catch {
+    // Unknown wallet chain.
+  }
+  return null;
+}
+
+/** Asks the wallet to switch to `network`; throws a plain message if it is on another chain and will not switch. */
+export async function ensureWalletChain(provider: Eip1193Provider, network: FilecoinNetwork): Promise<void> {
+  if ((await walletNetwork(provider)) === network) return;
+  const label = network === "mainnet" ? "Filecoin mainnet" : "Filecoin Calibration";
+  try {
+    await provider.request({ method: "wallet_switchEthereumChain", params: [{ chainId: "0x" + CHAIN_IDS[network].toString(16) }] });
+  } catch {
+    throw new Error(`Your wallet is on another network. Switch it to ${label} and try again.`);
+  }
+  if ((await walletNetwork(provider)) !== network) throw new Error(`Your wallet is on another network. Switch it to ${label} and try again.`);
+}
+
+/** Inner reason of a wallet/RPC error (MetaMask -32603 wraps it in data). */
+export function innerReason(err: unknown): string {
+  const seen = new Set<unknown>();
+  let cur: unknown = err;
+  const parts: string[] = [];
+  while (cur && typeof cur === "object" && !seen.has(cur)) {
+    seen.add(cur);
+    const rec = cur as { message?: unknown; shortMessage?: unknown; data?: unknown; cause?: unknown; details?: unknown };
+    for (const value of [rec.shortMessage, rec.details, (rec.data as { message?: unknown } | undefined)?.message]) {
+      if (typeof value === "string" && value && !parts.includes(value)) parts.push(value);
+    }
+    cur = rec.cause ?? (typeof rec.data === "object" ? rec.data : undefined);
+  }
+  if (!parts.length && err instanceof Error) parts.push(err.message);
+  return parts.join(" | ");
+}
+
+/** Plain words and the next step for a failed Filecoin save or signature. */
+export function explainFilecoinError(err: unknown, network: FilecoinNetwork): string {
+  const text = (innerReason(err) + " " + (err instanceof Error ? err.message : String(err))).toLowerCase();
+  const label = network === "mainnet" ? "Filecoin mainnet" : "Filecoin Calibration";
+  if (/user (rejected|denied)|4001|cancel/.test(text)) return "You cancelled in your wallet. Nothing was saved.";
+  if (/another network|chain mismatch|chainid|does not match the target chain/.test(text)) return `Your wallet is on another network. Switch it to ${label} and try again.`;
+  if (/returned no data|is not a contract|exit=\[33\]|reverted/.test(text) && /getclientdatasets|getproviders|0x$|no data/.test(text))
+    return `The storage contracts did not answer on ${label}. Check that your wallet is on ${label} and try again.`;
+  if (/allowance|approv|insufficient.*(funds|balance)|lockup|deposit|operator/.test(text))
+    return "Storage payments are not set up for this wallet. Open FiFolders, approve USDFC payments (deposit and operator approval), then save again.";
+  if (/session key|expired/.test(text)) return "Your FiFolders session key is missing or expired. Refresh it in the FiFolders account menu, then save again.";
+  if (err instanceof Error && err.message === STALE_BUILD) return STALE_BUILD;
+  return "Saving to Filecoin failed: " + (innerReason(err) || "unknown error").slice(0, 200);
 }
 
 export const UNANCHORED = "unanchored";

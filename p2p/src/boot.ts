@@ -16,7 +16,7 @@ import {
   saveSnapshot,
   volumeHistory,
 } from "./folder-save.ts";
-import { DEFAULT_NETWORK, commpAdapter, commpOf, fileAdapter, ipfsAdapter, lazy, normalizeNetwork, savedVersionUrls, warmSigningModules, synapseAdapter, type FilecoinNetwork, type StorageAdapter, type SynapseLike } from "./storage.ts";
+import { DEFAULT_NETWORK, commpAdapter, commpOf, fileAdapter, ipfsAdapter, explainFilecoinError, innerReason, lazy, normalizeNetwork, savedVersionUrls, walletNetwork, warmSigningModules, synapseAdapter, type FilecoinNetwork, type StorageAdapter, type SynapseLike } from "./storage.ts";
 import type { Wire } from "./wire.ts";
 
 const NativeWebSocket = globalThis.WebSocket;
@@ -695,7 +695,7 @@ function installUi(): void {
     const key = dialog.querySelector("#p2p-key") as HTMLInputElement;
     key.value = "";
     void saveFilecoin(network(), "").then(reportSave).catch((err: Error) => {
-      status.textContent = err.message;
+      status.textContent = explained(err, network()).message;
     });
   });
   dialog.querySelector("#p2p-key-save")!.addEventListener("click", () => {
@@ -703,7 +703,7 @@ function installUi(): void {
     const value = key.value.trim();
     key.value = "";
     void saveFilecoin(network(), value).then(reportSave).catch((err: Error) => {
-      status.textContent = err.message;
+      status.textContent = explained(err, network()).message;
     });
   });
   dialog.querySelector("#p2p-open")!.addEventListener("click", () => {
@@ -813,11 +813,46 @@ async function signingAdapter(): Promise<StorageAdapter> {
   }
   const eth = (window as unknown as { ethereum?: { request(args: { method: string; params?: unknown[] }): Promise<unknown> } }).ethereum;
   if (!eth) throw new Error("Connect a wallet to anchor this document on Filecoin");
-  return synapseAdapter({ network: currentNetwork(), provider: eth });
+  const network = await signingNetwork(eth);
+  try {
+    return await synapseAdapter({ network, provider: eth });
+  } catch (err) {
+    throw explained(err, network);
+  }
+}
+
+/** The network picked in the save dialog, else the Filecoin network the wallet is already on. */
+async function signingNetwork(eth: { request(args: { method: string; params?: unknown[] }): Promise<unknown> }): Promise<FilecoinNetwork> {
+  let explicit: string | null = null;
+  try {
+    explicit = sessionStorage.getItem("felarumi-filecoin-net");
+  } catch {
+    explicit = null;
+  }
+  if (explicit) return normalizeNetwork(explicit);
+  const picked = (await walletNetwork(eth)) ?? DEFAULT_NETWORK;
+  try {
+    // The typed-data signature uses this network's chain id, so keep the two in step.
+    sessionStorage.setItem("felarumi-filecoin-net", picked);
+  } catch {
+    // Session storage off: the signature falls back to the default network.
+  }
+  return picked;
+}
+
+function explained(err: unknown, network: FilecoinNetwork): Error {
+  console.error("Filecoin save failed:", innerReason(err));
+  return new Error(explainFilecoinError(err, network));
 }
 
 async function putUnsigned(bytes: Uint8Array): Promise<string> {
-  const cid = await (await signingAdapter()).put(bytes);
+  const adapter = await signingAdapter();
+  let cid: string;
+  try {
+    cid = await adapter.put(bytes);
+  } catch (err) {
+    throw explained(err, currentNetwork());
+  }
   pieceMemory.set(cid, bytes);
   await putBlob(cid, bytes);
   return cid;

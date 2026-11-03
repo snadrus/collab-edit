@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { DEFAULT_NETWORK, RPC_URLS, UNANCHORED, commpOf, fileAdapter, ipfsAdapter, normalizeNetwork, pieceCidOf, savedVersionUrls, synapseAdapter, trysteroOptions } from "../src/storage.ts";
+import { DEFAULT_NETWORK, RPC_URLS, UNANCHORED, commpOf, fileAdapter, ipfsAdapter, normalizeNetwork, pieceCidOf, savedVersionUrls, explainFilecoinError, innerReason, walletNetwork, ensureWalletChain, synapseAdapter, trysteroOptions } from "../src/storage.ts";
 
 describe("filecoin defaults", () => {
   it("uses mainnet unless the toggle asks for calibration", () => {
@@ -75,5 +75,39 @@ describe("savedVersionUrls", () => {
     assert.match(savedVersionUrls("bafkzcibabc", owner, "calibration")[0], /\.calibration\.filbeam\.io\//);
     assert.deepEqual(savedVersionUrls("bafybeigabc", "", "mainnet"), ["https://w3s.link/ipfs/bafybeigabc"]);
     assert.deepEqual(savedVersionUrls("sha256-abc", owner, "mainnet"), []);
+  });
+});
+
+describe("wallet RPC errors", () => {
+  const metamask = (inner: string) => Object.assign(new Error("Internal JSON-RPC error."), { code: -32603, data: { code: 3, message: inner } });
+  it("pulls the inner reason out of a MetaMask -32603", () => {
+    assert.match(innerReason(metamask("message execution failed (exit=[33])")), /exit=\[33\]/);
+  });
+  it("explains a wrong-network revert and missing payments in plain words", () => {
+    const wrong = new Error('The contract function "getClientDataSets" returned no data ("0x").');
+    assert.match(explainFilecoinError(wrong, "calibration"), /wallet is on Filecoin Calibration/);
+    assert.match(explainFilecoinError(metamask("insufficient allowance"), "mainnet"), /approve USDFC payments/);
+    assert.match(explainFilecoinError(Object.assign(new Error("User rejected the request."), { code: 4001 }), "mainnet"), /cancelled/);
+  });
+  it("reads the wallet network and asks it to switch once", async () => {
+    let chain = "0x4cb2f";
+    const calls: string[] = [];
+    const provider = {
+      request: async ({ method, params }: { method: string; params?: unknown[] }) => {
+        calls.push(method);
+        if (method === "eth_chainId") return chain;
+        if (method === "wallet_switchEthereumChain") {
+          chain = (params![0] as { chainId: string }).chainId;
+          return null;
+        }
+        throw new Error("unexpected " + method);
+      },
+    };
+    assert.equal(await walletNetwork(provider), "calibration");
+    await ensureWalletChain(provider, "mainnet");
+    assert.equal(chain, "0x13a");
+    assert.equal(calls.filter((m) => m === "wallet_switchEthereumChain").length, 1);
+    const stuck = { request: async ({ method }: { method: string }) => (method === "eth_chainId" ? "0x1" : Promise.reject(new Error("no"))) };
+    await assert.rejects(ensureWalletChain(stuck, "calibration"), /Switch it to Filecoin Calibration/);
   });
 });
