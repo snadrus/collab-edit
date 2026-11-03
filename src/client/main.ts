@@ -2,7 +2,7 @@ import { hostBase, routePath, withKeptQuery } from "../../p2p/src/host-base.ts";
 import type { Command } from "../shared/commands.ts";
 import type { Role } from "../shared/access.ts";
 import type { Heading } from "../shared/doc.ts";
-import { docIsSigned, restoreDoc } from "../shared/doc.ts";
+import { docIsSigned, restoreDoc, snapshotDoc } from "../shared/doc.ts";
 import {
   canonicalUnsigned,
   chainIdFor,
@@ -329,6 +329,13 @@ function mountEditor(id: string, shareToken = ""): void {
     styleAt: (index: number) => editor.styleAt(index),
     toggleBold: () => editor.toggleMark("b"),
     dirty: () => editor.dirty(),
+    /** The doc as this client sees it (unacked edits included), for a guest's "Save a copy" while the owner is away. */
+    copyState: () => ({
+      raw: JSON.stringify({ kind: "felarumi-p2p", title: title.value, snapshot: snapshotDoc(editor.doc) }),
+      title: title.value,
+      rev: editor.sync.rev,
+      dirty: editor.dirty(),
+    }),
     headings: () => editor.headings(),
     misspelled: () => editor.misspelledWords(),
     showOutline: () => setOutline(true),

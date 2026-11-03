@@ -1221,6 +1221,13 @@ function mount(id: string, share: string): void {
     raw: (r: number, c: number) => sheet().cells[cellKey(r, c)]?.v || "",
     sheetNames: () => book().sheets.map((item) => item.name),
     role: () => role,
+    /** The book as this client sees it (unacked edits included), for a guest's "Save a copy" while the owner is away. */
+    copyState: () => ({
+      raw: JSON.stringify({ kind: "felanumio-p2p", title: title.value, book: book() }),
+      title: title.value,
+      rev: client.rev,
+      dirty: !!(client.inflight || client.pending),
+    }),
     selectSheet: (name: string) => {
       const index = book().sheets.findIndex((item) => item.name === name);
       if (index >= 0) {
