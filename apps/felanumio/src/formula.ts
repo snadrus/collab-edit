@@ -830,6 +830,8 @@ export function displayValue(value: Value, format = "general", numFmt?: string):
   if (format === "general" && !fmt && value.d) return formatSerial(value.n, value.d === "date" ? "yyyy-mm-dd" : "yyyy-mm-dd hh:mm");
   if (format === "number") {
     const decimals = fmt.includes(".") ? (fmt.split(".")[1] || "").replace(/[^0#]/g, "").length : 2;
+    // "#,##0" / "#,##0.00": thousands separators with the given decimals (Sheets' format for typed "1,000").
+    if (fmt.includes(",")) return (value.n < 0 ? "-" : "") + grouped(Math.abs(value.n), fmt.includes(".") ? decimals : 0);
     return value.n.toFixed(decimals || 2);
   }
   if (format === "percent" || fmt.includes("%")) {
@@ -842,4 +844,31 @@ export function displayValue(value: Value, format = "general", numFmt?: string):
   }
   if (Number.isInteger(value.n)) return String(value.n);
   return String(Math.round(value.n * 1e6) / 1e6);
+}
+
+/**
+ * Sheets-style typed entry: "1,000", "$5", "-$1,234.50", "50%", "2026-01-05", "1/5/2026" become numbers with a
+ * matching format (so they sum, sort and compare as numbers). Anything else returns null and stays as typed.
+ */
+export function parseTyped(raw: string): { v: string; format: "number" | "currency" | "percent" | "date"; numFmt?: string } | null {
+  const text = raw.trim();
+  let m = /^(-?)\$\s?(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?$/.exec(text);
+  if (m) return { v: String(Number(`${m[1]}${m[2]!.replace(/,/g, "")}${m[3] ?? ""}`)), format: "currency" };
+  m = /^(-?\d+(?:\.\d+)?)\s?%$/.exec(text);
+  if (m) return { v: String(Number((Number(m[1]) / 100).toPrecision(15))), format: "percent" };
+  m = /^(-?)(\d{1,3}(?:,\d{3})+)(\.\d+)?$/.exec(text);
+  if (m) return { v: String(Number(`${m[1]}${m[2]!.replace(/,/g, "")}${m[3] ?? ""}`)), format: "number", numFmt: m[3] ? "#,##0." + "0".repeat(m[3].length - 1) : "#,##0" };
+  m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(text) ?? null;
+  let ymd: [number, number, number] | null = m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+  if (!ymd) {
+    const us = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(text);
+    if (us) ymd = [Number(us[3]), Number(us[1]), Number(us[2])];
+  }
+  if (ymd) {
+    const [y, mo, d] = ymd;
+    const probe = new Date(Date.UTC(y, mo - 1, d));
+    if (probe.getUTCFullYear() !== y || probe.getUTCMonth() !== mo - 1 || probe.getUTCDate() !== d) return null;
+    return { v: String(dateSerial(y, mo, d)), format: "date" };
+  }
+  return null;
 }
