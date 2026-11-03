@@ -1,5 +1,4 @@
-import { WALLET_KEY, learnWallet, resolveDisplayName } from "../../../src/shared/guest-name.ts";
-import { cachedIdentity, openIdentityPopup, refreshIdentity } from "../../../src/shared/identity.ts";
+import { avatarInnerHtml, learnWallet, myWallet, refreshIdentity, resolveDisplayName, selfPerson, showSelfIdentity } from "../../../src/shared/person.ts";
 import { hostBase, routePath, withKeptQuery } from "../../../p2p/src/host-base.ts";
 import { caretColor, selectionColor } from "../../../packages/core/src/presence.ts";
 import { hexAlpha } from "../../../packages/core/src/palette.ts";
@@ -46,13 +45,6 @@ function bookUrl(id: string): string {
 const sid = sessionStorage.getItem("felanumio-sid") || crypto.randomUUID().replace(/-/g, "").slice(0, 16);
 sessionStorage.setItem("felanumio-sid", sid);
 const displayName = () => resolveDisplayName();
-const myWallet = (): string | null => {
-  try {
-    return localStorage.getItem(WALLET_KEY);
-  } catch {
-    return null;
-  }
-};
 const identityReady = learnWallet().then(() => refreshIdentity(myWallet()));
 
 function boot(): void {
@@ -705,26 +697,25 @@ function mount(id: string, share: string): void {
       const el = document.createElement("div");
       const mine = person.sid === selfSid;
       el.className = mine ? "avatar self" : "avatar";
-      const own = mine ? cachedIdentity(myWallet()) : null;
-      el.textContent = own?.avatar?.emoji || (person.name[0] || "?").toUpperCase();
+      const own = mine ? selfPerson() : null;
+      if (own && (own.avatar?.emoji || own.address)) {
+        el.innerHTML = avatarInnerHtml(own, 32);
+        el.style.overflow = "hidden";
+        if (own.avatar?.color && own.avatar.emoji) {
+          el.style.background = own.avatar.color;
+          el.style.color = "#fff";
+        }
+      } else el.textContent = (person.name[0] || "?").toUpperCase();
       el.title = person.name;
-      if (own?.avatar?.color) {
-        el.style.background = own.avatar.color;
-        el.style.color = "#fff";
-      }
       if (mine) {
         el.dataset.testid = "self-avatar";
         el.style.cursor = "pointer";
         el.addEventListener("click", () =>
-          openIdentityPopup(el, {
-            address: myWallet(),
-            currentName: displayName(),
-            onLocalRename: () => {
-              const next = window.prompt("Name shown to others", displayName());
-              if (!next) return;
-              sessionStorage.setItem("felarumi-name", next.trim().slice(0, 40) || "Guest");
-              paintAvatars(selfSid);
-            },
+          showSelfIdentity(el, () => {
+            const next = window.prompt("Name shown to others", displayName());
+            if (!next) return;
+            sessionStorage.setItem("felarumi-name", next.trim().slice(0, 40) || "Guest");
+            paintAvatars(selfSid);
           }),
         );
       }

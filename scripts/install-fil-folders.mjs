@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Install packages/fil-folders from snadrus/filecoin-folders at the pinned commit.
+ * Install packages/fil-folders and packages/fiperson (FiPerson: names, identity, avatars) from snadrus/filecoin-folders at the pinned commit.
  * The monorepo root depends on `workspace:*`, which npm cannot install, so this
  * checks out only that package, builds dist/, and leaves it in node_modules.
  * The source is not committed in this repo.
@@ -31,14 +31,17 @@ if (Number(process.versions.node.split(".")[0]) < 22) {
 
 const dest = path.join(root, "node_modules", "fil-folders");
 const stamp = path.join(dest, ".commit");
-if (fs.existsSync(stamp) && fs.readFileSync(stamp, "utf8").trim() === COMMIT && fs.existsSync(path.join(dest, "dist", "index.js"))) {
+const personDest = path.join(root, "node_modules", "fiperson");
+const personStamp = path.join(personDest, ".commit");
+const fresh = (s, file) => fs.existsSync(s) && fs.readFileSync(s, "utf8").trim() === COMMIT && fs.existsSync(file);
+if (fresh(stamp, path.join(dest, "dist", "index.js")) && fresh(personStamp, path.join(personDest, "dist", "view", "index.js"))) {
   process.exit(0);
 }
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "fil-folders-"));
 try {
   execFileSync("git", ["clone", "--filter=blob:none", "--sparse", "--depth", "1", REPO, tmp], { stdio: "inherit" });
-  execFileSync("git", ["sparse-checkout", "set", "packages/fil-folders", "deployments"], { cwd: tmp, stdio: "inherit" });
+  execFileSync("git", ["sparse-checkout", "set", "packages/fil-folders", "packages/fiperson", "deployments"], { cwd: tmp, stdio: "inherit" });
   const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: tmp, encoding: "utf8" }).trim();
   if (head !== COMMIT) {
     execFileSync("git", ["fetch", "--depth", "1", "origin", COMMIT], { cwd: tmp, stdio: "inherit" });
@@ -55,6 +58,10 @@ try {
   if (!fs.existsSync(tsc)) throw new Error("typescript is not installed");
   execFileSync(process.execPath, [tsc, "-p", "tsconfig.build.json"], { cwd: dest, stdio: "inherit" });
   fs.writeFileSync(stamp, COMMIT + "\n");
+  fs.rmSync(personDest, { recursive: true, force: true });
+  fs.cpSync(path.join(tmp, "packages", "fiperson"), personDest, { recursive: true });
+  execFileSync(process.execPath, [tsc, "-p", "tsconfig.build.json"], { cwd: personDest, stdio: "inherit" });
+  fs.writeFileSync(personStamp, COMMIT + "\n");
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });
 }
