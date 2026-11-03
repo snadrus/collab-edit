@@ -83,3 +83,18 @@ test("FiGrid new sheet is Sheets-sized: the cursor can go to row 120 and column 
   await page.keyboard.press("Enter");
   expect(await page.evaluate(() => (window as unknown as { __sheet: { raw(r: number, c: number): string } }).__sheet.raw(119, 25))).toBe("far");
 });
+
+test("FiGrid browser tab shows the sheet title (yours and a peer's rename), like Sheets", async ({ browser }) => {
+  const a = await (await browser.newContext()).newPage();
+  await a.goto("/sheets?wire=test");
+  await a.locator("#blank").click();
+  await a.waitForFunction(() => (window as unknown as { __sheet?: { ready: boolean } }).__sheet?.ready === true && location.hash.length > 1);
+  await expect(a).toHaveTitle("Untitled spreadsheet - FiGrid");
+  const b = await (await browser.newContext()).newPage();
+  await b.goto(a.url());
+  await b.waitForFunction(() => (window as unknown as { __sheet?: { ready: boolean } }).__sheet?.ready === true);
+  await a.locator("#title").fill("Budget 2027");
+  await a.locator("#title").press("Enter");
+  await expect(a).toHaveTitle("Budget 2027 - FiGrid");
+  await expect(b).toHaveTitle("Budget 2027 - FiGrid");
+});
