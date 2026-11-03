@@ -80,7 +80,7 @@ export class Editor {
   overlay: HTMLElement;
   input: HTMLElement;
   localCaret: HTMLElement;
-  layout: Layout = { lines: [], pages: 1 };
+  layout: Layout = { lines: [], pages: 1, notes: [], gutters: [] };
   measure: CanvasRenderingContext2D;
   zoom = 1;
   name = "Guest";
@@ -472,7 +472,7 @@ export class Editor {
     this.paint();
   }
 
-  private paint(): void {
+  paint(): void {
     const doc = this.preview ?? this.doc;
     this.layout = layoutDoc(doc, this.measure);
     const pages = this.layout.pages;

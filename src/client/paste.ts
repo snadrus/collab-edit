@@ -132,7 +132,7 @@ function pasteTable(table: HTMLElement, text: Attrs, para: Attrs, ops: Op[]): vo
       const cell = cells[c];
       if (cell) {
         const cellOps: Op[] = [];
-        for (const child of cell.childNodes) walk(child, { ...text, ...textFromEl(cell) }, para, cellOps);
+        for (const child of cell.childNodes) walk(child, { ...text, ...(cell.tagName === "TH" ? { b: true } : {}), ...textFromEl(cell) }, para, cellOps);
         // A cell holds one line: inner paragraph breaks become spaces.
         for (const op of cellOps) if (op.t === "i") pushText(ops, op.s.replace(/\n+/g, " ").trimEnd() || (op.s.includes("\n") ? " " : ""), op.a && !("h" in op.a) ? op.a : stripPara(op.a));
       }

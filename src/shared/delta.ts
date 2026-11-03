@@ -168,7 +168,7 @@ export function chop(ops: Op[]): Delta {
     else out.push(op.a ? { t: "r", n: op.n, a: op.a } : { t: "r", n: op.n });
   };
   for (const op of ops) push(op);
-  while (out.length && out[out.length - 1].t === "r" && !out[out.length - 1].a) out.pop();
+  while (out.length && out[out.length - 1].t === "r" && !(out[out.length - 1] as { a?: unknown }).a) out.pop();
   return { ops: out };
 }
 

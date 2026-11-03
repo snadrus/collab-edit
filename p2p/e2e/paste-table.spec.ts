@@ -15,5 +15,12 @@ test("FiPen: pasting an HTML table (from Sheets/FiGrid/a web page) makes a table
   await page.keyboard.press("Control+v");
   const text = await page.evaluate(() => (window as unknown as { __editor: { getText(): string } }).__editor.getText());
   expect(text).toContain("Before\nName\u001cQty\u001eApples\u001c3\u001e");
+  // Header cells (<th>) paste bold, like Docs; plain <td> text does not.
+  const at = text.indexOf("Name");
+  const bold = await page.evaluate((i) => {
+    const ed = (window as unknown as { __editor: { styleAt(n: number): { b?: boolean } } }).__editor;
+    return [ed.styleAt(i + 1).b, ed.styleAt(i + 17).b ?? false, ed.styleAt(i + 11).b];
+  }, at);
+  expect(bold).toEqual([true, false, true]);
   await page.screenshot({ path: "/workspace/overnight-fipen-paste-table.png" });
 });
