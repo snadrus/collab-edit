@@ -724,6 +724,7 @@ function mountEditor(id: string, shareToken = ""): void {
   document.querySelector("#list-check")!.addEventListener("click", () => editor.toggleList("check"));
   document.querySelector("#strike")!.addEventListener("click", () => editor.toggleMark("strike"));
   document.querySelector("#link")!.addEventListener("click", () => chrome.openLink());
+  document.querySelector("#image-btn")!.addEventListener("click", () => chrome.openImage());
   document.querySelector("#comment")!.addEventListener("click", () => chrome.openComment());
   document.querySelector("#signature")!.addEventListener("click", () => openSignature());
   document.querySelector("#paint")!.addEventListener("click", () => editor.copyFormatting());

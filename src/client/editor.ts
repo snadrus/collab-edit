@@ -35,6 +35,7 @@ import { addColumnDelta, addRowDelta, insertTableDelta, removeColumnDelta, remov
 import { spellHits, spellSuggestions, dictReady } from "./dict.ts";
 import { caretBox, contentWidth, drawPage, hitTest, imageBox, layoutDoc, markerHit, onNeedPaint, pageSize, PAGE_H, PAGE_W, setImageDraft, signatureChipRect, stackOffset, type Layout } from "./layout.ts";
 import { clipboardToDelta } from "./paste.ts";
+import { type ImageData, imageSources, loadImages } from "./images.ts";
 
 export interface RemoteCaret {
   sid: string;
@@ -114,7 +115,7 @@ export class Editor {
   private spellKey = "";
   private spellCache: { start: number; end: number; word: string }[] = [];
   private openSug: string | null = null;
-  private resize: { index: number; x: number; y: number; w: number; h: number; rot: number; corner: string } | null = null;
+  private resize: { index: number; x: number; y: number; w: number; h: number; rot: number; corner: string; ar?: number } | null = null;
 
   constructor(sid: string, pagesEl: HTMLElement, overlay: HTMLElement, input: HTMLElement, color: string, hooks: EditorHooks) {
     this.sync = new ClientSync(sid);
@@ -229,7 +230,9 @@ export class Editor {
   }
 
   applyRemote(delta: Delta, sid: string, rev: number, reqId?: number): void {
+    const wasVisible = this.caretVisible();
     const applied = this.sync.ingestRemote(delta, sid, rev, reqId);
+    if (wasVisible && applied) this.revealPending = true;
     if (applied) {
       this.shiftOwn(applied);
       this.shiftRemotes(applied);
@@ -247,7 +250,7 @@ export class Editor {
   }
 
   focus(): void {
-    this.input.focus();
+    this.input.focus({ preventScroll: true });
   }
 
   setSelection(anchor: number, head: number): void {
@@ -262,7 +265,7 @@ export class Editor {
   undo(): void {
     if (!this.canEdit()) return;
     if (!this.sync.undo()) return;
-    if (this.sync.lastDelta) this.shiftOwn(this.sync.lastDelta);
+    if (this.sync.lastDelta) this.caretToChange(this.sync.lastDelta);
     this.clampCarets();
     this.sampleTyping();
     this.afterEdit();
@@ -271,7 +274,7 @@ export class Editor {
   redo(): void {
     if (!this.canEdit()) return;
     if (!this.sync.redo()) return;
-    if (this.sync.lastDelta) this.shiftOwn(this.sync.lastDelta);
+    if (this.sync.lastDelta) this.caretToChange(this.sync.lastDelta);
     this.clampCarets();
     this.sampleTyping();
     this.afterEdit();
@@ -502,6 +505,10 @@ export class Editor {
       });
     }
     this.placeCarets();
+    if (this.revealPending) {
+      this.revealPending = false;
+      this.doReveal();
+    }
     this.hooks.onPaint?.();
   }
 
@@ -625,6 +632,7 @@ export class Editor {
       }
       const e = ev as ClipboardEvent;
       e.preventDefault();
+      if (e.clipboardData && this.takeImages(e.clipboardData, null)) return;
       const html = e.clipboardData?.getData("text/html") || "";
       const plain = e.clipboardData?.getData("text/plain") || "";
       this.paste(html, plain);
@@ -634,6 +642,47 @@ export class Editor {
   }
 
   private bindPointer(): void {
+    // Never let a drop navigate the tab to the dropped file or link.
+    window.addEventListener("dragover", (ev) => ev.preventDefault());
+    window.addEventListener("drop", (ev) => ev.preventDefault());
+    this.pagesEl.addEventListener("dragover", (ev) => {
+      ev.preventDefault();
+      if (this.preview || !this.canEdit()) {
+        if (ev.dataTransfer) ev.dataTransfer.dropEffect = "none";
+        return;
+      }
+      if (ev.dataTransfer) ev.dataTransfer.dropEffect = "copy";
+      const pageEl = this.pageFromPoint(ev.clientX, ev.clientY);
+      if (!pageEl) return;
+      const at = this.indexFromEvent(ev, pageEl, Number(pageEl.dataset.page || 0));
+      if (at !== this.dropAt) {
+        this.dropAt = at;
+        this.render();
+      }
+    });
+    this.pagesEl.addEventListener("dragleave", (ev) => {
+      if (ev.relatedTarget && this.pagesEl.contains(ev.relatedTarget as Node)) return;
+      this.dropAt = null;
+      this.render();
+    });
+    this.pagesEl.addEventListener("drop", (ev) => {
+      ev.preventDefault();
+      const pageEl = this.pageFromPoint(ev.clientX, ev.clientY);
+      const at = pageEl ? this.indexFromEvent(ev, pageEl, Number(pageEl.dataset.page || 0)) : this.dropAt;
+      this.dropAt = null;
+      this.render();
+      const dt = ev.dataTransfer;
+      if (!dt || this.preview || !this.canEdit()) return;
+      if (this.takeImages(dt, at)) return;
+      const html = dt.getData("text/html");
+      const plain = dt.getData("text/plain");
+      if (!html && !plain) return;
+      const index = at == null ? this.head : at;
+      this.anchor = index;
+      this.head = index;
+      this.paste(html, plain);
+      this.focus();
+    });
     this.pagesEl.addEventListener("mousemove", (ev) => {
       if (this.preview) return;
       const pageEl = (ev.target as HTMLElement).closest(".page") as HTMLElement | null;
@@ -785,8 +834,10 @@ export class Editor {
         const sx = this.resize.corner.includes("w") ? -1 : 1;
         const sy = this.resize.corner.includes("n") ? -1 : 1;
         const w = Math.max(24, Math.min(contentWidth(), Math.round(this.resize.w + dx * sx)));
-        const h = Math.max(24, Math.min(800, Math.round(this.resize.h + dy * sy)));
-        this.resize = { ...this.resize, x: ev.clientX, y: ev.clientY, w, h };
+        // Corner handles keep the aspect ratio, as in Google Docs; Shift resizes freely.
+        const ar = this.resize.ar || this.resize.w / Math.max(1, this.resize.h);
+        const h = ev.shiftKey ? Math.max(24, Math.min(800, Math.round(this.resize.h + dy * sy))) : Math.max(1, Math.round(w / ar));
+        this.resize = { ...this.resize, x: ev.clientX, y: ev.clientY, w, h, ar: ev.shiftKey ? w / Math.max(1, h) : ar };
         setImageDraft({ index: this.resize.index, w, h, rot: this.resize.rot });
         this.render();
         return;
@@ -920,10 +971,71 @@ export class Editor {
       else this.insertText("\t");
       return;
     }
-    if (key === "ArrowLeft" || key === "ArrowRight" || key === "ArrowUp" || key === "ArrowDown" || key === "Home" || key === "End") {
+    if (key === "ArrowLeft" || key === "ArrowRight" || key === "ArrowUp" || key === "ArrowDown" || key === "Home" || key === "End" || key === "PageUp" || key === "PageDown") {
       e.preventDefault();
       this.move(key, e.shiftKey, meta);
     }
+  }
+
+  /** Scroll the caret into view after this paint: "near" scrolls the minimum (with margin), centering when the jump lands far off-screen. */
+  private revealPending = false;
+
+  revealCaret(): void {
+    this.revealPending = true;
+    this.render();
+  }
+
+  private caretVisible(): boolean {
+    const scroller = this.pagesEl.closest("#scroll") as HTMLElement | null;
+    if (!scroller || !this.localCaret.isConnected) return false;
+    const c = this.localCaret.getBoundingClientRect();
+    const s = scroller.getBoundingClientRect();
+    return c.bottom > s.top && c.top < s.bottom;
+  }
+
+  private doReveal(): void {
+    const scroller = this.pagesEl.closest("#scroll") as HTMLElement | null;
+    if (!scroller || this.preview) return;
+    const c = this.localCaret.getBoundingClientRect();
+    const s = scroller.getBoundingClientRect();
+    const viewH = scroller.clientHeight;
+    const viewW = scroller.clientWidth;
+    const top = c.top - s.top;
+    const bottom = c.bottom - s.top;
+    const margin = Math.min(60, Math.max(8, viewH / 6));
+    if (top < margin || bottom > viewH - margin) {
+      // Far jump (more than a screen away): center it, as Google Docs does for Ctrl+End, find, or a far undo.
+      const far = top < -viewH / 2 || bottom > viewH * 1.5;
+      let delta: number;
+      if (far) delta = top - (viewH - (c.bottom - c.top)) / 2;
+      else if (top < margin) delta = top - margin;
+      else delta = bottom - (viewH - margin);
+      scroller.scrollTop = Math.max(0, scroller.scrollTop + delta);
+    }
+    const left = c.left - s.left;
+    const hMargin = Math.min(40, viewW / 8);
+    if (left < hMargin) scroller.scrollLeft = Math.max(0, scroller.scrollLeft + left - hMargin);
+    else if (left > viewW - hMargin) scroller.scrollLeft += left - (viewW - hMargin);
+  }
+
+  /** Index about one screen up or down, keeping the column; also scrolls the view by that screen. */
+  private pageTarget(from: number, dir: -1 | 1): number {
+    const scroller = this.pagesEl.closest("#scroll") as HTMLElement | null;
+    const step = Math.max(100, (scroller?.clientHeight || 600) - 40);
+    const box = caretBox(this.layout, from);
+    const x = this.goalFor === from && this.goalX !== null ? this.goalX : box.x;
+    const want = stackOffset(box.page, box.y) + dir * step;
+    const lines = this.layout.lines;
+    if (!lines.length) return from;
+    let line = lines[0];
+    for (const ln of lines) if (stackOffset(ln.page, ln.y) <= want) line = ln;
+    if (dir > 0 && want > stackOffset(lines[lines.length - 1].page, lines[lines.length - 1].y)) return this.doc.text.length - 1;
+    if (dir < 0 && want < stackOffset(lines[0].page, lines[0].y)) return 0;
+    if (scroller) scroller.scrollTop = Math.max(0, scroller.scrollTop + (stackOffset(line.page, line.y) - stackOffset(box.page, box.y)));
+    const next = this.clamp(hitTest(this.doc, this.layout, line.page, x, line.y + line.h / 2));
+    this.goalX = x;
+    this.goalFor = next;
+    return next;
   }
 
   private goalX: number | null = null;
@@ -949,8 +1061,10 @@ export class Editor {
     let next = this.head;
     if (key === "ArrowLeft") next = meta ? wordBounds(doc, Math.max(0, this.head - 1))[0] : Math.max(0, this.head - 1);
     else if (key === "ArrowRight") next = meta ? wordBounds(doc, this.head)[1] : Math.min(doc.text.length - 1, this.head + 1);
-    else if (key === "Home") next = paraBounds(doc, this.head).start;
-    else if (key === "End") next = paraBounds(doc, this.head).end;
+    else if (key === "Home") next = meta ? 0 : paraBounds(doc, this.head).start;
+    else if (key === "End") next = meta ? doc.text.length - 1 : paraBounds(doc, this.head).end;
+    else if (key === "PageUp" || key === "PageDown") next = this.pageTarget(this.head, key === "PageUp" ? -1 : 1);
+    else if (meta && (key === "ArrowUp" || key === "ArrowDown") && navigator.platform.startsWith("Mac")) next = key === "ArrowUp" ? 0 : doc.text.length - 1;
     else if (key === "ArrowUp" || key === "ArrowDown") {
       next = this.verticalTarget(this.head, key === "ArrowUp" ? -1 : 1);
     }
@@ -961,7 +1075,7 @@ export class Editor {
       this.head = next;
     }
     this.sampleTyping();
-    this.render();
+    this.revealCaret();
     this.hooks.onSelection();
   }
 
@@ -1025,6 +1139,27 @@ export class Editor {
     if (cut) this.deleteRange(Math.min(this.anchor, this.head), Math.max(this.anchor, this.head));
   }
 
+  /** Undo/redo put the caret where the change happened, as Google Docs does, so the view follows it. */
+  private caretToChange(delta: Delta): void {
+    let at = 0;
+    let end = -1;
+    for (const op of delta.ops) {
+      if (op.t === "r") {
+        at += op.n;
+        if (op.a) end = at;
+      } else if (op.t === "i") {
+        at += op.s.length;
+        end = at;
+      } else end = at;
+    }
+    if (end < 0) {
+      this.shiftOwn(delta);
+      return;
+    }
+    this.anchor = end;
+    this.head = end;
+  }
+
   private afterEdit(): void {
     if (this.sync.lastDelta) this.shiftRemotes(this.sync.lastDelta);
     this.clampCarets();
@@ -1032,7 +1167,7 @@ export class Editor {
     this.hooks.onOutbound();
     this.hooks.onChange();
     this.hooks.onSelection();
-    this.render();
+    this.revealCaret();
   }
 
   /** Enter keeps the heading on the first half and starts the next paragraph in normal text. */
@@ -1399,6 +1534,27 @@ export class Editor {
     this.insertEmbed({ embed: "vote", emoji });
   }
 
+  /** Start inserting the images a paste or drop carries at `at` (or the selection); false when it carries none. */
+  takeImages(dt: DataTransfer, at: number | null): boolean {
+    const found = imageSources(dt);
+    if (!found.files.length && !found.urls.length) return false;
+    if (!this.canEdit()) return true;
+    void loadImages(found, Math.min(contentWidth(), 624)).then((images) => this.placeImages(images, at));
+    return true;
+  }
+
+  /** Insert loaded images at `at` (or over the selection), caret after them. */
+  placeImages(images: ImageData[], at: number | null): void {
+    if (!images.length || !this.canEdit()) return;
+    if (at != null) {
+      const index = this.clamp(at);
+      this.anchor = index;
+      this.head = index;
+    }
+    for (const img of images) this.insertImage(img.src, img.alt, img.w, img.h);
+    this.focus();
+  }
+
   insertImage(src: string, alt: string, w: number, h: number): void {
     this.insertEmbed({ embed: "img", src, alt, iw: Math.round(w), ih: Math.round(h) });
   }
@@ -1546,8 +1702,12 @@ export class Editor {
     this.findMatches = findRanges(this.doc.text, query, this.findRegex).filter((hit) => hit.start < limit);
     this.findIndex = this.findMatches.length ? ((index % this.findMatches.length) + this.findMatches.length) % this.findMatches.length : 0;
     const m = this.findMatches[this.findIndex];
-    if (m) this.setSelection(m.start, Math.min(m.end, this.doc.text.length - 1));
-    else this.render();
+    // Select the hit without focusing the editor, so typing keeps going into the find box.
+    if (m) {
+      this.anchor = this.clamp(m.start);
+      this.head = this.clamp(Math.min(m.end, this.doc.text.length - 1));
+      this.hooks.onSelection();
+    }
     this.scrollHeadIntoView();
   }
 
@@ -1633,6 +1793,7 @@ export class Editor {
     const next = spots[cur + dir];
     if (next == null) return;
     this.setSelection(next, next);
+    this.revealCaret();
   }
 
   private syncAt(): void {
@@ -1641,13 +1802,7 @@ export class Editor {
   }
 
   private scrollHeadIntoView(): void {
-    const box = caretBox(this.layout, this.head);
-    const top = stackOffset(box.page, box.y);
-    const scroller = this.pagesEl.closest("#scroll") as HTMLElement | null;
-    if (!scroller) return;
-    if (top < scroller.scrollTop + 40 || top > scroller.scrollTop + scroller.clientHeight - 80) {
-      scroller.scrollTop = Math.max(0, top - 80);
-    }
+    this.revealCaret();
   }
 
   private handleShortcut(e: KeyboardEvent): boolean {

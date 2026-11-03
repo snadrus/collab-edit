@@ -1162,8 +1162,8 @@ function installSaveFlow(): void {
     }
     if (!dirty(raw)) {
       if (filecoinMark.saved || savedHash()) return "saved";
-      // Never on Filecoin yet (no ?cid/?pieceCid and no confirmed save): say so instead of "All changes saved".
-      return params.get("cid") || params.get("pieceCid") ? "clean" : "fresh";
+      // "New, unsaved" only for a fresh standalone doc; a FiFolders file (embedded, has a path) already lives in the folder.
+      return embedded && path ? "clean" : params.get("cid") || params.get("pieceCid") ? "clean" : "fresh";
     }
     return "dirty";
   };
