@@ -152,6 +152,7 @@ function mount(id: string, share: string): void {
   const reader = (): GridRead => ({
     sheets: () => book().sheets.map((item) => item.name),
     raw: (name, r, c) => book().sheets.find((item) => item.name === name)?.cells[cellKey(r, c)]?.v || "",
+    format: (name, r, c) => book().sheets.find((item) => item.name === name)?.cells[cellKey(r, c)]?.style?.format,
   });
 
   const send = (msg: unknown) => {

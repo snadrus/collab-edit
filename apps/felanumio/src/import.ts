@@ -702,6 +702,7 @@ export function chartPoints(book: Book, chart: ChartMark): { name: string; n: nu
   const read: GridRead = {
     sheets: () => book.sheets.map((sheet) => sheet.name),
     raw: (name, r, c) => book.sheets.find((sheet) => sheet.name === name)?.cells[cellKey(r, c)]?.v || "",
+    format: (name, r, c) => book.sheets.find((item) => item.name === name)?.cells[cellKey(r, c)]?.style?.format,
   };
   const sheetName = (name: string) => name || host;
   const label = (name: string, r: number, c: number): string => {

@@ -24,6 +24,7 @@ function read(book: Book): GridRead {
   return {
     sheets: () => book.sheets.map((sheet) => sheet.name),
     raw: (name, r, c) => book.sheets.find((sheet) => sheet.name === name)?.cells[cellKey(r, c)]?.v || "",
+    format: (name, r, c) => book.sheets.find((item) => item.name === name)?.cells[cellKey(r, c)]?.style?.format,
   };
 }
 

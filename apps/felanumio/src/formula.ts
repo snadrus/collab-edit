@@ -7,7 +7,8 @@ export interface Ref {
 }
 
 export type Value =
-  | { t: "n"; n: number }
+  /** `d` marks a date/time serial (TODAY, NOW, DATE and date ± days) so it displays as a date, like Sheets. */
+  | { t: "n"; n: number; d?: "date" | "datetime" }
   | { t: "s"; s: string }
   | { t: "b"; b: boolean }
   | { t: "e"; e: string }
@@ -468,6 +469,8 @@ export function shiftFormula(formula: string, dr: number, dc: number): string {
 export interface GridRead {
   raw(sheet: string, r: number, c: number): string;
   sheets(): string[];
+  /** The cell's number format ("date", …) so date cells count as dates in arithmetic (TODAY()-A1 = days). */
+  format?(sheet: string, r: number, c: number): string | undefined;
 }
 
 function truthy(v: Value): boolean {
@@ -573,7 +576,9 @@ export function evaluate(grid: GridRead, sheet: string, raw: string, stack: stri
     const id = name + "!" + ref.r + "," + ref.c;
     if (seen.includes(id)) return { t: "e", e: "#CYCLE!" };
     if (!grid.sheets().includes(name)) return { t: "e", e: "#REF!" };
-    return evaluate(grid, name, grid.raw(name, ref.r, ref.c), [...seen, id]);
+    const value = evaluate(grid, name, grid.raw(name, ref.r, ref.c), [...seen, id]);
+    if (value.t === "n" && !value.d && grid.format?.(name, ref.r, ref.c) === "date") return { ...value, d: "date" };
+    return value;
   };
   const evalBin = (op: string, l: Value, r: Value): Value => {
     if (l.t === "e") return l;
@@ -586,8 +591,10 @@ export function evaluate(grid: GridRead, sheet: string, raw: string, stack: stri
       if (op === "<>") return { t: "b", b: !sameKey(l, r) };
       return { t: "e", e: "#VALUE!" };
     }
-    if (op === "+") return { t: "n", n: ln + rn };
-    if (op === "-") return { t: "n", n: ln - rn };
+    const ld = l.t === "n" ? l.d : undefined;
+    const rd = r.t === "n" ? r.d : undefined;
+    if (op === "+") return ld && rd ? { t: "n", n: ln + rn } : { t: "n", n: ln + rn, ...(ld || rd ? { d: ld || rd } : {}) };
+    if (op === "-") return ld && rd ? { t: "n", n: ln - rn } : { t: "n", n: ln - rn, ...(ld ? { d: ld } : {}) };
     if (op === "*") return { t: "n", n: ln * rn };
     if (op === "^") return { t: "n", n: ln ** rn };
     if (op === "/") return rn === 0 ? { t: "e", e: "#DIV/0!" } : { t: "n", n: ln / rn };
@@ -716,8 +723,14 @@ export function evaluate(grid: GridRead, sheet: string, raw: string, stack: stri
       if (value.t === "n") return { t: "s", s: String(value.n) };
       return { t: "s", s: text(value) };
     }
-    if (name === "TODAY") return { t: "n", n: todaySerial() };
-    if (name === "NOW") return { t: "n", n: nowSerial() };
+    if (name === "TODAY") return { t: "n", n: todaySerial(), d: "date" };
+    if (name === "NOW") return { t: "n", n: nowSerial(), d: "datetime" };
+    if (name === "DATE") {
+      const [y, m, day] = [0, 1, 2].map((i) => num(evalExpr(args[i], seen)));
+      if (y == null || m == null || day == null) return { t: "e", e: "#VALUE!" };
+      const ms = Date.UTC(Math.trunc(y), Math.trunc(m) - 1, Math.trunc(day)) - Date.UTC(1899, 11, 30);
+      return { t: "n", n: Math.round(ms / 86400000), d: "date" };
+    }
     if (name === "AND" || name === "OR") {
       const values = args.flatMap((arg) => cellsOf(arg, seen));
       const bad = values.find((value) => value.t === "e");
@@ -814,6 +827,7 @@ export function displayValue(value: Value, format = "general", numFmt?: string):
   if (value.t === "s") return value.s;
   const fmt = numFmt || "";
   if (format === "date" || (/[yd]/i.test(fmt) && /m/i.test(fmt))) return formatSerial(value.n, fmt || "yyyy-mm-dd");
+  if (format === "general" && !fmt && value.d) return formatSerial(value.n, value.d === "date" ? "yyyy-mm-dd" : "yyyy-mm-dd hh:mm");
   if (format === "number") {
     const decimals = fmt.includes(".") ? (fmt.split(".")[1] || "").replace(/[^0#]/g, "").length : 2;
     return value.n.toFixed(decimals || 2);

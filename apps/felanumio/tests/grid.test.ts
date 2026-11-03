@@ -60,6 +60,13 @@ test("formulas cover aggregates, lookup, conditions, and other sheets", () => {
   assert.equal(show("=MEDIAN(A1:A3,C1)"), "2.5");
   assert.equal(show("=NOT(A1>2)"), "TRUE");
   assert.equal(show("=2^3"), "8");
+  // Date results display as dates without formatting the cell (Sheets)
+  assert.equal(show("=DATE(2026,11,3)"), "2026-11-03");
+  assert.equal(show("=DATE(2026,11,3)+1"), "2026-11-04");
+  assert.equal(show("=DATE(2026,11,3)-DATE(2026,11,1)"), "2");
+  assert.match(show("=TODAY()"), /^\d{4}-\d{2}-\d{2}$/);
+  assert.match(show("=NOW()"), /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
+  assert.match(show("=TODAY()*1"), /^\d+$/);
   assert.equal(show("=-2^2"), "4");
   assert.equal(show("=2*3^2"), "18");
   assert.equal(show("=50%"), "0.5");
@@ -103,7 +110,7 @@ test("lookup, text, dates, and logic functions", () => {
   assert.equal(show("=OR(0,1)"), "TRUE");
   assert.equal(show('=IFERROR(1/0,"no")'), "no");
   assert.equal(show("=IFERROR(2+2,0)"), "4");
-  const today = Number(show("=TODAY()"));
+  const today = Number(show("=TODAY()*1")); // the serial; plain =TODAY() now displays as a date
   assert.ok(today > 40000);
   assert.equal(displayValue(evaluate(grid, "Sheet1", "02134")), "02134");
   assert.equal(displayValue(evaluate(grid, "Sheet1", "'=1+1 formula-looking")), "=1+1 formula-looking");
