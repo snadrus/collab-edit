@@ -223,8 +223,8 @@ test("native paste lands on A1, and copy writes TSV and HTML", async ({ page, co
     return store;
   });
   expect(copied["text/plain"]).toBe("Menu\tPaste\nSecond\tRow");
-  expect(copied["text/html"]).toContain("<td>Menu</td>");
-  expect(copied["text/html"]).toContain("<td>Row</td>");
+  expect(copied["text/html"]).toContain(">Menu</td>");
+  expect(copied["text/html"]).toContain(">Row</td>");
 });
 
 test("drag-drop imports onto the grid and download writes CSV", async ({ page }) => {

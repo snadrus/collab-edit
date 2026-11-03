@@ -191,7 +191,8 @@ test("FiFolders saves only on Save, Cmd+S, or the dirty-only autosave", async ({
   const status = page.locator("#status");
   const ops = () => page.evaluate(() => JSON.parse(localStorage.getItem("fifolders:ops") || "{}").ops || []);
   await expect(page.locator("#p2p-save")).toBeVisible();
-  await expect(status).toHaveText("All changes saved");
+  // A FiFolders path with no stored piece is FiFolders' New document: "New, unsaved" until the first save (S12).
+  await expect(status).toHaveText("New, unsaved");
   // Status and Save sit to the right of the title.
   const [title, save] = await Promise.all([page.locator("#title").boundingBox(), page.locator("#p2p-save").boundingBox()]);
   expect(save!.x).toBeGreaterThan(title!.x + title!.width - 1);

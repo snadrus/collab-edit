@@ -48,17 +48,54 @@ export function contentWidth(): number {
   return PAGE_W - ML - MR;
 }
 
+/** The document's own page spec. Phone reflow changes only the view, never what peers or saves see. */
+let specW = DEFAULT_PAGE.w;
+let specML = DEFAULT_PAGE.ml;
+let specMR = DEFAULT_PAGE.mr;
+let specPageless = false;
+/** Phone reflow: lay text out to the screen width (CSS px) instead of shrinking a Letter page. */
+let fitWidth: number | null = null;
+export const PHONE_MARGIN = 16;
+
+function applyFit(): void {
+  if (fitWidth) {
+    PAGE_W = fitWidth;
+    ML = PHONE_MARGIN;
+    MR = PHONE_MARGIN;
+    PAGELESS = true;
+  } else {
+    PAGE_W = specW;
+    ML = specML;
+    MR = specMR;
+    PAGELESS = specPageless;
+    if (!PAGELESS) FLOW_H = PAGE_H;
+  }
+}
+
+/** Width to reflow to on a phone, or null for the real page. Returns true when the layout changed. */
+export function setViewFit(width: number | null): boolean {
+  const next = width && width > 0 ? Math.round(Math.max(240, width)) : null;
+  if (next === fitWidth) return false;
+  fitWidth = next;
+  applyFit();
+  return true;
+}
+
+export function viewFit(): number | null {
+  return fitWidth;
+}
+
 export function currentPage(): PageSpec {
   return {
-    w: PAGE_W,
+    w: specW,
     h: PAGE_H,
-    ml: ML,
-    mr: MR,
+    ml: specML,
+    mr: specMR,
     mt: MT,
     mb: MB,
     paper: paperName,
     orient: orientName,
-    pageless: PAGELESS,
+    pageless: specPageless,
     differentFirst,
     header: headerText,
     footer: footerText,
@@ -86,6 +123,11 @@ export function applyPage(input: unknown): PageSpec {
   footerFirstText = next.footerFirst;
   watermarkText = next.watermark;
   if (!PAGELESS) FLOW_H = PAGE_H;
+  specW = next.w;
+  specML = next.ml;
+  specMR = next.mr;
+  specPageless = next.pageless;
+  applyFit();
   return next;
 }
 

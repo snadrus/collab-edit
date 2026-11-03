@@ -9,6 +9,9 @@ export const CHAIN_MAINNET = 314;
 export const CHAIN_CALIBRATION = 314159;
 export const DOMAIN_NAME = "Felarumi";
 export const DOMAIN_VERSION = "1";
+/** v2 adds a plain-language `purpose` that wallets show first. v1 signatures still verify. */
+export const DOMAIN_VERSION_2 = "2";
+export const DEFAULT_PURPOSE = "I sign this document.";
 
 const DOCUMENT_FIELDS = [
   { name: "docId", type: "string" },
@@ -20,7 +23,11 @@ const DOCUMENT_FIELDS = [
   { name: "chainId", type: "uint256" },
 ] as const;
 
+const DOCUMENT_FIELDS_V2 = [{ name: "purpose", type: "string" }, ...DOCUMENT_FIELDS] as const;
+
 export interface SignFields {
+  /** Present (even empty-checked) means a v2 signature. */
+  purpose?: string;
   docId: string;
   contentHash: string;
   contentCid: string;
@@ -105,12 +112,20 @@ export function docFromCanonical(raw: string): Doc | null {
   }
 }
 
-export function typedDataFor(fields: SignFields) {
+function isV2(fields: SignFields): boolean {
+  return typeof fields.purpose === "string";
+}
+
+type TypedData = Parameters<typeof hashTypedData>[0] & { domain: { name: string; version: string; chainId: number } };
+
+export function typedDataFor(fields: SignFields): TypedData {
+  const v2 = isV2(fields);
   return {
-    domain: { name: DOMAIN_NAME, version: DOMAIN_VERSION, chainId: fields.chainId },
-    types: { Document: DOCUMENT_FIELDS },
+    domain: { name: DOMAIN_NAME, version: v2 ? DOMAIN_VERSION_2 : DOMAIN_VERSION, chainId: fields.chainId },
+    types: { Document: v2 ? DOCUMENT_FIELDS_V2 : DOCUMENT_FIELDS },
     primaryType: "Document" as const,
     message: {
+      ...(v2 ? { purpose: fields.purpose as string } : {}),
       docId: fields.docId,
       contentHash: fields.contentHash,
       contentCid: fields.contentCid,
@@ -119,7 +134,7 @@ export function typedDataFor(fields: SignFields) {
       timestamp: fields.timestamp,
       chainId: BigInt(fields.chainId),
     },
-  };
+  } as unknown as TypedData;
 }
 
 /** JSON accepted by eth_signTypedData_v4. */
@@ -131,11 +146,12 @@ export function typedDataJson(fields: SignFields): string {
         { name: "version", type: "string" },
         { name: "chainId", type: "uint256" },
       ],
-      Document: DOCUMENT_FIELDS,
+      Document: isV2(fields) ? DOCUMENT_FIELDS_V2 : DOCUMENT_FIELDS,
     },
     primaryType: "Document",
-    domain: { name: DOMAIN_NAME, version: DOMAIN_VERSION, chainId: fields.chainId },
+    domain: { name: DOMAIN_NAME, version: isV2(fields) ? DOMAIN_VERSION_2 : DOMAIN_VERSION, chainId: fields.chainId },
     message: {
+      ...(isV2(fields) ? { purpose: fields.purpose } : {}),
       docId: fields.docId,
       contentHash: fields.contentHash,
       contentCid: fields.contentCid,
@@ -157,6 +173,7 @@ export function signatureAttrs(fields: StoredSignature): Attrs {
     src: fields.signature,
     opts: String(fields.chainId),
     cid: fields.contentCid,
+    ...(isV2(fields) ? { pur: fields.purpose } : {}),
   };
 }
 
@@ -181,7 +198,10 @@ export function readStored(style: CharStyle | undefined, docId: string): StoredS
   if (!contentCid || contentCid.length > 200 || /\s/.test(contentCid)) return null;
   if (!allowedChain(chainId) || String(chainId) !== style.opts) return null;
   if (!docId) return null;
+  const purpose = typeof style.pur === "string" ? style.pur : undefined;
+  if (purpose !== undefined && (purpose.length > 200 || /[\n\uFFFC]/.test(purpose))) return null;
   return {
+    ...(purpose !== undefined ? { purpose } : {}),
     docId,
     contentHash,
     contentCid,
