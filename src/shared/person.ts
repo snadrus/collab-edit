@@ -41,13 +41,23 @@ export async function learnWallet(): Promise<boolean> {
   }
 }
 
+type ProviderInfo = { pdp?: { serviceURL?: string }; serviceURL?: string };
+/**
+ * PDP service URLs from `getPDPProviders`. synapse-core 0.10 returns `{ items }` (0.4 returned `{ providers }`);
+ * reading only `.providers` threw, the catch turned it into "no providers", and saved identities showed as guest names.
+ */
+export function providerUrlsFrom(out: { items?: ProviderInfo[]; providers?: ProviderInfo[] } | null | undefined): string[] {
+  const list = out?.items ?? out?.providers ?? [];
+  return list.map((p) => p.pdp?.serviceURL ?? p.serviceURL ?? "").filter(Boolean);
+}
+
 let providers: Promise<string[]> | null = null;
 async function fetchPiece(pieceCid: string): Promise<Uint8Array> {
   providers ??= (async () => {
     const [{ getPDPProviders }, chains, { createPublicClient, http }] = await Promise.all([import("@filoz/synapse-core/sp-registry"), import("@filoz/synapse-core/chains"), import("viem")]);
     const client = createPublicClient({ chain: chains.calibration as never, transport: http(CALIBRATION_RPC) });
     const out = await getPDPProviders(client as never, { onlyActive: true, limit: 200n } as never);
-    return out.providers.map((p: { pdp?: { serviceURL?: string } }) => p.pdp?.serviceURL ?? "").filter(Boolean);
+    return providerUrlsFrom(out);
   })().catch(() => []);
   return fetchPieceFromProviders(pieceCid, await providers, (bytes) => parseIdentity(bytes) !== null);
 }
