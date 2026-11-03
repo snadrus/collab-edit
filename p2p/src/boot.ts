@@ -881,13 +881,15 @@ function installApi(): void {
   };
 }
 
-type SaveState = "clean" | "saved" | "dirty" | "saving" | "failed";
+type SaveState = "clean" | "saved" | "dirty" | "saving" | "queued" | "failed";
 
 const SAVE_TEXT: Record<SaveState, string> = {
   clean: "All changes saved",
   saved: "Saved to Filecoin",
   dirty: "Unsaved changes",
   saving: "Saving…",
+  // Embedded: FiFolders owns the commit; "Saved to Filecoin" waits for its on-chain confirmation.
+  queued: "Queued for FiFolders",
   failed: "Save failed",
 };
 
@@ -991,7 +993,7 @@ function installSaveFlow(): void {
         markFilecoinSaved(sent, sentTitle);
         sent = "";
       } else if (op.status === "error" || op.stage === "error" || op.stage === "interrupted") return "failed";
-      else if (op.content === raw) return "saving";
+      else if (op.content === raw) return "queued";
     }
     if (!dirty(raw)) return filecoinMark.saved ? "saved" : "clean";
     return "dirty";

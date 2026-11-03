@@ -205,14 +205,14 @@ test("FiFolders saves only on Save, Cmd+S, or the dirty-only autosave", async ({
   const op = (await ops())[0];
   expect(op.kind).toBe("fel-save");
   expect(op.title).toBe("Renamed note");
-  await expect(status).toHaveText("Saving…");
+  await expect(status).toHaveText("Queued for FiFolders");
   await page.evaluate(() => localStorage.setItem("fifolders:ops", JSON.stringify({ v: 1, ops: [] })));
   await expect(status).toHaveText("Saved to Filecoin");
   await page.keyboard.press("ControlOrMeta+s");
   await page.waitForTimeout(3500);
   expect(await ops()).toHaveLength(0);
   await page.evaluate(() => window.__editor!.insertText("!"));
-  await expect(status).toHaveText(/Unsaved changes|Saving…/);
+  await expect(status).toHaveText(/Unsaved changes|Queued for FiFolders/);
   await expect.poll(async () => (await ops()).length, { timeout: 8000 }).toBe(1);
 });
 
