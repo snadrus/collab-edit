@@ -264,6 +264,20 @@ function mount(id: string, share: string): void {
     if (!raw.startsWith("=") && format === "general") return raw;
     return displayValue(evaluate(reader(), s.name, raw), format, cell?.style?.numFmt);
   }
+  /** Sheets default alignment: numbers and dates right, TRUE/FALSE centered, text left; an explicit align wins. */
+  function cellAlign(s: Sheet, r: number, c: number): "left" | "center" | "right" {
+    const cell = s.cells[cellKey(r, c)];
+    const set = cell?.style?.align;
+    if (set === "left" || set === "center" || set === "right") return set;
+    const raw = cell?.v || "";
+    if (!raw || raw.startsWith("'")) return "left";
+    if (raw.startsWith("=")) {
+      const value = evaluate(reader(), s.name, raw);
+      return value.t === "n" ? "right" : value.t === "b" ? "center" : "left";
+    }
+    if (/^(true|false)$/i.test(raw.trim())) return "center";
+    return canonicalNumber(raw) !== null ? "right" : "left";
+  }
   function cellNumber(s: Sheet, r: number, c: number): number | null {
     const raw = s.cells[cellKey(r, c)]?.v || "";
     if (!raw) return null;
@@ -402,7 +416,7 @@ function mount(id: string, share: string): void {
           const style = cell?.style;
           const nextColor = style?.color || (cell?.link ? "#0563c1" : "#202124");
           const nextFont = `${style?.i ? "italic " : ""}${style?.b ? "700 " : ""}13px Roboto, sans-serif`;
-          const nextAlign = style?.align === "center" ? "center" : style?.align === "right" ? "right" : "left";
+          const nextAlign = cellAlign(s, r, c);
           if (nextColor !== color) {
             color = nextColor;
             o.fillStyle = color;
@@ -476,9 +490,10 @@ function mount(id: string, share: string): void {
         lastPainted.push(text);
         ctx.fillStyle = cell?.style?.color || (cell?.link ? "#0563c1" : "#202124");
         ctx.font = `${cell?.style?.i ? "italic " : ""}${cell?.style?.b ? "700 " : ""}13px Roboto, sans-serif`;
-        ctx.textAlign = cell?.style?.align === "center" ? "center" : cell?.style?.align === "right" ? "right" : "left";
+        const al = cellAlign(s, r, c);
+        ctx.textAlign = al;
         ctx.textBaseline = "middle";
-        const tx = cell?.style?.align === "center" ? x + w / 2 : cell?.style?.align === "right" ? x + w - 6 : x + 6;
+        const tx = al === "center" ? x + w / 2 : al === "right" ? x + w - 6 : x + 6;
         ctx.fillText(text, tx, y + h / 2, Math.max(8, w - 10));
       }
     };
@@ -1403,6 +1418,7 @@ function mount(id: string, share: string): void {
       submit([{ t: "set", sheet: sheet().id, r, c, v }]);
     },
     display: (r: number, c: number) => shown(sheet(), r, c),
+    align: (r: number, c: number) => cellAlign(sheet(), r, c),
     raw: (r: number, c: number) => sheet().cells[cellKey(r, c)]?.v || "",
     sheetNames: () => book().sheets.map((item) => item.name),
     role: () => role,
