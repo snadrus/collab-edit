@@ -11,6 +11,7 @@
     "start": "node --disable-warning=ExperimentalWarning --experimental-strip-types src/server/index.ts",
     "dev": "DEV=1 node --disable-warning=ExperimentalWarning --watch-path=src/server --watch-path=src/shared --experimental-strip-types src/server/index.ts",
     "test": "node scripts/install-fil-folders.mjs && node --disable-warning=ExperimentalWarning --experimental-strip-types --test tests/*.test.ts apps/felanumio/tests/*.test.ts p2p/tests/*.test.ts",
+    "typecheck": "tsc --noEmit -p .",
     "test:e2e": "playwright test",
     "test:p2p": "node scripts/install-fil-folders.mjs && playwright test -c p2p/playwright.config.ts",
     "p2p": "node scripts/install-fil-folders.mjs && node --disable-warning=ExperimentalWarning --experimental-strip-types p2p/serve.ts"

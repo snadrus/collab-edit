@@ -4,7 +4,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { type Hex } from "viem";
 import { DocSession } from "../p2p/src/docs-hub.ts";
 import { EMBED, type Attrs } from "../src/shared/delta.ts";
-import { applyDoc, docIsSigned, emptyDoc, plainText, restoreDoc, snapshotDoc, splice } from "../src/shared/doc.ts";
+import { type CharStyle, applyDoc, docIsSigned, emptyDoc, plainText, restoreDoc, snapshotDoc, splice } from "../src/shared/doc.ts";
 import { ServerDoc } from "../src/shared/engine.ts";
 import {
   CHAIN_CALIBRATION,
@@ -190,7 +190,7 @@ describe("document signatures", () => {
   });
 });
 
-function styleFrom(attrs: Attrs): { embed: string; label: string; alt: string; iso: string; val: string; src: string; opts: string; cid: string } {
+function styleFrom(attrs: Attrs): { embed: CharStyle["embed"]; label: string; alt: string; iso: string; val: string; src: string; opts: string; cid: string } {
   return {
     embed: "sig",
     label: String(attrs.label),
