@@ -121,8 +121,9 @@ export interface GridDelta {
   ops: GridOp[];
 }
 
-export const DEFAULT_ROWS = 40;
-export const DEFAULT_COLS = 16;
+// Like a new Google Sheet: 1000 rows, columns A–Z (painting is virtualized).
+export const DEFAULT_ROWS = 1000;
+export const DEFAULT_COLS = 26;
 
 export function emptySheet(id: string, name: string): Sheet {
   return { id, name, rows: DEFAULT_ROWS, cols: DEFAULT_COLS, cells: {}, rowH: {}, colW: {}, freezeR: 0, freezeC: 0, merges: [], validations: [], rules: [] };
