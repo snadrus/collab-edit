@@ -73,6 +73,12 @@ export interface CharStyle {
   toc?: true;
   /** Section break on a form-feed. `cont` stays on the page; `next` starts a page. */
   sec?: "cont" | "next";
+  /** Document tab id on a tab-marker form-feed (see tabs.ts). */
+  tab?: string;
+  /** Tab name. */
+  tn?: string;
+  /** Tab nesting level (child tabs). */
+  tl?: number;
 }
 
 export interface Doc {

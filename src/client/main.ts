@@ -350,6 +350,8 @@ function mountEditor(id: string, shareToken = ""): void {
     headings: () => editor.headings(),
     misspelled: () => editor.misspelledWords(),
     showOutline: () => setOutline(true),
+    tabs: () => editor.tabs().map((t) => ({ id: t.id, name: t.name, level: t.level, text: editor.doc.text.slice(t.from, t.end).replace(/\n$/, "") })),
+    currentTab: () => editor.currentTab().id,
     page: () => currentPage(),
     setHeading: (h: Heading) => editor.setHeading(h),
     setMode: (mode: "edit" | "suggest" | "view") => editor.setMode(mode),
@@ -435,6 +437,7 @@ function mountEditor(id: string, shareToken = ""): void {
     },
     onSelection: () => {
       refreshChrome();
+      renderOutline();
       sendSel();
       chrome?.refresh();
       syncCommentBubble();
@@ -1594,40 +1597,259 @@ function mountEditor(id: string, shareToken = ""): void {
             : "Viewing. This document is read-only until you switch back to Editing.";
   }
 
-  function setOutline(on: boolean): void {
+  // Document tabs & outlines (left sidebar, like Google Docs). Open by default on wide screens.
+  const tabsPref = () => {
+    try {
+      return localStorage.getItem("fipen:tabs-panel");
+    } catch {
+      return null;
+    }
+  };
+  const phone = () => window.innerWidth <= 640;
+  function setOutline(on: boolean, remember = true): void {
     showOutline = on;
+    if (remember && !phone()) {
+      try {
+        localStorage.setItem("fipen:tabs-panel", on ? "open" : "closed");
+      } catch {
+        /* private mode */
+      }
+    }
     document.body.classList.toggle("outline-open", on);
     syncView();
     renderOutline();
   }
 
+  let renamingTab: string | null = null;
+  const collapsedToc = new Set<string>();
+  let dragTab: string | null = null;
+
   function renderOutline(): void {
     const aside = document.querySelector("#outline") as HTMLElement;
+    const toggle = document.querySelector("#tabs-toggle") as HTMLElement;
     aside.hidden = !showOutline;
-    if (!showOutline) return;
-    const list = document.querySelector("#outline-list") as HTMLElement;
-    const heads = editor.headings();
-    const sig = heads.map((h) => h.level + ":" + h.text).join("|");
+    toggle.hidden = showOutline || document.body.classList.contains("print-preview");
+    if (!showOutline || !editor) return;
+    const list = document.querySelector("#tabs-list") as HTMLElement;
+    const tabs = editor.tabs();
+    const current = editor.currentTab();
+    const canEdit = editor.role !== "view" && editor.mode !== "view";
+    const tocs = tabs.map((tab) => editor.tabToc(tab));
+    const curToc = tocs[tabs.indexOf(current)] ?? [];
+    let active = -1;
+    for (const entry of curToc) if (entry.index <= editor.head) active = entry.index;
+    const sig = JSON.stringify([tabs.map((t) => [t.id, t.name, t.level]), tocs.map((l) => l.map((e) => e.level + e.text + e.index)), current.id, active, [...collapsedToc], renamingTab, canEdit]);
     if (list.dataset.sig === sig) return;
     list.dataset.sig = sig;
     list.replaceChildren();
-    if (!heads.length) {
+    (document.querySelector("#tab-add") as HTMLButtonElement).hidden = !canEdit;
+    tabs.forEach((tab, k) => {
       const li = document.createElement("li");
-      li.className = "empty";
-      li.textContent = "Headings you apply show up here.";
+      li.setAttribute("role", "treeitem");
+      li.dataset.tab = tab.id;
+      const row = document.createElement("div");
+      row.className = "tab-row" + (tab === current ? " current" : "");
+      row.dataset.testid = "tab-row";
+      row.style.marginLeft = tab.level * 16 + "px";
+      row.setAttribute("aria-selected", tab === current ? "true" : "false");
+      const chev = document.createElement("button");
+      chev.type = "button";
+      chev.className = "tab-chev";
+      const open = !collapsedToc.has(tab.id);
+      chev.title = open ? "Hide outline" : "Show outline";
+      chev.innerHTML = `<span class="material-symbols-outlined">${open ? "expand_more" : "chevron_right"}</span>`;
+      chev.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (open) collapsedToc.add(tab.id);
+        else collapsedToc.delete(tab.id);
+        renderOutline();
+      });
+      const icon = document.createElement("span");
+      icon.className = "material-symbols-outlined tab-icon";
+      icon.textContent = tab.level ? "subdirectory_arrow_right" : "tab";
+      row.append(chev, icon);
+      if (renamingTab === tab.id) {
+        const input = document.createElement("input");
+        input.className = "tab-name-input";
+        input.value = tab.name;
+        input.setAttribute("aria-label", "Tab name");
+        let done = false;
+        const finish = (save: boolean) => {
+          if (done) return;
+          done = true;
+          renamingTab = null;
+          if (save && input.value.trim() && input.value.trim() !== tab.name) editor.renameTab(tab.id, input.value);
+          renderOutline();
+          editor.focus();
+        };
+        input.addEventListener("keydown", (e) => {
+          e.stopPropagation();
+          if (e.key === "Enter") finish(true);
+          else if (e.key === "Escape") finish(false);
+        });
+        input.addEventListener("blur", () => finish(true));
+        row.appendChild(input);
+        queueMicrotask(() => {
+          input.focus();
+          input.select();
+        });
+      } else {
+        const name = document.createElement("span");
+        name.className = "tab-name";
+        name.textContent = tab.name;
+        name.title = tab.name;
+        row.appendChild(name);
+        if (canEdit) name.addEventListener("dblclick", () => {
+          renamingTab = tab.id;
+          renderOutline();
+        });
+      }
+      if (canEdit) {
+        const more = document.createElement("button");
+        more.type = "button";
+        more.className = "tab-more";
+        more.title = "Tab options";
+        more.setAttribute("aria-label", `Options for ${tab.name}`);
+        more.innerHTML = '<span class="material-symbols-outlined">more_vert</span>';
+        more.addEventListener("click", (e) => {
+          e.stopPropagation();
+          openTabMenu(tab.id, k, more);
+        });
+        row.appendChild(more);
+        row.draggable = renamingTab !== tab.id;
+        row.addEventListener("dragstart", (e) => {
+          dragTab = tab.id;
+          row.classList.add("dragging");
+          e.dataTransfer?.setData("text/plain", tab.name);
+        });
+        row.addEventListener("dragend", () => {
+          dragTab = null;
+          row.classList.remove("dragging");
+        });
+        row.addEventListener("dragover", (e) => {
+          if (!dragTab || dragTab === tab.id) return;
+          e.preventDefault();
+          row.classList.add("drop-before");
+        });
+        row.addEventListener("dragleave", () => row.classList.remove("drop-before"));
+        row.addEventListener("drop", (e) => {
+          e.preventDefault();
+          row.classList.remove("drop-before");
+          if (dragTab && dragTab !== tab.id) editor.moveTab(dragTab, { beforeId: tab.id });
+          dragTab = null;
+        });
+      }
+      row.addEventListener("click", () => {
+        if (renamingTab === tab.id) return;
+        editor.setTab(tab.id);
+        if (phone()) setOutline(false, false);
+      });
+      li.appendChild(row);
+      if (open) {
+        const toc = document.createElement("ul");
+        toc.className = "toc-list";
+        toc.setAttribute("role", "group");
+        if (tab === current) toc.id = "outline-list";
+        const entries = tocs[k];
+        if (!entries.length && tab === current) {
+          const empty = document.createElement("li");
+          empty.className = "empty";
+          empty.style.paddingLeft = 28 + tab.level * 16 + "px";
+          empty.textContent = "Headings you add to the document will appear here.";
+          toc.appendChild(empty);
+        }
+        for (const entry of entries) {
+          const item = document.createElement("li");
+          const btn = document.createElement("button");
+          btn.type = "button";
+          btn.textContent = entry.text;
+          btn.title = entry.text;
+          btn.dataset.testid = "toc-entry";
+          btn.style.paddingLeft = 28 + tab.level * 16 + (entry.level - 1) * 12 + "px";
+          if (tab === current && entry.index === active) {
+            btn.classList.add("active");
+            btn.setAttribute("aria-current", "location");
+          }
+          btn.addEventListener("click", () => {
+            if (tab !== editor.currentTab()) editor.setTab(tab.id, entry.index);
+            editor.jumpTo(entry.index);
+            if (phone()) setOutline(false, false);
+          });
+          item.appendChild(btn);
+          toc.appendChild(item);
+        }
+        li.appendChild(toc);
+      }
       list.appendChild(li);
-      return;
+    });
+    if (canEdit) {
+      const tail = document.createElement("li");
+      tail.className = "tab-drop-end";
+      tail.style.minHeight = "12px";
+      tail.addEventListener("dragover", (e) => dragTab && e.preventDefault());
+      tail.addEventListener("drop", (e) => {
+        e.preventDefault();
+        if (dragTab) editor.moveTab(dragTab, { beforeId: null });
+        dragTab = null;
+      });
+      list.appendChild(tail);
     }
-    for (const heading of heads) {
-      const li = document.createElement("li");
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.textContent = heading.text;
-      btn.style.paddingLeft = 8 + heading.level * 14 + "px";
-      btn.addEventListener("click", () => editor.jumpTo(heading.index));
-      li.appendChild(btn);
-      list.appendChild(li);
+  }
+
+  function closeTabMenu(): void {
+    (document.querySelector("#tab-menu") as HTMLElement).hidden = true;
+  }
+
+  function openTabMenu(id: string, k: number, at: HTMLElement): void {
+    const menu = document.querySelector("#tab-menu") as HTMLElement;
+    const tabs = editor.tabs();
+    const tab = tabs[k];
+    const items: [string, string, string, boolean, () => void][] = [
+      ["add_circle", "Add subtab", "tab-add-sub", tab.level < 2, () => editor.addTab({ afterId: id, child: true })],
+      ["edit", "Rename", "tab-rename", true, () => {
+        renamingTab = id;
+        renderOutline();
+      }],
+      ["arrow_upward", "Move up", "tab-move-up", true, () => editor.moveTab(id, -1)],
+      ["arrow_downward", "Move down", "tab-move-down", true, () => editor.moveTab(id, 1)],
+      ["delete", "Delete", "tab-delete", tabs.length > 1, () => deleteTabWithUndo(id, tab.name)],
+    ];
+    menu.replaceChildren();
+    for (const [icon, label, testid, enabled, run] of items) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.setAttribute("role", "menuitem");
+      b.dataset.testid = testid;
+      b.disabled = !enabled;
+      b.innerHTML = `<span class="material-symbols-outlined">${icon}</span>`;
+      b.append(label);
+      b.addEventListener("click", (e) => {
+        e.stopPropagation();
+        closeTabMenu();
+        run();
+      });
+      menu.appendChild(b);
     }
+    menu.hidden = false;
+    const r = at.getBoundingClientRect();
+    menu.style.left = Math.min(window.innerWidth - 196, r.left) + "px";
+    menu.style.top = Math.min(window.innerHeight - menu.offsetHeight - 8, r.bottom + 4) + "px";
+  }
+
+  let undoTimer = 0;
+  function deleteTabWithUndo(id: string, name: string): void {
+    if (!editor.deleteTab(id)) return;
+    const bar = document.querySelector("#tab-undo") as HTMLElement;
+    bar.querySelector("span")!.textContent = `"${name}" deleted`;
+    bar.hidden = false;
+    const btn = bar.querySelector("button") as HTMLButtonElement;
+    btn.onclick = () => {
+      bar.hidden = true;
+      editor.undo();
+      if (editor.tabs().some((t) => t.id === id)) editor.setTab(id);
+    };
+    window.clearTimeout(undoTimer);
+    undoTimer = window.setTimeout(() => (bar.hidden = true), 10_000);
   }
 
   function sendPage(): void {
@@ -2256,6 +2478,17 @@ function mountEditor(id: string, shareToken = ""): void {
   });
 
   document.querySelector("#outline-close")!.addEventListener("click", () => setOutline(false));
+  document.querySelector("#tabs-toggle")!.addEventListener("click", () => setOutline(true));
+  document.querySelector("#tab-add")!.addEventListener("click", () => editor.addTab());
+  document.addEventListener("click", (e) => {
+    const menu = document.querySelector("#tab-menu") as HTMLElement;
+    if (!menu.hidden && !menu.contains(e.target as Node)) closeTabMenu();
+  });
+  {
+    const pref = tabsPref();
+    if (!phone() && (pref === "open" || (pref == null && window.innerWidth >= 1000))) setOutline(true, false);
+    else renderOutline();
+  }
   document.addEventListener("mousedown", (ev) => {
     const menu = document.querySelector("#context") as HTMLElement;
     if (!menu.hidden && !(ev.target as HTMLElement).closest("#context")) menu.hidden = true;

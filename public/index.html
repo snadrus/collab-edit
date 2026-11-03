@@ -87,7 +87,7 @@
           <button type="button" data-act="zoom-100">100%</button>
           <button type="button" data-act="zoom-fit">Fit width</button>
           <button type="button" class="tog" data-act="ruler" aria-pressed="true">Show ruler</button>
-          <button type="button" class="tog" data-act="outline" aria-pressed="false">Show outline</button>
+          <button type="button" class="tog" data-act="outline" aria-pressed="false">Show tabs &amp; outlines</button>
           <button type="button" class="tog" data-act="invisibles" aria-pressed="false">Show non-printing characters</button>
           <button type="button" data-act="fullscreen">Full screen</button>
           <button type="button" class="tog" data-act="pageless" aria-pressed="false">Pageless</button>
@@ -339,12 +339,18 @@
       </div>
     </div>
     <div id="input" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Document body" spellcheck="true"></div>
-    <aside id="outline" hidden>
+    <button type="button" id="tabs-toggle" class="icon" title="Show tabs &amp; outlines" aria-label="Show tabs and outlines" hidden><span class="material-symbols-outlined">toc</span></button>
+    <aside id="outline" hidden aria-label="Document tabs">
       <header>
-        <h2>Outline</h2>
-        <button type="button" id="outline-close" class="icon" title="Close"><span class="material-symbols-outlined">close</span></button>
+        <h2>Document tabs</h2>
+        <span class="tabs-head-actions">
+          <button type="button" id="tab-add" class="icon" title="Add tab"><span class="material-symbols-outlined">add</span></button>
+          <button type="button" id="outline-close" class="icon" title="Hide tabs &amp; outlines"><span class="material-symbols-outlined">arrow_back</span></button>
+        </span>
       </header>
-      <ul id="outline-list"></ul>
+      <ul id="tabs-list" role="tree"></ul>
+      <div id="tab-menu" class="tab-menu" role="menu" hidden></div>
+      <div id="tab-undo" class="tab-undo" role="status" hidden><span></span><button type="button">Undo</button></div>
     </aside>
     <div id="context" hidden role="menu"></div>
     <aside id="history" hidden>
