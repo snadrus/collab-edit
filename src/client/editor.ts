@@ -292,7 +292,8 @@ export class Editor {
     }
     const ops = this.opsForString(text);
     const delta = splice(lo, hi, ops, this.doc.text.length);
-    const opening = text === "@" && this.atMark == null;
+    // A new "@" always starts a new query (an earlier one with no matches used to keep the menu shut for the rest of the doc).
+    const opening = text === "@";
     this.sync.local(delta);
     const at = this.clamp(lo + insertedLength(ops));
     this.anchor = at;
@@ -1773,7 +1774,13 @@ export class Editor {
       this.atMark = null;
       return null;
     }
-    return this.doc.text.slice(this.atMark + 1, this.head).replace(/\n/g, "");
+    const query = this.doc.text.slice(this.atMark + 1, this.head);
+    // A line break ends the query, like Docs.
+    if (/[\n\f\u001c\u001e]/.test(query)) {
+      this.atMark = null;
+      return null;
+    }
+    return query;
   }
 
   closeAt(): void {

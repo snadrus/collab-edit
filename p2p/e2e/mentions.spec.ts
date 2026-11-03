@@ -207,3 +207,20 @@ test("no club-mates cached: '@' offers 'Find my club-mates' linking to FiPerson"
   expect(new URL(popup.url()).hash).toBe("#clubs");
   await ctx.close();
 });
+
+test("an @ with no matches doesn't keep the menu shut: the next @ (even on a new line) suggests again", async ({ browser }) => {
+  const ctx = await browser.newContext();
+  await setup(ctx, { clubs: true, token: false });
+  const page = await ctx.newPage();
+  await newDoc(page);
+  const menu = page.locator("#at-menu");
+  await page.keyboard.type("x @zzz", { delay: 40 });
+  await expect(menu).toBeHidden();
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("@car", { delay: 60 });
+  await expect(menu).toBeVisible();
+  await expect(menu.locator(".at-item").first()).toContainText("Carl Brook");
+  await page.keyboard.press("Escape");
+  await page.keyboard.type(" and @be", { delay: 60 });
+  await expect(menu.locator(".at-item").first()).toContainText("Beatrice Park");
+});
