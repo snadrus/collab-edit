@@ -3,7 +3,7 @@ import { mountOfflineChip } from "../../../src/shared/offline.ts";
 import { hostBase, routePath, withKeptQuery } from "../../../p2p/src/host-base.ts";
 import { caretColor, selectionColor } from "../../../packages/core/src/presence.ts";
 import { hexAlpha } from "../../../packages/core/src/palette.ts";
-import { a1ToIndex, canonicalNumber, displayValue, evaluate, indexToCol, shiftFormula, type GridRead } from "./formula.ts";
+import { a1ToIndex, canonicalNumber, displayValue, evaluate, indexToCol, parseTyped, shiftFormula, type GridRead } from "./formula.ts";
 import { bookOds, bookXlsx, chartPoints, convertField, defaultImportOptions, detectSeparator, importBytes, parseDelimited, parseHtmlTable, sheetCsv, uniqueComments, type ImportOptions } from "./import.ts";
 import { type Book, type Cell, type CellStyle, type ChartMark, type GridOp, type Merge, type Sheet, cellKey } from "./ot.ts";
 import { GridClient } from "./sync.ts";
@@ -794,7 +794,10 @@ function mount(id: string, share: string): void {
   function commitFormula(): void {
     if (!editing) return;
     editing = false;
-    submit([{ t: "set", sheet: sheet().id, r: head.r, c: head.c, v: formula.value }]);
+    const style = styleOf();
+    const typed = !style.format || style.format === "general" ? parseTyped(formula.value) : null;
+    if (typed) submit([{ t: "set", sheet: sheet().id, r: head.r, c: head.c, v: typed.v, style: { ...style, format: typed.format, ...(typed.numFmt ? { numFmt: typed.numFmt } : {}) } }]);
+    else submit([{ t: "set", sheet: sheet().id, r: head.r, c: head.c, v: formula.value }]);
   }
 
   function move(dr: number, dc: number, extend: boolean): void {
