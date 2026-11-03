@@ -562,3 +562,7 @@ body.print-preview #scroll { background: #e8eaed; }
   .page { box-shadow: none; page-break-after: always; margin: 0; }
   body, #editor, #scroll { background: white; height: auto; }
 }
+
+/* FiPerson pixel avatar fills the round frame inside its border (box-sizing safe), centered. */
+.avatar svg.fiperson-pixel { width: 100%; height: 100%; display: block; }
+.avatar[data-kind="pixel"], .avatar:has(> svg.fiperson-pixel) { padding: 0; overflow: hidden; }
