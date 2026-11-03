@@ -368,17 +368,19 @@ function mount(id: string, share: string): void {
     o.fillRect(0, 0, w, h);
     o.strokeStyle = "#e1e3e1";
     o.beginPath();
+    // Each row/column draws its top/left grid line. Bottom/right edges sat at h+0.5 / w+0.5, outside the
+    // tile canvas, so every 4th grid line went missing.
     let edge = 0;
     for (let r = r0; r < r1; r++) {
-      edge += rowH(s, r);
       o.moveTo(0, edge + 0.5);
       o.lineTo(w, edge + 0.5);
+      edge += rowH(s, r);
     }
     edge = 0;
     for (let c = c0; c < c1; c++) {
-      edge += colW(s, c);
       o.moveTo(edge + 0.5, 0);
       o.lineTo(edge + 0.5, h);
+      edge += colW(s, c);
     }
     o.stroke();
     o.font = "13px Roboto, sans-serif";
