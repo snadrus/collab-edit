@@ -13,6 +13,19 @@ async function setup(ctx: BrowserContext, identity: Record<string, unknown> | nu
   );
 }
 
+/** The pixel art fills and centers in the round frame (inside its border). */
+async function expectCentered(frame: import("playwright/test").Locator): Promise<void> {
+  const box = await frame.evaluate((el) => {
+    const o = el.getBoundingClientRect();
+    const i = el.querySelector("svg")!.getBoundingClientRect();
+    const b = parseFloat(getComputedStyle(el).borderTopWidth) || 0;
+    return { dx: i.x + i.width / 2 - (o.x + o.width / 2), dy: i.y + i.height / 2 - (o.y + o.height / 2), w: i.width, inner: o.width - 2 * b };
+  });
+  expect(Math.abs(box.dx)).toBeLessThanOrEqual(0.5);
+  expect(Math.abs(box.dy)).toBeLessThanOrEqual(0.5);
+  expect(Math.abs(box.w - box.inner)).toBeLessThanOrEqual(0.5);
+}
+
 async function openDoc(page: Page): Promise<void> {
   await page.goto("/?wire=test");
   await page.locator("#blank").click();
@@ -27,6 +40,8 @@ test("FiPen: no identity -> clicking your name opens 'Configure your identity' l
   await expect(page.locator("#name-btn")).toHaveText(/^[A-Z][a-z]+ [A-Z][a-z]+$/);
   // No emoji: your avatar is the wallet's deterministic pixel art.
   await expect(page.locator("#avatars .avatar.self svg.fiperson-pixel")).toHaveCount(1);
+  await expectCentered(page.locator("#avatars .avatar.self"));
+  await page.locator("#avatars .avatar.self").screenshot({ path: test.info().outputPath("fipen-avatar.png") });
   await page.locator("#name-btn").click();
   const pop = page.locator("#identity-pop");
   await expect(pop).toContainText("Configure your identity");
@@ -77,6 +92,8 @@ test("FiGrid: clicking your avatar opens the identity pop-up", async ({ browser 
   await page.goto("/sheets?wire=test");
   await page.locator("#blank").click();
   await page.waitForFunction(() => (window as unknown as { __sheet?: { ready: boolean } }).__sheet?.ready === true && location.hash.length > 1);
+  await expect(page.locator("[data-testid=self-avatar] svg.fiperson-pixel")).toHaveCount(1);
+  await expectCentered(page.getByTestId("self-avatar"));
   await page.getByTestId("self-avatar").click();
   await expect(page.locator("#identity-pop")).toContainText("Configure your identity");
   await ctx.close();
