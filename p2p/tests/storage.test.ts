@@ -35,9 +35,10 @@ describe("filecoin defaults", () => {
         },
       },
     });
-    const bytes = new TextEncoder().encode("hello");
+    const text = "hello ".repeat(40); // Filecoin pieces need >= 127 bytes
+    const bytes = new TextEncoder().encode(text);
     assert.equal(await adapter.put(bytes), "bafypiece");
-    assert.equal(new TextDecoder().decode(await adapter.get("bafypiece")), "hello");
+    assert.equal(new TextDecoder().decode(await adapter.get("bafypiece")), text);
     assert.equal(pieceCidOf("plain"), "plain");
   });
 
