@@ -736,10 +736,64 @@ function mount(id: string, share: string): void {
 
   function move(dr: number, dc: number, extend: boolean): void {
     commitFormula();
-    head = { r: Math.max(0, Math.min(sheet().rows - 1, head.r + dr)), c: Math.max(0, Math.min(sheet().cols - 1, head.c + dc)) };
+    jumpTo(head.r + dr, head.c + dc, extend);
+  }
+
+  /** Put the cursor at (r, c), clamped, and scroll the stage so the cell is on screen (as Sheets does). */
+  function jumpTo(r: number, c: number, extend: boolean): void {
+    commitFormula();
+    const s = sheet();
+    head = { r: Math.max(0, Math.min(s.rows - 1, r)), c: Math.max(0, Math.min(s.cols - 1, c)) };
     if (!extend) anchor = { ...head };
+    ensurePrefix(s);
+    const fr = Math.min(s.freezeR, s.rows);
+    const fc = Math.min(s.freezeC, s.cols);
+    if (head.r >= fr) {
+      const top = prefixR[head.r] - prefixR[fr];
+      const bottom = prefixR[head.r + 1] - prefixR[fr];
+      const viewH = stage.clientHeight - HEAD_H - prefixR[fr];
+      if (top < stage.scrollTop) stage.scrollTop = top;
+      else if (viewH > 0 && bottom > stage.scrollTop + viewH) stage.scrollTop = bottom - viewH;
+      scrollY = stage.scrollTop;
+    }
+    if (head.c >= fc) {
+      const left = prefixC[head.c] - prefixC[fc];
+      const right = prefixC[head.c + 1] - prefixC[fc];
+      const viewW = stage.clientWidth - HEAD_W - prefixC[fc];
+      if (left < stage.scrollLeft) stage.scrollLeft = left;
+      else if (viewW > 0 && right > stage.scrollLeft + viewW) stage.scrollLeft = right - viewW;
+      scrollX = stage.scrollLeft;
+    }
     sendSel();
     paint();
+  }
+
+  const filled = (r: number, c: number) => !!sheet().cells[cellKey(r, c)]?.v;
+  /** Ctrl+Arrow: jump to the edge of the current block of data, or to the next filled cell (Sheets behaviour). */
+  function edge(dr: number, dc: number): { r: number; c: number } {
+    const s = sheet();
+    let r = head.r;
+    let c = head.c;
+    const inside = (rr: number, cc: number) => rr >= 0 && cc >= 0 && rr < s.rows && cc < s.cols;
+    if (filled(r, c) && inside(r + dr, c + dc) && filled(r + dr, c + dc)) {
+      while (inside(r + dr, c + dc) && filled(r + dr, c + dc)) { r += dr; c += dc; }
+      return { r, c };
+    }
+    while (inside(r + dr, c + dc)) {
+      r += dr; c += dc;
+      if (filled(r, c)) return { r, c };
+    }
+    return { r, c };
+  }
+  function lastUsed(): { r: number; c: number } {
+    let r = 0;
+    let c = 0;
+    for (const key of Object.keys(sheet().cells)) {
+      if (!sheet().cells[key]?.v) continue;
+      const [kr, kc] = key.split(",").map(Number);
+      if (Number.isFinite(kr) && Number.isFinite(kc)) { r = Math.max(r, kr); c = Math.max(c, kc); }
+    }
+    return { r, c };
   }
 
   function sendSel(): void {
@@ -893,10 +947,34 @@ function mount(id: string, share: string): void {
     if (ev.key === "Enter") {
       ev.preventDefault();
       commitFormula();
-      move(1, 0, false);
+      move(ev.shiftKey ? -1 : 1, 0, false);
     } else if (ev.key === "Escape") {
       editing = false;
       paint();
+    } else if (ev.key === "Tab") {
+      ev.preventDefault();
+      commitFormula();
+      move(0, ev.shiftKey ? -1 : 1, false);
+    } else if (!editing && (ev.ctrlKey || ev.metaKey) && (ev.key === "Home" || ev.key === "End")) {
+      ev.preventDefault();
+      const to = ev.key === "Home" ? { r: 0, c: 0 } : lastUsed();
+      jumpTo(to.r, to.c, ev.shiftKey);
+    } else if (!editing && (ev.ctrlKey || ev.metaKey) && ev.key.startsWith("Arrow")) {
+      ev.preventDefault();
+      const to = edge(ev.key === "ArrowDown" ? 1 : ev.key === "ArrowUp" ? -1 : 0, ev.key === "ArrowRight" ? 1 : ev.key === "ArrowLeft" ? -1 : 0);
+      jumpTo(to.r, to.c, ev.shiftKey);
+    } else if (!editing && (ev.key === "Delete" || ev.key === "Backspace") && canEdit()) {
+      ev.preventDefault();
+      const box = bounds();
+      const ops: GridOp[] = [];
+      for (let r = box.r1; r <= box.r2; r++) for (let c = box.c1; c <= box.c2; c++) if (filled(r, c)) ops.push({ t: "set", sheet: sheet().id, r, c, v: "" });
+      if (ops.length) submit(ops);
+      formula.value = "";
+      paint();
+    } else if (!editing && ev.key.length === 1 && !ev.ctrlKey && !ev.metaKey && !ev.altKey && canEdit()) {
+      // Typing on a selected cell replaces it, like Sheets (instead of appending to the old value).
+      formula.value = "";
+      editing = true;
     } else if (!editing && ev.key.startsWith("Arrow")) {
       ev.preventDefault();
       move(ev.key === "ArrowDown" ? 1 : ev.key === "ArrowUp" ? -1 : 0, ev.key === "ArrowRight" ? 1 : ev.key === "ArrowLeft" ? -1 : 0, ev.shiftKey);
