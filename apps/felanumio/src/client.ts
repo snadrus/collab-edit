@@ -157,6 +157,9 @@ function mount(id: string, share: string): void {
   const send = (msg: unknown) => {
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
   };
+  /** Browser tab reads "<title> - FiGrid", like "<title> - Google Sheets". */
+  const syncTabTitle = () => { document.title = (title.value.trim() || "Untitled spreadsheet") + " - FiGrid"; };
+  syncTabTitle();
   // Local undo/redo for cell edits (values and styles), like Sheets' Ctrl+Z / Ctrl+Y. Row/column/sheet
   // changes (ours or a peer's) shift coordinates, so they clear the history rather than undo the wrong cell.
   type UndoStep = { undo: GridOp[]; redo: GridOp[] };
@@ -1043,7 +1046,10 @@ function mount(id: string, share: string): void {
   document.querySelector("#color")!.addEventListener("change", (ev) => setStyle({ color: (ev.target as HTMLInputElement).value }));
   document.querySelector("#fill")!.addEventListener("change", (ev) => setStyle({ fill: (ev.target as HTMLInputElement).value === "#ffffff" ? undefined : (ev.target as HTMLInputElement).value }));
   document.querySelector("#border")!.addEventListener("click", () => setStyle({ border: !styleOf().border }));
-  title.addEventListener("change", () => send({ t: "title", title: title.value, ts: Date.now() }));
+  title.addEventListener("change", () => {
+    send({ t: "title", title: title.value, ts: Date.now() });
+    syncTabTitle();
+  });
 
   function selectionGrid(): string[][] {
     const box = bounds();
@@ -1417,6 +1423,7 @@ function mount(id: string, share: string): void {
         client.load(msg.book as Book, Number(msg.rev));
         role = String(msg.role || "edit");
         title.value = String(msg.title || "");
+        syncTabTitle();
         const self = msg.self as { color: string };
         selfColor = self.color;
         threads = (msg.threads as Thread[]) || [];
@@ -1465,7 +1472,10 @@ function mount(id: string, share: string): void {
         remotes = remotes.filter((remote) => remote.sid !== msg.sid);
         paintAvatars(sid);
         paint();
-      } else if (msg.t === "title" && document.activeElement !== title) title.value = String(msg.title || "");
+      } else if (msg.t === "title" && document.activeElement !== title) {
+        title.value = String(msg.title || "");
+        syncTabTitle();
+      }
       else if (msg.t === "thread") {
         const thread = msg.thread as Thread;
         threads = threads.filter((item) => item.id !== thread.id).concat(thread);
