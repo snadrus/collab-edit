@@ -362,13 +362,19 @@ function estimateHeight(doc: Doc, from: number): number {
   return Math.max(1, Math.ceil(chars / 42)) * 24;
 }
 
+/** Document tab in view: only [from, to) is laid out. Null lays out the whole doc. */
+let VIEW_RANGE: { from: number; to: number } | null = null;
+export function setLayoutRange(range: { from: number; to: number } | null): void {
+  VIEW_RANGE = range;
+}
+
 export function layoutDoc(doc: Doc, ctx: CanvasRenderingContext2D): Layout {
   const lines: LineBox[] = [];
   const gutters: Gutter[] = [];
   let page = 0;
   let y = MT;
-  const n = doc.text.length;
-  let i = 0;
+  const n = VIEW_RANGE ? Math.min(doc.text.length, VIEW_RANGE.to) : doc.text.length;
+  let i = VIEW_RANGE ? Math.max(0, Math.min(VIEW_RANGE.from, n - 1)) : 0;
   let numberRun = 0;
   let numberLv = -1;
   let guard = 0;

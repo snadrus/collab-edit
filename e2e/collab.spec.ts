@@ -336,7 +336,9 @@ test("suggesting mode, heading 4, footnote, and pageless", async ({ browser, req
     window.__editor!.insertFootnote("A source");
     window.__editor!.setPageless(true);
   });
-  await expect(pa.locator("#outline-list")).toContainText("Deep topic");
+  // The tab outline lists H1-H3 (FiPen tabs spec); an H4 stays out of it but still exists in the doc.
+  await expect(pa.locator("#outline-list")).not.toContainText("Deep topic");
+  expect(await pa.evaluate(() => window.__editor!.headings().some((h) => h.text === "Deep topic"))).toBe(true);
   await expect(pa.locator("body")).toHaveClass(/pageless/);
   expect(await pa.evaluate(() => window.__editor!.page().pageless)).toBe(true);
   await a.close();

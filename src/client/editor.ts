@@ -33,7 +33,8 @@ import { assignBookmarks, bookmarkAt, bookmarkId, headingsOf, insertTocDelta, up
 import { bibliographyLines, citeLabel } from "../shared/tools.ts";
 import { addColumnDelta, addRowDelta, insertTableDelta, removeColumnDelta, removeRowDelta, tableAt, tableRowAt } from "../shared/table.ts";
 import { spellHits, spellSuggestions, dictReady } from "./dict.ts";
-import { caretBox, contentWidth, drawPage, hitTest, imageBox, layoutDoc, markerHit, onNeedPaint, pageSize, PAGE_H, PAGE_W, setImageDraft, signatureChipRect, stackOffset, type Layout } from "./layout.ts";
+import { caretBox, contentWidth, drawPage, hitTest, imageBox, layoutDoc, markerHit, onNeedPaint, pageSize, PAGE_H, PAGE_W, setImageDraft, setLayoutRange, signatureChipRect, stackOffset, type Layout } from "./layout.ts";
+import { type Tab, FIRST_TAB_ID, addTabDelta, deleteTabDelta, moveTabDelta, newTabId, renameTabDelta, tabRange, tabsOf, tocOf } from "../shared/tabs.ts";
 import { clipboardToDelta } from "./paste.ts";
 import { type ImageData, imageSources, loadImages } from "./images.ts";
 
@@ -107,6 +108,10 @@ export class Editor {
   personal = new Set<string>();
   ignored = new Set<string>();
   dropAt: number | null = null;
+  /** Document tab in view (Docs-style tabs: one body per tab, shown one at a time). */
+  tabId = FIRST_TAB_ID;
+  /** Where the current tab began last time, to pick a neighbour if a peer deletes it. */
+  private tabFrom = 0;
   private composing = false;
   private ignoreInput = false;
   private dragging = false;
@@ -397,7 +402,8 @@ export class Editor {
   }
 
   selectAll(): void {
-    this.setSelection(0, Math.max(0, this.doc.text.length - 1));
+    const { from, last } = tabRange(this.currentTab());
+    this.setSelection(from, last);
   }
 
   selectedPlain(): string {
@@ -481,6 +487,11 @@ export class Editor {
 
   paint(): void {
     const doc = this.preview ?? this.doc;
+    if (this.preview) setLayoutRange(null);
+    else {
+      const tab = this.currentTab();
+      setLayoutRange({ from: tab.from, to: tab.end });
+    }
     this.layout = layoutDoc(doc, this.measure);
     const pages = this.layout.pages;
     while (this.pagesEl.childElementCount < pages) {
@@ -575,7 +586,10 @@ export class Editor {
     }
     for (const el of [...this.overlay.querySelectorAll(".remote-caret")]) el.remove();
     if (this.preview) return;
+    const inView = tabRange(this.currentTab());
     for (const remote of this.remotes.values()) {
+      // A peer in another tab has no caret on this page.
+      if (remote.head < inView.from || remote.head > inView.last) continue;
       const box = caretBox(this.layout, this.clamp(remote.head));
       const flag = document.createElement("div");
       flag.className = "remote-caret";
@@ -1122,8 +1136,8 @@ export class Editor {
       this.deleteRange(Math.min(this.anchor, this.head), Math.max(this.anchor, this.head));
       return;
     }
-    if (this.head === 0) {
-      const para = paragraphStyle(this.doc, 0);
+    if (this.head <= this.currentTab().from) {
+      const para = paragraphStyle(this.doc, this.head);
       if (para.list) this.setParagraph({ list: null, lv: null });
       return;
     }
@@ -1140,7 +1154,7 @@ export class Editor {
       this.deleteRange(Math.min(this.anchor, this.head), Math.max(this.anchor, this.head));
       return;
     }
-    if (this.head >= this.doc.text.length - 1) return;
+    if (this.head >= tabRange(this.currentTab()).last) return;
     this.deleteRange(this.head, this.head + 1);
   }
 
@@ -1388,7 +1402,14 @@ export class Editor {
     }
   }
 
+  /** Clamp to the tab in view: [tab start, tab's last paragraph break]. */
   private clamp(i: number): number {
+    if (this.preview) return this.clampAll(i);
+    const { from, last } = tabRange(this.currentTab());
+    return Math.max(from, Math.min(i, last));
+  }
+
+  private clampAll(i: number): number {
     return Math.max(0, Math.min(i, Math.max(0, this.doc.text.length - 1)));
   }
 
@@ -1396,8 +1417,8 @@ export class Editor {
     this.anchor = this.clamp(this.anchor);
     this.head = this.clamp(this.head);
     for (const remote of this.remotes.values()) {
-      remote.anchor = this.clamp(remote.anchor);
-      remote.head = this.clamp(remote.head);
+      remote.anchor = this.clampAll(remote.anchor);
+      remote.head = this.clampAll(remote.head);
     }
   }
 
@@ -2089,10 +2110,119 @@ export class Editor {
   }
 
   headings(): { index: number; level: number; text: string; bm: string }[] {
-    return headingsOf(this.doc).map((h) => ({ index: h.index, level: h.level, text: h.text, bm: h.bm }));
+    const tab = this.currentTab();
+    return headingsOf(this.doc)
+      .filter((h) => h.index >= tab.from && h.index < tab.end)
+      .map((h) => ({ index: h.index, level: h.level, text: h.text, bm: h.bm }));
+  }
+
+  tabs(): Tab[] {
+    return tabsOf(this.doc);
+  }
+
+  tabToc(tab: Tab): { index: number; level: number; text: string }[] {
+    return tocOf(this.doc, tab);
+  }
+
+  currentTab(): Tab {
+    const tabs = tabsOf(this.doc);
+    let tab = tabs.find((t) => t.id === this.tabId);
+    if (!tab && this.tabId === FIRST_TAB_ID) tab = tabs[0];
+    if (!tab) {
+      tab = tabs.find((t) => this.tabFrom < t.end) ?? tabs[tabs.length - 1];
+      this.tabId = tab.id;
+    }
+    this.tabFrom = tab.from;
+    return tab;
+  }
+
+  /** Show one tab. The caret goes to its start unless `at` is inside it. */
+  setTab(id: string, at?: number): void {
+    const tab = tabsOf(this.doc).find((t) => t.id === id);
+    if (!tab) return;
+    const changed = tab.id !== this.tabId;
+    this.tabId = tab.id;
+    this.tabFrom = tab.from;
+    const pos = at != null && at >= tab.from && at < tab.end ? at : tab.from;
+    this.anchor = pos;
+    this.head = pos;
+    this.sampleTyping();
+    this.paint();
+    if (changed && at == null) {
+      const scroller = this.pagesEl.closest("#scroll") as HTMLElement | null;
+      if (scroller) scroller.scrollTop = 0;
+    }
+    this.hooks.onSelection();
+    this.focus();
+  }
+
+  addTab(opts: { afterId?: string; child?: boolean; name?: string } = {}): string | null {
+    if (!this.canEdit()) return null;
+    const id = newTabId();
+    const delta = addTabDelta(this.doc, { id, ...opts });
+    this.sync.local(delta);
+    this.afterEdit();
+    this.setTab(id);
+    return id;
+  }
+
+  renameTab(id: string, name: string): void {
+    if (!this.canEdit()) return;
+    const wasFirst = id === tabsOf(this.doc)[0].id;
+    const viewing = this.currentTab().id === id;
+    const delta = renameTabDelta(this.doc, id, name);
+    if (!delta) return;
+    this.tabTransact(delta);
+    // The unmarked first tab gets a real id when it is first renamed.
+    if (wasFirst && viewing) this.tabId = tabsOf(this.doc)[0].id;
+  }
+
+  deleteTab(id: string): boolean {
+    if (!this.canEdit()) return false;
+    const tabs = tabsOf(this.doc);
+    const k = tabs.findIndex((t) => t.id === id);
+    const delta = deleteTabDelta(this.doc, id);
+    if (!delta || k < 0) return false;
+    const viewing = this.currentTab().id === id;
+    this.tabTransact(delta);
+    if (viewing) {
+      const after = tabsOf(this.doc);
+      this.setTab(after[Math.max(0, Math.min(k - 1, after.length - 1))].id);
+    }
+    return true;
+  }
+
+  moveTab(id: string, to: -1 | 1 | { beforeId: string | null }): void {
+    if (!this.canEdit()) return;
+    const delta = moveTabDelta(this.doc, id, to);
+    if (!delta) return;
+    const viewing = this.currentTab();
+    const offset = this.head - viewing.from;
+    this.tabTransact(delta);
+    const tab = tabsOf(this.doc).find((t) => t.id === viewing.id) ?? tabsOf(this.doc)[0];
+    this.tabId = tab.id;
+    this.anchor = this.head = Math.min(tab.from + Math.max(0, offset), tab.end - 1);
+    this.render();
+  }
+
+  private tabTransact(delta: Delta): void {
+    const viewing = this.currentTab();
+    const offA = this.anchor - viewing.from;
+    const offH = this.head - viewing.from;
+    this.sync.local(delta);
+    const tab = tabsOf(this.doc).find((t) => t.id === viewing.id);
+    if (tab) {
+      this.anchor = Math.min(tab.from + Math.max(0, offA), tab.end - 1);
+      this.head = Math.min(tab.from + Math.max(0, offH), tab.end - 1);
+    }
+    this.clampCarets();
+    this.afterEdit();
   }
 
   moveParagraph(dir: -1 | 1): void {
+    const cur0 = paraBounds(this.doc, this.head);
+    const range = tabRange(this.currentTab());
+    if ((dir < 0 && cur0.start <= range.from) || (dir > 0 && cur0.end >= range.last)) return;
     const delta = moveParagraphDelta(this.doc, this.head, dir);
     if (!delta) return;
     const cur = paraBounds(this.doc, this.head);
@@ -2143,6 +2273,17 @@ export class Editor {
   }
 
   jumpTo(index: number): void {
+    if (!this.preview) {
+      const tab = this.currentTab();
+      if (index < tab.from || index >= tab.end) {
+        const other = tabsOf(this.doc).find((t) => index >= t.from && index < t.end);
+        if (other) {
+          this.tabId = other.id;
+          this.tabFrom = other.from;
+          this.paint();
+        }
+      }
+    }
     const at = this.clamp(index);
     this.anchor = at;
     this.head = at;
