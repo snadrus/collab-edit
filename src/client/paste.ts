@@ -1,4 +1,4 @@
-import { type Attrs, type Delta, type Op } from "../shared/delta.ts";
+import { type Attrs, type Delta, type Op, CELL, ROW, isBreak } from "../shared/delta.ts";
 import { splice } from "../shared/doc.ts";
 
 const BLOCKS = new Set(["P", "DIV", "H1", "H2", "H3", "H4", "H5", "H6", "LI", "TR", "BLOCKQUOTE", "PRE", "SECTION", "ARTICLE"]);
@@ -105,11 +105,46 @@ function walk(node: Node, text: Attrs, para: Attrs, ops: Op[]): void {
     ensureBreak(ops, para);
     return;
   }
+  if (tag === "TABLE") {
+    pasteTable(el, text, para, ops);
+    return;
+  }
   const nextText = { ...text, ...textFromEl(el) };
   const nextPara = { ...para, ...paraFromEl(el) };
   if (BLOCKS.has(tag) && ops.length) ensureBreak(ops, para);
   for (const child of el.childNodes) walk(child, nextText, nextPara, ops);
   if (BLOCKS.has(tag)) ensureBreak(ops, nextPara);
+}
+
+/**
+ * An HTML table (from Docs, Sheets, FiGrid, a web page) becomes a FiPen table, like pasting into Google Docs:
+ * each row is cells separated by CELL and closed by ROW (the same shape Insert → Table makes).
+ */
+function pasteTable(table: HTMLElement, text: Attrs, para: Attrs, ops: Op[]): void {
+  const rows = [...table.querySelectorAll("tr")].filter((tr) => tr.closest("table") === table);
+  const grid = rows.map((tr) => [...tr.children].filter((cell) => cell.tagName === "TD" || cell.tagName === "TH") as HTMLElement[]).filter((cells) => cells.length);
+  if (!grid.length) return;
+  const cols = Math.max(...grid.map((cells) => cells.length));
+  if (ops.length) ensureBreak(ops, para);
+  const sep: Attrs = { h: "normal", align: "left", cols };
+  for (const cells of grid) {
+    for (let c = 0; c < cols; c++) {
+      const cell = cells[c];
+      if (cell) {
+        const cellOps: Op[] = [];
+        for (const child of cell.childNodes) walk(child, { ...text, ...textFromEl(cell) }, para, cellOps);
+        // A cell holds one line: inner paragraph breaks become spaces.
+        for (const op of cellOps) if (op.t === "i") pushText(ops, op.s.replace(/\n+/g, " ").trimEnd() || (op.s.includes("\n") ? " " : ""), op.a && !("h" in op.a) ? op.a : stripPara(op.a));
+      }
+      ops.push({ t: "i", s: c < cols - 1 ? CELL : ROW, a: { ...sep } });
+    }
+  }
+}
+
+function stripPara(a?: Attrs): Attrs {
+  const out: Attrs = { ...(a || {}) };
+  for (const k of ["h", "align", "list", "lv", "cols"]) delete out[k];
+  return out;
 }
 
 function stripTrailingBreak(ops: Op[]): void {
@@ -140,8 +175,13 @@ export function plainToOps(plain: string): Op[] {
   return ops;
 }
 
-export function clipboardToDelta(html: string, plain: string, start: number, end: number, docLength: number): Delta {
+export function clipboardToDelta(html: string, plain: string, start: number, end: number, docLength: number, before = "\n"): Delta {
   const ops = html.trim() ? htmlToOps(html) : plainToOps(plain);
   if (!ops.length) return { ops: [] };
+  // A pasted table is its own block: end the paragraph the caret is in first (like Insert → Table).
+  const first = ops[0];
+  if (first?.t === "i" && /[\u001c\u001e]/.test(first.s + (ops[1]?.t === "i" ? ops[1].s : "")) && before && !isBreak(before)) {
+    ops.unshift({ t: "i", s: "\n", a: { h: "normal", align: "left" } });
+  }
   return splice(start, end, ops, docLength);
 }
