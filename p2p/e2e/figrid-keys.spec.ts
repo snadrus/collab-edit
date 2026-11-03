@@ -70,3 +70,16 @@ test("FiGrid Edit menu has Undo and Redo", async ({ page }) => {
   await page.locator("[data-act=undo]").click();
   expect(await page.evaluate(() => (window as unknown as { __sheet: { raw(r: number, c: number): string } }).__sheet.raw(0, 0))).toBe("");
 });
+
+test("FiGrid new sheet is Sheets-sized: the cursor can go to row 120 and column Z, and typing there works", async ({ page }) => {
+  await page.goto("/sheets?wire=test");
+  await page.locator("#blank").click();
+  await page.waitForFunction(() => (window as unknown as { __sheet?: { ready: boolean } }).__sheet?.ready === true && location.hash.length > 1);
+  await page.locator("#grid").click({ position: { x: 80, y: 40 } });
+  for (let i = 0; i < 119; i++) await page.keyboard.press("ArrowDown");
+  for (let i = 0; i < 25; i++) await page.keyboard.press("ArrowRight");
+  await expect(page.locator("#namebox")).toHaveText("Z120");
+  await page.keyboard.type("far");
+  await page.keyboard.press("Enter");
+  expect(await page.evaluate(() => (window as unknown as { __sheet: { raw(r: number, c: number): string } }).__sheet.raw(119, 25))).toBe("far");
+});
