@@ -311,7 +311,7 @@ export class Editor {
     if (!this.canEdit()) return;
     const lo = Math.min(this.anchor, this.head);
     const hi = Math.max(this.anchor, this.head);
-    let delta = clipboardToDelta(html, plain, lo, hi, this.doc.text.length);
+    let delta = clipboardToDelta(html, plain, lo, hi, this.doc.text.length, lo > 0 ? this.doc.text[lo - 1] : "\n");
     if (this.mode === "suggest") delta = withSuggestion(delta, this.ensureOpenSug());
     this.sync.local(delta);
     const at = this.clamp(lo + insertedLength(delta.ops));
