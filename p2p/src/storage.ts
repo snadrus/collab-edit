@@ -1,3 +1,4 @@
+import { withTransientRetry } from "./rpc-retry.ts";
 /** Pluggable snapshot storage. Filecoin via Synapse is the default. */
 
 export type FilecoinNetwork = "mainnet" | "calibration";
@@ -83,7 +84,7 @@ async function connectSynapse(network: FilecoinNetwork, privateKey?: string, pro
     return Synapse.create({
       account: privateKeyToAccount(hex),
       chain,
-      transport: http(rpc),
+      transport: withTransientRetry(http(rpc)),
       source: "felarumi",
     });
   }
@@ -102,7 +103,7 @@ async function connectSynapse(network: FilecoinNetwork, privateKey?: string, pro
   });
   return new Synapse({
     client: base.client,
-    readClient: createPublicClient({ chain, transport: http(rpc) }),
+    readClient: createPublicClient({ chain, transport: withTransientRetry(http(rpc)) }),
     source: "felarumi",
   } as unknown as ConstructorParameters<typeof Synapse>[0]);
 }

@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "playwright/test";
 
 /* User story: I'm a guest editing a shared doc. The owner's computer goes to sleep. My edits can't reach them.
-   After a short while FiPen quietly offers "Owner is away. Save a copy to your drive?". I save a copy into my own
+   After a short while FiPen quietly offers "Owner is away. Save a copy to your folders?". I save a copy into my own
    FiFolders drive; it records the original owner, document and base version. When the owner comes back, they get the
    copy too, listed for FiFolders' "Participant copies", so they can bring it into their own drive. */
 
@@ -37,7 +37,7 @@ test("guest with unsaved edits is offered a copy after the owner goes away; the 
   await owner.setOffline(true);
   await pb.keyboard.type(" plus my edits");
   await expect(pb.locator("#p2p-copy")).toBeVisible({ timeout: 15_000 });
-  await expect(pb.locator("#p2p-copy-text")).toHaveText("Owner is away. Save a copy to your drive?");
+  await expect(pb.locator("#p2p-copy-text")).toHaveText("Owner is away. Save a copy to your folders?");
   await pb.screenshot({ path: "/workspace/fipen-after-guest-copy-offer.png" });
   await pb.locator("#p2p-copy-save").click();
   await expect(pb.locator("#p2p-copy-open")).toBeVisible();

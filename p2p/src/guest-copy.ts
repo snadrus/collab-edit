@@ -43,7 +43,7 @@ export interface ParticipantCopy {
 
 export const COPIES_KEY = "fifolders:copies";
 export const COPY_OFFER_MS = 30_000;
-const OFFER = "Owner is away. Save a copy to your drive?";
+const OFFER = "Owner is away. Save a copy to your folders?";
 
 function offerMs(): number {
   const v = (window as unknown as { __p2pCopyOfferMs?: number }).__p2pCopyOfferMs;
@@ -168,7 +168,7 @@ export function installGuestCopy(h: GuestCopyHooks): { ownerBack: () => void; ac
     localStorage.setItem(pendingKey(h.kind, h.id), JSON.stringify({ content, title: state.title, origin }));
     if (!bar) show();
     const text = bar!.querySelector("#p2p-copy-text") as HTMLElement;
-    text.textContent = `Copy queued for your drive in Copies (${path}). `;
+    text.textContent = `Copy queued for your folders in Copies (${path}). `;
     const link = document.createElement("a");
     link.id = "p2p-copy-open";
     link.href = new URL("/", location.href).href;
@@ -194,9 +194,9 @@ export function installGuestCopy(h: GuestCopyHooks): { ownerBack: () => void; ac
     try {
       const parsed = JSON.parse(localStorage.getItem("fifolders:ops") || "{}") as { ops?: Record<string, unknown>[] };
       const op = (parsed.ops || []).find((item) => item.id === copyOp);
-      if (!op || op.stage === "saved" || op.stage === "done" || op.status === "done") return `Copy saved to your drive (${copyPath})`;
+      if (!op || op.stage === "saved" || op.stage === "done" || op.status === "done") return `Copy saved to your folders (${copyPath})`;
       if (op.status === "error" || op.stage === "error" || op.stage === "interrupted") return "Copy not saved yet. Open FiFolders to retry";
-      return `Copy waiting in your drive (${copyPath}). Open FiFolders to finish saving`;
+      return `Copy waiting in your folders (${copyPath}). Open FiFolders to finish saving`;
     } catch {
       return "";
     }

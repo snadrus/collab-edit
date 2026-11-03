@@ -14,6 +14,7 @@ import {
   type Volume,
 } from "fil-folders";
 import type { Address, Hex } from "viem";
+import { withTransientRetry } from "./rpc-retry.ts";
 import { RPC_URLS, ensureWalletChain, lazy, type Eip1193Provider } from "./storage.ts";
 
 /** Volume name. The registry key is keccak256("default"). */
@@ -128,7 +129,7 @@ async function liveCalibration(opts: { privateKey?: string; provider?: Eip1193Pr
   const chains = await lazy(() => import("@filoz/synapse-core/chains"));
   const { Synapse } = await lazy(() => import("@filoz/synapse-sdk"));
   const chain = chains.calibration;
-  const rpc = http(RPC_URLS.calibration);
+  const rpc = withTransientRetry(http(RPC_URLS.calibration));
   let account: Address | ReturnType<typeof privateKeyToAccount>;
   let transport: ReturnType<typeof http> | ReturnType<typeof custom>;
   if (opts.privateKey) {
