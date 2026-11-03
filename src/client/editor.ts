@@ -43,6 +43,8 @@ export interface RemoteCaret {
   color: string;
   anchor: number;
   head: number;
+  /** Peer's wallet, when it shares one (FiPerson @-mention suggestions). */
+  addr?: string;
 }
 
 export interface EditorHooks {
@@ -744,6 +746,15 @@ export class Editor {
         this.render();
         this.hooks.onSelection();
         this.hooks.onEmbed?.(idx);
+        return;
+      }
+      const chip = (ev as MouseEvent).shiftKey ? null : this.personChipAt(page, point.x, point.y);
+      if (chip != null) {
+        this.anchor = chip + 1;
+        this.head = chip + 1;
+        this.render();
+        this.hooks.onSelection();
+        this.hooks.onEmbed?.(chip);
         return;
       }
       if (this.doc.text[idx] === EMBED && st?.embed === "vote") {
@@ -1516,6 +1527,17 @@ export class Editor {
     this.head = caret;
     this.sampleTyping();
     this.afterEdit();
+  }
+
+  /** Index of the @-mention chip under a page point, or null (hit-testing on the glyph box, not the caret boundary). */
+  personChipAt(page: number, x: number, y: number): number | null {
+    for (const line of this.layout.lines) {
+      if (line.page !== page || y < line.y || y > line.y + line.h) continue;
+      for (const glyph of line.glyphs) {
+        if (this.doc.text[glyph.i] === EMBED && this.doc.styles[glyph.i]?.embed === "person" && x >= glyph.x && x <= glyph.x + glyph.w) return glyph.i;
+      }
+    }
+    return null;
   }
 
   signatureBoxes(): { index: number; page: number; x: number; y: number; w: number; h: number }[] {

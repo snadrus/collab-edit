@@ -1,3 +1,4 @@
+import { personIconUrl } from "fiperson/people";
 import { type Doc, type Heading, chipLabel, dropOptions, paragraphStyle, voteMap } from "../shared/doc.ts";
 import { CELL, EMBED, ROW, isBreak } from "../shared/delta.ts";
 import { type EqNode, parseEquation } from "../shared/equation.ts";
@@ -245,6 +246,7 @@ function embedWidth(ctx: CanvasRenderingContext2D, doc: Doc, index: number): num
     return Math.min(420, Math.ceil(nameW + addrW + 28));
   }
   ctx.font = `500 12px "Roboto", sans-serif`;
+  if (st.embed === "person") return Math.min(320, Math.ceil(PERSON_PAD + PERSON_AV + PERSON_GAP + ctx.measureText(st.label || "Person").width + PERSON_TAIL));
   if (st.embed === "vote") return Math.min(280, 46 + Object.keys(voteMap(st)).length * 18);
   return Math.min(280, ctx.measureText(chipLabel(st) || "Chip").width + 28);
 }
@@ -720,8 +722,54 @@ export function signatureChipRect(glyph: Glyph, line: LineBox): { x: number; y: 
   return { x: glyph.x, y: line.baseline - 18, w: Math.max(20, glyph.w - 2), h: 26 };
 }
 
+/** @-mention chip: font-height avatar, name, then an extended grey zone to the right (Google Docs style). */
+export const PERSON_PAD = 3;
+export const PERSON_AV = 16;
+export const PERSON_GAP = 5;
+export const PERSON_TAIL = 18;
+
+function drawPersonChip(ctx: CanvasRenderingContext2D, st: Doc["styles"][number], glyph: Glyph, line: LineBox): void {
+  const y = line.baseline - 15;
+  const h = 20;
+  const w = Math.max(24, glyph.w - 2);
+  ctx.save();
+  ctx.fillStyle = "#e8eaed";
+  roundRect(ctx, glyph.x, y, w, h, 10);
+  ctx.fill();
+  const cx = glyph.x + PERSON_PAD + PERSON_AV / 2;
+  const cy = y + h / 2;
+  ctx.beginPath();
+  ctx.arc(cx, cy, PERSON_AV / 2, 0, Math.PI * 2);
+  ctx.fillStyle = "#bdc1c6";
+  ctx.fill();
+  if (st.addr && /^0x[0-9a-f]{40}$/.test(st.addr)) {
+    const img = loadImage(personIconUrl(st.addr));
+    if (img.complete && img.naturalWidth) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(cx, cy, PERSON_AV / 2, 0, Math.PI * 2);
+      ctx.clip();
+      ctx.drawImage(img, cx - PERSON_AV / 2, cy - PERSON_AV / 2, PERSON_AV, PERSON_AV);
+      ctx.restore();
+    }
+  } else {
+    ctx.fillStyle = "#fff";
+    ctx.font = `700 9px "Roboto", sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(((st.label || "?").trim()[0] || "?").toUpperCase(), cx, cy + 0.5);
+  }
+  ctx.font = `500 12px "Roboto", sans-serif`;
+  ctx.fillStyle = "#202124";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  ctx.fillText(st.label || "Person", glyph.x + PERSON_PAD + PERSON_AV + PERSON_GAP, cy + 0.5);
+  ctx.restore();
+}
+
 function drawChip(ctx: CanvasRenderingContext2D, doc: Doc, glyph: Glyph, line: LineBox, colors: Record<string, string>): void {
   const st = doc.styles[glyph.i] || {};
+  if (st.embed === "person") return drawPersonChip(ctx, st, glyph, line);
   if (st.embed === "sig") {
     const box = signatureChipRect(glyph, line);
     const name = st.label || "Signed";
@@ -747,7 +795,7 @@ function drawChip(ctx: CanvasRenderingContext2D, doc: Doc, glyph: Glyph, line: L
   }
   const y = line.baseline - 14;
   const h = 20;
-  ctx.fillStyle = st.embed === "date" ? "#fef7e0" : st.embed === "person" ? "#e8f0fe" : "#f8f9fa";
+  ctx.fillStyle = st.embed === "date" ? "#fef7e0" : "#f8f9fa";
   ctx.strokeStyle = "#dadce0";
   roundRect(ctx, glyph.x, y, Math.max(20, glyph.w - 2), h, 10);
   ctx.fill();

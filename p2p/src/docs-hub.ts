@@ -17,6 +17,8 @@ export interface DocConn {
   color: string;
   anchor: number;
   head: number;
+  /** Wallet address the peer says it uses (for @-mention suggestions; unverified, like the name). */
+  addr?: string;
   /** The host's own tab. Only the owner resolves comments. */
   owner?: boolean;
 }
@@ -75,11 +77,12 @@ export class DocSession {
       color: assignColor(this.conns.map((item) => item.color), sid),
       anchor: 0,
       head: 0,
+      ...(typeof hello.addr === "string" && /^0x[0-9a-f]{40}$/.test(hello.addr) ? { addr: hello.addr } : {}),
     };
     this.conns.push(conn);
     const since = typeof hello.since === "number" && Number.isInteger(hello.since) ? hello.since : null;
     this.pushInit(conn, hello.resume === true ? since : null);
-    this.broadcast({ t: "join", sid, name, color: conn.color }, conn);
+    this.broadcast({ t: "join", sid, name, color: conn.color, addr: conn.addr }, conn);
     return conn;
   }
 
@@ -95,7 +98,7 @@ export class DocSession {
       conn.anchor = msg.anchor;
       conn.head = msg.head;
       this.broadcast(
-        { t: "sel", sid: conn.sid, name: conn.name, color: conn.color, anchor: conn.anchor, head: conn.head, rev: this.server.rev },
+        { t: "sel", sid: conn.sid, name: conn.name, color: conn.color, addr: conn.addr, anchor: conn.anchor, head: conn.head, rev: this.server.rev },
         conn,
       );
     } else if (t === "title" && typeof msg.title === "string") {
@@ -210,7 +213,7 @@ export class DocSession {
       snapshot: snapshotDoc(this.server.doc),
       title: this.title,
       self: { sid: conn.sid, name: conn.name, color: conn.color },
-      presence: this.conns.map((item) => ({ sid: item.sid, name: item.name, color: item.color, anchor: item.anchor, head: item.head })),
+      presence: this.conns.map((item) => ({ sid: item.sid, name: item.name, color: item.color, addr: item.addr, anchor: item.anchor, head: item.head })),
       threads: [...this.threads.values()],
       suggestions: [],
       page: this.page,
