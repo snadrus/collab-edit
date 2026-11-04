@@ -1507,7 +1507,14 @@ function mount(id: string, share: string): void {
     if (event.key?.startsWith("fil-identity:")) paintAvatars(sid);
   });
   // Wallet account/network switch: repaint self in place (peers get it on the next hello), no reload or prompt.
-  (window as unknown as { __walletSwitch?: (a: string[]) => Promise<void> }).__walletSwitch = watchWallet(() => paintAvatars(sid));
+  // Never let a broken wallet extension stop the grid from mounting and syncing.
+  window.setTimeout(() => {
+    try {
+      (window as unknown as { __walletSwitch?: (a: string[]) => Promise<void> }).__walletSwitch = watchWallet(() => paintAvatars(sid));
+    } catch (err) {
+      console.warn("FiGrid: wallet unavailable", err);
+    }
+  }, 0);
   mountOfflineChip();
 
   let socketGen = 0;

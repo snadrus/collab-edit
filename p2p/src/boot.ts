@@ -145,6 +145,9 @@ function installFetch(): void {
       return jsonResponse(rows.map((row) => ({ id: row.id, title: row.title, updated: row.updated })));
     }
     if (url.pathname === "/api/books" && method === "POST") return jsonResponse(await createRoom("book"), 201);
+    // Old-format share links (/v|c|e/<id>): in P2P the token is the room id.
+    const open = url.pathname.match(/^\/api\/open\/([A-Za-z0-9_-]+)$/);
+    if (open && method === "GET") return jsonResponse({ id: open[1] });
     const tabs = url.pathname.match(/^\/api\/docs\/([A-Za-z0-9_-]+)\/tabs$/);
     if (tabs && method === "GET") return jsonResponse([{ id: tabs[1], title: "Tab" }]);
     return jsonResponse({ ok: true, access: "edit" });
