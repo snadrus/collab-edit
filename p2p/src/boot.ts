@@ -328,6 +328,7 @@ async function attachDoc(sock: AppSocket, id: string): Promise<void> {
 async function hostDoc(sock: AppSocket, wire: Wire, id: string): Promise<void> {
   const saved = await loadRecord("doc:" + id);
   const data = saved?.data as DocRecord | null;
+  restoredSession = !!data?.snapshot;
   docSession = DocSession.create(id, data && data.snapshot ? data : null, (record) => {
     void saveRecord({ key: "doc:" + id, kind: "doc", id, title: record.title, updated: Date.now(), rev: record.rev, data: record });
   });
@@ -397,6 +398,7 @@ function joinDoc(sock: AppSocket, wire: Wire, id: string): void {
       if (ownerPeer) wire.send(ownerPeer, body);
     },
   });
+  guestSave = () => guestCopy.saveNow();
   const flush = () => {
     if (!ownerPeer) return;
     for (const data of queue.splice(0)) wire.send(ownerPeer, JSON.parse(data) as unknown);
@@ -527,6 +529,7 @@ async function attachBook(sock: AppSocket, id: string): Promise<void> {
 async function hostBook(sock: AppSocket, wire: Wire, id: string): Promise<void> {
   const saved = await loadRecord("book:" + id);
   const data = saved?.data as BookRecord | null;
+  restoredSession = !!data?.book;
   bookSession = BookSession.create(id, data && data.book ? data : null, (record) => {
     void saveRecord({ key: "book:" + id, kind: "book", id, title: record.title, updated: Date.now(), rev: record.rev, data: record });
   });
@@ -591,6 +594,7 @@ function joinBook(sock: AppSocket, wire: Wire, id: string): void {
       if (ownerPeer) wire.send(ownerPeer, body);
     },
   });
+  guestSave = () => guestCopy.saveNow();
   const flush = () => {
     if (!ownerPeer) return;
     for (const data of queue.splice(0)) wire.send(ownerPeer, JSON.parse(data) as unknown);
@@ -1122,6 +1126,12 @@ function installSaveButton(save: () => void): void {
   );
 }
 
+/** The owner's session came back from this browser's own store (a reload), not fresh from FiFolders. */
+let restoredSession = false;
+
+/** A guest (no local session): Save keeps a copy in the guest's own folders, committed with their own wallet. */
+let guestSave: (() => boolean) | null = null;
+
 /** Set by the save flow: the session's opening content is the clean baseline. */
 let markBaseline: () => void = () => {};
 
@@ -1151,6 +1161,50 @@ function hashText(text: string): string {
   let h = 0x811c9dc5;
   for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193) >>> 0;
   return h.toString(16) + ":" + text.length;
+}
+
+function syncSessionTitle(title: string): void {
+  const session = docSession || bookSession;
+  if (!session || !title || session.title === title) return;
+  const conns = session.conns as { owner?: boolean }[];
+  const local = conns.find((conn) => conn.owner) || conns[0];
+  if (local) (session as { handle(conn: unknown, msg: Record<string, unknown>): void }).handle(local, { t: "title", title });
+}
+
+const DEFAULT_TITLES = new Set(["", "Untitled document", "Untitled spreadsheet", "Untitled"]);
+
+/**
+ * The name FiFolders wants on open, or "" to keep the document's own title. The document's title is the source of
+ * truth (like Docs); FiFolders' name wins only on a fresh open, for a doc with no title yet, or after a rename done in
+ * the folders since this editor last saved. A stale `?name=` (reloaded tab, old link) never puts an old title back.
+ */
+function folderName(path: string, urlName: string, own: string): string {
+  let alias: { path?: string; title?: string } | undefined;
+  try {
+    alias = (JSON.parse(localStorage.getItem("fifolders:fel-alias") || "{}") as Record<string, { path?: string; title?: string }>)[path];
+  } catch {
+    alias = undefined;
+  }
+  const strip = (file: string) => (file.split("/").pop() || "").replace(/\.(felarumi|felanumio|fipen|figrid)$/i, "");
+  if (alias?.path) {
+    const current = strip(alias.path);
+    return current && current !== (alias.title || "").trim() ? current : "";
+  }
+  if (!restoredSession || DEFAULT_TITLES.has(own.trim())) return urlName;
+  return "";
+}
+
+/** Keep `?name=` on the document's current title, so a reload does not put the old file name back. */
+function keepUrlName(title: string, params: URLSearchParams): void {
+  const clean = title.trim();
+  const name = params.get("name") || "";
+  if (!clean || !name) return;
+  const ext = (name.match(/\.(felarumi|felanumio|fipen|figrid)$/i) || [""])[0];
+  if (name === clean + ext) return;
+  params.set("name", clean + ext);
+  const url = new URL(location.href);
+  url.searchParams.set("name", clean + ext);
+  history.replaceState(history.state, "", url.toString());
 }
 
 function installSaveFlow(): void {
@@ -1234,9 +1288,11 @@ function installSaveFlow(): void {
     if (raw) paintSave(state(raw));
   };
   const queueSave = () => {
+    const title = activeTitle();
+    // The title input debounces its sync; the saved file must carry the title being saved under.
+    syncSessionTitle(title);
     const raw = activeJson();
     if (!raw) return;
-    const title = activeTitle();
     const name = params.get("name") || "";
     const now = Date.now();
     const ops = readOps().filter((op) => op.id !== id);
@@ -1274,6 +1330,11 @@ function installSaveFlow(): void {
     return !!raw && !!baseRaw && dirty(raw) && sent !== raw;
   };
   const save = (auto: boolean) => {
+    if (!docSession && !bookSession) {
+      // Guests have no session of their own: the owner keeps the shared document. Their Save makes their own copy.
+      if (!auto && guestSave) guestSave();
+      return;
+    }
     if (!activeJson()) return;
     if (!isDirty()) {
       paint();
@@ -1308,11 +1369,31 @@ function installSaveFlow(): void {
   const tick = () => {
     const title = document.querySelector("#title") as HTMLInputElement | null;
     const name = (params.get("name") || "").replace(/\.(felarumi|felanumio|fipen|figrid)$/i, "");
-    if (embedded && title && name && !title.dataset.fifolders) {
+    // Only the owner's own FiFolders tab names the document, once, when it opens. A guest never renames it from a
+    // URL, and a title the user already typed is never put back to the file name.
+    if (title && !title.dataset.typed) {
+      title.addEventListener("input", (event) => {
+        if (event.isTrusted) title.dataset.typed = "1";
+        // Right away, not on the next tick: a background tab's timers are throttled.
+        if (embedded && title.dataset.fifolders) keepUrlName(title.value, params);
+      });
+    }
+    if (title) title.dataset.typed ||= "0";
+    // After the session holds its opening content (a saved piece carries its own title), never before.
+    if (embedded && title && name && !title.dataset.fifolders && (docSession || bookSession) && baseRaw) {
       title.dataset.fifolders = "1";
-      title.value = name;
-      title.dispatchEvent(new Event("input", { bubbles: true }));
-      title.dispatchEvent(new Event("change", { bubbles: true }));
+      const wanted = folderName(path, name, title.value);
+      if (title.dataset.typed !== "1" && wanted && title.value !== wanted) {
+        title.value = wanted;
+        title.dispatchEvent(new Event("input", { bubbles: true }));
+        title.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+    }
+    if (embedded && title?.dataset.fifolders) keepUrlName(title.value, params);
+    const saveBtn = document.querySelector("#p2p-save") as HTMLButtonElement | null;
+    if (saveBtn && guestSave && !docSession && !bookSession) {
+      saveBtn.textContent = "Save a copy";
+      saveBtn.title = "Save a copy to your folders (Ctrl+S)";
     }
     const home = document.querySelector("#home") as HTMLElement | null;
     const blank = document.querySelector("#blank") as HTMLButtonElement | null;

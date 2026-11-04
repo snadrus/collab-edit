@@ -1,4 +1,4 @@
-import { hostBase, routePath, withKeptQuery } from "../../p2p/src/host-base.ts";
+import { hostBase, routePath, shareLink, withKeptQuery } from "../../p2p/src/host-base.ts";
 import type { Command } from "../shared/commands.ts";
 import type { Role } from "../shared/access.ts";
 import type { Heading } from "../shared/doc.ts";
@@ -40,7 +40,7 @@ import { DEFAULT_SUBS } from "../shared/spell.ts";
 import type { Thread } from "../shared/threads.ts";
 import type { SuggestionMeta } from "../shared/suggest.ts";
 import { mountChrome, type Chrome } from "./chrome.ts";
-import { loadWordText, wordKnown } from "./dict.ts";
+import { loadHunspell, wordKnown } from "./dict.ts";
 import { diffWords, encodeStrokes, lookupWord } from "../shared/tools.ts";
 import { loadQueue, saveQueue } from "./offline.ts";
 import { MB, ML, MR, MT, PAGE_H, PAGE_W, RULER_H, applyPage, currentPage, setViewFit } from "./layout.ts";
@@ -83,6 +83,20 @@ function sid(): string {
   if (!id) id = crypto.randomUUID();
   sessionStorage.setItem("felarumi-sid", id);
   return id;
+}
+
+/** Stable, opaque per-person key for the hub's color choice: wallet, else this browser's id, else the tab. */
+function personKey(fallback: string): string {
+  let seed = "";
+  try {
+    seed = myWallet() || localStorage.getItem("fipen:browser-id") || "";
+  } catch {
+    seed = "";
+  }
+  seed = (seed || fallback).toLowerCase();
+  let h = 0x811c9dc5;
+  for (let i = 0; i < seed.length; i++) h = Math.imul(h ^ seed.charCodeAt(i), 0x01000193) >>> 0;
+  return "p" + h.toString(36);
 }
 
 function displayName(): string {
@@ -526,7 +540,7 @@ function mountEditor(id: string, shareToken = ""): void {
   const renameSelf = () => {
     nameBtn.textContent = displayName();
     editor.name = displayName();
-    ws?.send(JSON.stringify({ t: "name", name: displayName() }));
+    ws?.send(JSON.stringify({ t: "name", name: displayName(), addr: myWallet() || undefined }));
     paintAvatars(editor, session);
   };
   void learnWallet().then(async (changed) => {
@@ -913,7 +927,7 @@ function mountEditor(id: string, shareToken = ""): void {
     ws.onopen = () => {
       const queued = editor.sync.exportQueue();
       const resume = !!(queued && !queued.transformed);
-      ws?.send(JSON.stringify({ t: "hello", sid: session, name: displayName(), addr: myWallet() || undefined, resume, since: resume ? queued!.baseRev : undefined, share: shareToken || undefined }));
+      ws?.send(JSON.stringify({ t: "hello", sid: session, pk: personKey(session), name: displayName(), addr: myWallet() || undefined, resume, since: resume ? queued!.baseRev : undefined, share: shareToken || undefined }));
     };
     ws.onmessage = (ev) => {
       const msg = JSON.parse(ev.data as string) as Record<string, unknown>;
@@ -923,7 +937,7 @@ function mountEditor(id: string, shareToken = ""): void {
           editor.applyRemote(decodeCommands(msg.commands as Command[]), String(msg.sid), Number(msg.rev), Number(msg.reqId));
         } catch (err) {
           console.error(err);
-          ws?.send(JSON.stringify({ t: "hello", sid: session, name: displayName(), addr: myWallet() || undefined, share: shareToken || undefined }));
+          ws?.send(JSON.stringify({ t: "hello", sid: session, pk: personKey(session), name: displayName(), addr: myWallet() || undefined, share: shareToken || undefined }));
         }
       } else if (msg.t === "ack") editor.ack(Number(msg.reqId), (msg.assignedRev as number | null) ?? null, Number(msg.serverRev));
       else if (msg.t === "sel") {
@@ -1174,7 +1188,7 @@ function mountEditor(id: string, shareToken = ""): void {
     btn.id = "copy-link";
     btn.textContent = "🔗 Copy Link";
     btn.addEventListener("click", () => {
-      const url = location.origin + docUrl(id);
+      const url = shareLink(location.origin + docUrl(id));
       void navigator.clipboard
         .writeText(url)
         .then(() => {
@@ -1263,6 +1277,16 @@ function mountEditor(id: string, shareToken = ""): void {
     } else body.appendChild(node);
     (document.querySelector("#dialog") as HTMLElement).hidden = false;
   }
+
+  // Escape closes a dialog, like Docs.
+  document.addEventListener("keydown", (event) => {
+    const dialog = document.querySelector("#dialog") as HTMLElement | null;
+    if (event.key === "Escape" && dialog && !dialog.hidden) {
+      event.preventDefault();
+      closeDialog();
+      editor.focus();
+    }
+  });
 
   function closeDialog(): void {
     (document.querySelector("#dialog") as HTMLElement).hidden = true;
@@ -2047,7 +2071,7 @@ function mountEditor(id: string, shareToken = ""): void {
     const run = () => {
       const word = input.value.trim();
       const local = lookupWord(word);
-      out.textContent = local ? local.definition : wordKnown(word) ? "In the local word list." : "No local definition.";
+      out.textContent = local ? local.definition : wordKnown(word) ? "In the dictionary." : "No local definition.";
       const key = word.toLowerCase().replace(/^[^a-z]+|[^a-z]+$/g, "");
       if (!key) return;
       void fetch("https://api.dictionaryapi.dev/api/v2/entries/en/" + encodeURIComponent(key))
@@ -2510,10 +2534,10 @@ function mountEditor(id: string, shareToken = ""): void {
   });
 
   loadPrefs();
-  void fetch(hostBase() + "/words.txt")
-    .then((res) => (res.ok ? res.text() : ""))
-    .then((text) => {
-      loadWordText(text);
+  const dictText = (name: string) => fetch(hostBase() + "/dict/" + name).then((res) => (res.ok ? res.text() : ""));
+  void Promise.all([dictText("en_US.aff"), dictText("en_US.dic")])
+    .then(([aff, dic]) => {
+      loadHunspell(aff, dic);
       editor.render();
     })
     .catch(() => undefined);

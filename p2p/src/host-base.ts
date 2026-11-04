@@ -33,3 +33,13 @@ export function withKeptQuery(path: string, hash: string): string {
   }
   return target + (query ? `?${query}` : "") + (hash ? `#${hash}` : "");
 }
+
+/** FiFolders params that describe the owner's own file and wallet. A share link must not carry them to a guest. */
+export const OWNER_PARAMS = ["fifolders", "path", "name", "volume", "owner", "pieceCid", "folder"];
+
+/** The link a collaborator should open: same document and wire, none of the owner's FiFolders context. */
+export function shareLink(href: string): string {
+  const url = new URL(href, location.href);
+  for (const key of OWNER_PARAMS) url.searchParams.delete(key);
+  return url.toString();
+}
