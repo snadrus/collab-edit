@@ -44,7 +44,8 @@ export class BookSession {
   connect(socket: HubSocket, hello: Record<string, unknown>): BookConn {
     const sid = typeof hello.sid === "string" && hello.sid.length < 80 ? hello.sid : "guest";
     const name = typeof hello.name === "string" && hello.name.trim() ? hello.name.trim().slice(0, 40) : "Guest";
-    const conn: BookConn = { socket, sid, name, color: assignColor(this.conns.map((item) => item.color), sid) };
+    const others = this.conns.filter((item) => item.sid !== sid).map((item) => item.color);
+    const conn: BookConn = { socket, sid, name, color: assignColor(others, (typeof hello.pk === "string" && hello.pk.length < 40 ? hello.pk : "") || sid) };
     this.conns.push(conn);
     this.pushInit(conn);
     this.broadcast({ t: "join", sid, name, color: conn.color }, conn);
@@ -59,7 +60,10 @@ export class BookSession {
   handle(conn: BookConn, msg: Record<string, unknown>): void {
     if (msg.t !== "op") {
       if (msg.t === "sel") this.broadcast({ t: "sel", sid: conn.sid, name: conn.name, color: conn.color, sheet: msg.sheet, r: msg.r, c: msg.c, r2: msg.r2, c2: msg.c2 }, conn);
-      else if (msg.t === "title" && typeof msg.title === "string") {
+      else if (msg.t === "name" && typeof msg.name === "string" && msg.name.trim()) {
+        conn.name = msg.name.trim().slice(0, 40);
+        this.broadcast({ t: "join", sid: conn.sid, name: conn.name, color: conn.color }, conn);
+      } else if (msg.t === "title" && typeof msg.title === "string") {
         this.title = msg.title.slice(0, 200);
         this.broadcast({ t: "title", title: this.title }, null);
         this.persist();

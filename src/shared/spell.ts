@@ -31,15 +31,24 @@ function covered(text: string): Array<[number, number]> {
   return spans;
 }
 
-function knownWord(key: string, dictionary: Set<string>, allowed: Set<string>): boolean {
-  if (dictionary.has(key) || allowed.has(key) || EXTRA.has(key)) return true;
+/** A word list, or a checker (e.g. Hunspell via nspell) that receives the word in its original case. */
+export type Dictionary = Set<string> | ((word: string) => boolean);
+
+function knownWord(key: string, dictionary: Dictionary, allowed: Set<string>, bare = key): boolean {
+  if (allowed.has(key) || EXTRA.has(key)) return true;
+  if (typeof dictionary === "function") {
+    if (dictionary(bare) || dictionary(key)) return true;
+    const stem = key.split("'")[0];
+    return !!stem && stem !== key && (allowed.has(stem) || dictionary(stem));
+  }
+  if (dictionary.has(key)) return true;
   if (key.endsWith("n't")) return dictionary.has(key.slice(0, -3)) || allowed.has(key.slice(0, -3));
   const stem = key.split("'")[0];
   if (stem && stem !== key && (dictionary.has(stem) || allowed.has(stem))) return true;
   return false;
 }
 
-export function misspellings(text: string, dictionary: Set<string>, allowed: Set<string>): SpellHit[] {
+export function misspellings(text: string, dictionary: Dictionary, allowed: Set<string>): SpellHit[] {
   const hits: SpellHit[] = [];
   const skip = covered(text);
   const re = /[A-Za-z']+/g;
@@ -55,8 +64,8 @@ export function misspellings(text: string, dictionary: Set<string>, allowed: Set
     if (bare !== bare.toLowerCase() && bare !== bare[0].toUpperCase() + bare.slice(1).toLowerCase()) continue;
     const key = bare.toLowerCase();
     const hyphen = text[start - 1] === "-" || text[end] === "-";
-    if (hyphen && (knownWord(key, dictionary, allowed) || key.length <= 4)) continue;
-    if (knownWord(key, dictionary, allowed)) continue;
+    if (hyphen && (knownWord(key, dictionary, allowed, bare) || key.length <= 4)) continue;
+    if (knownWord(key, dictionary, allowed, bare)) continue;
     hits.push({ start, end, word: bare });
   }
   return hits;

@@ -35,16 +35,30 @@ function mix(hex: string, toward: string, t: number): string {
   return "#" + ch.map((v) => v.toString(16).padStart(2, "0")).join("");
 }
 
-/** First unused palette color. Past the tenth active session, step the shade so it still differs. */
-export function assignColor(used: Iterable<string>, _sid = ""): string {
+function stableIndex(key: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < key.length; i++) h = Math.imul(h ^ key.charCodeAt(i), 0x01000193) >>> 0;
+  return h % COLLAB_PALETTE.length;
+}
+
+/**
+ * A person's color. With a `key` (wallet, else display name, else session id) the same person gets the same color
+ * every time they join, whatever the join order, unless someone already present holds it; then the next free one.
+ * Past the tenth active session, step the shade so it still differs.
+ */
+export function assignColor(used: Iterable<string>, key = ""): string {
   const taken = new Set([...used].map((c) => c.toLowerCase()));
-  for (const c of COLLAB_PALETTE) if (!taken.has(c)) return c;
+  const start = key ? stableIndex(key.toLowerCase()) : 0;
+  for (let i = 0; i < COLLAB_PALETTE.length; i++) {
+    const c = COLLAB_PALETTE[(start + i) % COLLAB_PALETTE.length];
+    if (!taken.has(c)) return c;
+  }
   for (let step = 1; step <= 6; step++) {
     const toward = step % 2 === 1 ? "#000000" : "#ffffff";
-    for (const c of COLLAB_PALETTE) {
-      const next = mix(c, toward, 0.22 * Math.ceil(step / 2));
+    for (let i = 0; i < COLLAB_PALETTE.length; i++) {
+      const next = mix(COLLAB_PALETTE[(start + i) % COLLAB_PALETTE.length], toward, 0.22 * Math.ceil(step / 2));
       if (!taken.has(next)) return next;
     }
   }
-  return COLLAB_PALETTE[0];
+  return COLLAB_PALETTE[start];
 }

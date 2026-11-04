@@ -1,6 +1,6 @@
 import { avatarInnerHtml, learnWallet, myWallet, refreshIdentity, resolveDisplayName, selfPerson, showSelfIdentity, watchWallet } from "../../../src/shared/person.ts";
 import { mountOfflineChip } from "../../../src/shared/offline.ts";
-import { hostBase, routePath, withKeptQuery } from "../../../p2p/src/host-base.ts";
+import { hostBase, routePath, shareLink, withKeptQuery } from "../../../p2p/src/host-base.ts";
 import { caretColor, selectionColor } from "../../../packages/core/src/presence.ts";
 import { hexAlpha } from "../../../packages/core/src/palette.ts";
 import { a1ToIndex, canonicalNumber, displayValue, evaluate, indexToCol, parseTyped, shiftFormula, type GridRead } from "./formula.ts";
@@ -1413,7 +1413,7 @@ function mount(id: string, share: string): void {
     (document.querySelector("#dialog") as HTMLElement).hidden = false;
     const btn = card.querySelector("#copy-link") as HTMLButtonElement;
     btn.addEventListener("click", () => {
-      void navigator.clipboard.writeText(location.href).then(() => {
+      void navigator.clipboard.writeText(shareLink(location.href)).then(() => {
         btn.textContent = "Copied";
         window.setTimeout(() => (btn.textContent = "🔗 Copy Link"), 1500);
       });
@@ -1520,7 +1520,7 @@ function mount(id: string, share: string): void {
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const sock = new WebSocket(`${proto}://${location.host}/ws/sheets?book=${encodeURIComponent(id)}`);
     ws = sock;
-    sock.onopen = () => send({ t: "hello", sid, name: displayName(), share });
+    sock.onopen = () => send({ t: "hello", sid, pk: personKey(sid), name: displayName(), share });
     sock.onmessage = (ev) => {
       const msg = JSON.parse(ev.data as string) as Record<string, unknown>;
       if (msg.t === "init") {
@@ -1626,3 +1626,17 @@ function mount(id: string, share: string): void {
 }
 
 boot();
+
+/** Stable, opaque per-person key for the hub's color choice: wallet, else this browser's id, else the tab. */
+function personKey(fallback: string): string {
+  let seed = "";
+  try {
+    seed = myWallet() || localStorage.getItem("fipen:browser-id") || "";
+  } catch {
+    seed = "";
+  }
+  seed = (seed || fallback).toLowerCase();
+  let h = 0x811c9dc5;
+  for (let i = 0; i < seed.length; i++) h = Math.imul(h ^ seed.charCodeAt(i), 0x01000193) >>> 0;
+  return "p" + h.toString(36);
+}

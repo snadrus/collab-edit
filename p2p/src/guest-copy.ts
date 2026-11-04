@@ -122,7 +122,7 @@ export interface GuestCopyHooks {
 }
 
 /** Guest side: the timed offer, the save, and the hand-off once the owner is back. */
-export function installGuestCopy(h: GuestCopyHooks): { ownerBack: () => void; acked: () => void } {
+export function installGuestCopy(h: GuestCopyHooks): { ownerBack: () => void; acked: () => void; saveNow: () => boolean } {
   let since = 0;
   let dismissedAt = 0;
   let bar: HTMLElement | null = null;
@@ -157,15 +157,16 @@ export function installGuestCopy(h: GuestCopyHooks): { ownerBack: () => void; ac
     bar.append(text, save, later);
     document.body.append(bar);
   };
-  const saveCopy = () => {
+  /** `handOff`: also give the copy to the owner when they are back (the owner-away offer). A guest's own Save keeps it theirs. */
+  const saveCopy = (handOff = true): boolean => {
     const state = copyState(h.kind);
-    if (!state) return;
+    if (!state) return false;
     const origin: CopyOrigin = { doc: `${h.kind}:${h.id}`, owner: h.ownerName(), baseRev: state.rev, by: myName(), at: Date.now() };
     const content = copyFile(state, origin);
     const path = queueCopy(h.kind, h.id, content, state.title);
     copyPath = path;
     copyOp = `copy:${h.kind}:${h.id}`;
-    localStorage.setItem(pendingKey(h.kind, h.id), JSON.stringify({ content, title: state.title, origin }));
+    if (handOff) localStorage.setItem(pendingKey(h.kind, h.id), JSON.stringify({ content, title: state.title, origin }));
     if (!bar) show();
     const text = bar!.querySelector("#p2p-copy-text") as HTMLElement;
     text.textContent = `Copy queued for your folders in Copies (${path}). `;
@@ -186,6 +187,7 @@ export function installGuestCopy(h: GuestCopyHooks): { ownerBack: () => void; ac
     });
     bar!.append(ok);
     dismissedAt = Number.MAX_SAFE_INTEGER;
+    return true;
   };
   let copyPath = "";
   let copyOp = "";
@@ -255,6 +257,7 @@ export function installGuestCopy(h: GuestCopyHooks): { ownerBack: () => void; ac
       }
     },
     acked: () => localStorage.removeItem(pendingKey(h.kind, h.id)),
+    saveNow: () => saveCopy(!h.ownerOnline()),
   };
 }
 

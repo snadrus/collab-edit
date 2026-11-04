@@ -1,1 +1,0 @@
-The word list in words.txt is derived from the 12Dicts package (public domain), https://wordlist.aspell.net/12dicts/.

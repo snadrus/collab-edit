@@ -70,14 +70,17 @@ export class DocSession {
   connect(socket: HubSocket, hello: Record<string, unknown>): DocConn {
     const sid = typeof hello.sid === "string" && hello.sid.length < 80 ? hello.sid : "guest";
     const name = typeof hello.name === "string" && hello.name.trim() ? hello.name.trim().slice(0, 40) : "Guest";
+    const addr = typeof hello.addr === "string" && /^0x[0-9a-f]{40}$/i.test(hello.addr) ? hello.addr.toLowerCase() : undefined;
+    // A reconnect (owner reload, network blip) keeps the person's color; otherwise their stable one.
+    const others = this.conns.filter((item) => item.sid !== sid).map((item) => item.color);
     const conn: DocConn = {
       socket,
       sid,
       name,
-      color: assignColor(this.conns.map((item) => item.color), sid),
+      color: assignColor(others, (typeof hello.pk === "string" && hello.pk.length < 40 ? hello.pk : "") || addr || sid),
       anchor: 0,
       head: 0,
-      ...(typeof hello.addr === "string" && /^0x[0-9a-f]{40}$/.test(hello.addr) ? { addr: hello.addr } : {}),
+      ...(addr ? { addr } : {}),
     };
     this.conns.push(conn);
     const since = typeof hello.since === "number" && Number.isInteger(hello.since) ? hello.since : null;
@@ -101,6 +104,11 @@ export class DocSession {
         { t: "sel", sid: conn.sid, name: conn.name, color: conn.color, addr: conn.addr, anchor: conn.anchor, head: conn.head, rev: this.server.rev },
         conn,
       );
+    } else if (t === "name" && typeof msg.name === "string" && msg.name.trim()) {
+      // Live rename (wallet connected, identity or display name changed): peers update the label in place.
+      conn.name = msg.name.trim().slice(0, 40);
+      if (typeof msg.addr === "string" && /^0x[0-9a-f]{40}$/i.test(msg.addr)) conn.addr = msg.addr.toLowerCase();
+      this.broadcast({ t: "join", sid: conn.sid, name: conn.name, color: conn.color, addr: conn.addr }, conn);
     } else if (t === "title" && typeof msg.title === "string") {
       this.title = msg.title.slice(0, 200);
       this.broadcast({ t: "title", title: this.title }, null);
