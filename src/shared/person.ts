@@ -100,6 +100,15 @@ export function safeGet(target: unknown, key: string): unknown {
   try {
     return (target as Record<string, unknown>)[key];
   } catch {
+    // Broken Proxy invariant: the own-property descriptor (up the prototype chain) still holds the real value.
+    try {
+      for (let o: object | null = target as object; o; o = Object.getPrototypeOf(o)) {
+        const d = Object.getOwnPropertyDescriptor(o, key);
+        if (d) return "value" in d ? d.value : undefined;
+      }
+    } catch {
+      /* fully hostile */
+    }
     return undefined;
   }
 }
@@ -123,7 +132,8 @@ export function safeOn(provider: unknown, event: string, fn: (value: unknown) =>
   try {
     on = (provider as Record<string, unknown>).on;
   } catch {
-    return "broken";
+    on = safeGet(provider, "on");
+    if (typeof on !== "function") return "broken";
   }
   if (typeof on !== "function") return "none";
   try {

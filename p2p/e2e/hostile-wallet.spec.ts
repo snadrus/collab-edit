@@ -5,7 +5,7 @@ import { expect, test, type BrowserContext, type Page } from "playwright/test";
  * non-configurable `on`, so reading `ethereum.on` throws "'get' on proxy: property 'on' is a read-only and
  * non-configurable data property...". That threw inside mountEditor and the guest saw a blank editor.
  */
-const HOSTILE = () => {
+const HOSTILE = (opts: { descriptors: boolean }) => {
   const target = Object.freeze({
     isMetaMask: true,
     on(_e: string, _f: unknown) {
@@ -15,6 +15,13 @@ const HOSTILE = () => {
     request: async ({ method }: { method: string }) => (method === "eth_chainId" ? "0x4cb2f" : []),
   });
   const proxy = new Proxy(target, {
+    ...(opts.descriptors
+      ? {}
+      : {
+          getOwnPropertyDescriptor() {
+            throw new TypeError("hostile descriptor");
+          },
+        }),
     get(t, key, recv) {
       const v = Reflect.get(t, key, recv);
       // Returns a different function than the frozen one: violates the invariant and throws on access.
@@ -41,12 +48,12 @@ async function ready(page: Page): Promise<void> {
 }
 const text = (page: Page) => page.evaluate(() => (window as unknown as { __editor: { getText: () => string } }).__editor.getText());
 
-for (const mode of ["hostile", "none"] as const) {
-  test(`guest sees the owner's typing with ${mode === "hostile" ? "a hostile Proxy window.ethereum" : "no wallet"}`, async ({ browser }) => {
+for (const mode of ["hostile", "hostile-recoverable", "none"] as const) {
+  test(`guest sees the owner's typing with ${mode === "none" ? "no wallet" : "a " + mode + " Proxy window.ethereum"}`, async ({ browser }) => {
     const errors: string[] = [];
     const ctx = async (): Promise<BrowserContext> => {
       const c = await browser.newContext();
-      if (mode === "hostile") await c.addInitScript(HOSTILE);
+      if (mode !== "none") await c.addInitScript(HOSTILE, { descriptors: mode === "hostile-recoverable" });
       return c;
     };
     const owner = await ctx();
@@ -58,7 +65,7 @@ for (const mode of ["hostile", "none"] as const) {
     await pa.locator("#blank").click();
     await pa.waitForFunction(() => location.hash.length > 1);
     await ready(pa);
-    if (mode === "hostile") expect(await pa.evaluate(() => (window as unknown as { __hostileThrows?: boolean }).__hostileThrows)).toBe(true);
+    if (mode !== "none") expect(await pa.evaluate(() => (window as unknown as { __hostileThrows?: boolean }).__hostileThrows)).toBe(true);
     await pb.goto(pa.url());
     await ready(pb);
     await pa.locator("#pages").click();
@@ -68,7 +75,9 @@ for (const mode of ["hostile", "none"] as const) {
     await pb.keyboard.press("End");
     await pb.keyboard.type(" and guest", { delay: 20 });
     await expect.poll(() => text(pa)).toContain("and guest");
+    // Unrecoverable provider: non-blocking notice. Recoverable (real `on` via its descriptor): no notice.
     if (mode === "hostile") await expect(pb.locator("#wallet-notice")).toBeVisible();
+    else await expect(pb.locator("#wallet-notice")).toHaveCount(0);
     expect(errors.filter((e) => /proxy|ethereum|wallet/i.test(e))).toEqual([]);
     await owner.close();
     await guest.close();
