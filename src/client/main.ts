@@ -274,6 +274,48 @@ async function mountHome(): Promise<void> {
   }
 }
 
+/** Wallet name + live account switching. Never throws; a broken wallet shows a dismissible notice. */
+function attachWallet(renameSelf: () => void): void {
+  const safeRename = () => {
+    try {
+      renameSelf();
+    } catch {
+      /* editor not ready */
+    }
+  };
+  let broken = false;
+  try {
+    void learnWallet()
+      .then(async (changed) => {
+        if (changed) safeRename();
+        if (await refreshIdentity(myWallet())) safeRename();
+      })
+      .catch(() => {});
+    const hook = watchWallet(safeRename);
+    (window as unknown as { __walletSwitch?: (a: string[]) => Promise<void> }).__walletSwitch = hook;
+    broken = !!hook.failed;
+  } catch (err) {
+    broken = true;
+    console.warn("FiPen: wallet unavailable", err);
+  }
+  if (broken) walletNotice();
+}
+
+function walletNotice(): void {
+  if (document.querySelector("#wallet-notice")) return;
+  const note = document.createElement("div");
+  note.id = "wallet-notice";
+  note.setAttribute("role", "status");
+  note.style.cssText = "position:fixed;left:12px;bottom:12px;z-index:80;max-width:360px;padding:8px 12px;border-radius:8px;background:#fff8e1;border:1px solid #f0c36d;font:13px system-ui,sans-serif;box-shadow:0 1px 4px rgba(0,0,0,.2)";
+  note.textContent = "Your wallet extension could not be connected. Editing and collaboration still work. ";
+  const close = document.createElement("button");
+  close.type = "button";
+  close.textContent = "Dismiss";
+  close.addEventListener("click", () => note.remove());
+  note.append(close);
+  document.body.append(note);
+}
+
 function mountEditor(id: string, shareToken = ""): void {
   (document.querySelector("#editor") as HTMLElement).hidden = false;
   drawRuler();
@@ -543,15 +585,11 @@ function mountEditor(id: string, shareToken = ""): void {
     ws?.send(JSON.stringify({ t: "name", name: displayName(), addr: myWallet() || undefined }));
     paintAvatars(editor, session);
   };
-  void learnWallet().then(async (changed) => {
-    if (changed) renameSelf();
-    if (await refreshIdentity(myWallet())) renameSelf();
-  });
   window.addEventListener("storage", (event) => {
     if (event.key === "fifolders:display-name" || event.key?.startsWith("fil-identity:")) renameSelf();
   });
-  // Wallet account/network switch: rename in place for peers, no reload or prompt.
-  (window as unknown as { __walletSwitch?: (a: string[]) => Promise<void> }).__walletSwitch = watchWallet(renameSelf);
+  // The wallet attaches after the editor is mounted and syncing: a broken wallet extension must never blank the page.
+  window.setTimeout(() => attachWallet(renameSelf), 0);
   mountOfflineChip();
 
   // Touch: a floating Comment bubble over a selection (desktop uses the right-click menu).
@@ -2656,16 +2694,25 @@ function boot(): void {
   const path = routePath();
   const doc = path.match(/^\/d\/([^/]+)\/?$/);
   if (doc) {
-    mountEditor(decodeURIComponent(doc[1]), new URLSearchParams(location.search).get("s") || "");
+    let id = doc[1];
+    try {
+      id = decodeURIComponent(doc[1]);
+    } catch {
+      /* malformed escape in an old link: use it raw */
+    }
+    mountEditor(id, new URLSearchParams(location.search).get("s") || "");
     return;
   }
   const linked = path.match(/^\/([vce])\/([^/]+)\/?$/);
   if (linked) {
     void fetch("/api/open/" + encodeURIComponent(linked[2]))
       .then((res) => (res.ok ? res.json() : null))
-      .then((body: { id: string } | null) => {
-        if (!body) location.href = "/";
+      .then((body: { id?: string } | null) => {
+        if (!body?.id) location.href = hostBase() + "/";
         else mountEditor(body.id, linked[2]);
+      })
+      .catch(() => {
+        location.href = hostBase() + "/";
       });
     return;
   }
