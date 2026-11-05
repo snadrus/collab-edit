@@ -239,9 +239,9 @@ body.compact .menubar, body.compact .toolbar { display: none; }
 }
 #findbar button:hover, #table-tools button:hover, #link-pop button:hover, #image-pop button:hover, .text-btn:hover { background: var(--hover); }
 
-#scroll { flex: 1; overflow: auto; }
+#workarea { flex: 1; min-height: 0; display: flex; position: relative; }
+#scroll { flex: 1; min-width: 0; overflow: auto; }
 #stack { width: 1140px; margin: 16px auto 48px; position: relative; }
-body.outline-open #stack { margin-left: 248px; margin-right: auto; }
 #ruler { display: block; width: 816px; height: 28px; background: #fff; border-radius: 2px 2px 0 0; }
 #comment-add {
   position: absolute;
@@ -394,20 +394,21 @@ body.outline-open #stack { margin-left: 248px; margin-right: auto; }
 .header-logo { height: 44px; width: auto; display: block; }
 .menu-label { padding: 8px 16px 2px; font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
 .avatar { cursor: pointer; }
+/* Tabs & outlines: a real column beside the document, below the top chrome (like Docs). */
 #outline {
-  position: fixed;
-  z-index: 30;
-  top: 156px;
-  left: 12px;
-  bottom: 16px;
-  width: 236px;
+  position: relative;
+  flex: 0 0 260px;
+  width: 260px;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   background: white;
-  border-radius: 12px;
-  box-shadow: var(--shadow);
+  border-right: 1px solid var(--line);
   overflow: hidden;
 }
+#outline[hidden] { display: none; }
+/* The sidebar lists every tab (and has Add tab), so the bottom tab bar is redundant while it is open. */
+body.outline-open #tabs { display: none !important; }
 #outline header { display: flex; align-items: center; justify-content: space-between; padding: 10px 8px 6px 14px; }
 #outline h2 { margin: 0; font-size: 14px; font-weight: 500; }
 .tabs-head-actions { display: flex; gap: 2px; }
@@ -452,8 +453,9 @@ body.outline-open #stack { margin-left: 248px; margin-right: auto; }
 .tab-undo button { border: 0; background: transparent; color: #a8c7fa; font-weight: 500; }
 #tabs-toggle { position: fixed; z-index: 30; top: 160px; left: 12px; background: white; box-shadow: var(--shadow); border-radius: 50%; }
 @media (max-width: 640px) {
-  #outline { top: 0; left: 0; bottom: 0; width: min(300px, 85vw); border-radius: 0 12px 12px 0; z-index: 70; }
-  body.outline-open #stack { margin-left: auto; }
+  /* Phones: like Docs mobile, the panel fills the area below the toolbar; picking a tab or heading returns to the page. */
+  #outline { flex: 1 1 auto; width: 100%; border-right: 0; }
+  body.outline-open #scroll { display: none; }
   #tabs-toggle { top: auto; bottom: 16px; left: 12px; }
   .tab-row { min-height: 40px; }
   .tab-row .tab-more { visibility: visible; }

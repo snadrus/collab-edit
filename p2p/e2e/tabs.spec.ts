@@ -170,3 +170,49 @@ test("S83 tabs on a phone: sidebar is a drawer, picking a tab closes it", async 
   await page.screenshot({ path: "/workspace/fipen-tabs-phone.png" });
   await ctx.close();
 });
+
+/* Andy: the sidebar covered the bottom tab bar and slightly overlapped the top chrome. It is now a real column. */
+type Box = { x: number; y: number; width: number; height: number };
+const overlaps = (a: Box, b: Box) => a.x < b.x + b.width - 0.5 && b.x < a.x + a.width - 0.5 && a.y < b.y + b.height - 0.5 && b.y < a.y + a.height - 0.5;
+
+for (const [label, viewport] of [["desktop", { width: 1280, height: 800 }], ["phone", { width: 390, height: 844 }]] as const) {
+  test(`S84 tabs sidebar (${label}) is a column below the top chrome: no overlap, no bottom tab bar, its own scroll`, async ({ browser }) => {
+    const ctx = await browser.newContext({ viewport, ...(label === "phone" ? { isMobile: true, hasTouch: true } : {}) });
+    const page = await ctx.newPage();
+    await newDoc(page);
+    for (let i = 1; i <= 30; i++) await heading(page, `Section ${i}`, 1);
+    if (!(await page.locator("#outline").isVisible())) await page.locator("#tabs-toggle").click();
+    const panel = page.locator("#outline");
+    await expect(panel).toBeVisible();
+    await expect(panel.getByTestId("toc-entry")).toHaveCount(30);
+    await expect(page.locator("#tabs")).toBeHidden();
+    const sb = (await panel.boundingBox())!;
+    expect(sb.x).toBeGreaterThanOrEqual(0);
+    expect(sb.y + sb.height).toBeLessThanOrEqual(viewport.height + 0.5);
+    for (const sel of [".topbar", ".menubar", ".toolbar", "#scroll", "#tabs", "#tabs-toggle"]) {
+      const el = page.locator(sel);
+      if (!(await el.isVisible())) continue;
+      const box = (await el.boundingBox())!;
+      expect(overlaps(sb, box), `${sel} overlaps the tabs sidebar`).toBe(false);
+    }
+    const toolbar = (await page.locator(".toolbar").boundingBox())!;
+    expect(sb.y).toBeGreaterThanOrEqual(toolbar.y + toolbar.height - 0.5);
+    // The list scrolls inside the panel, not the page.
+    const list = page.locator("#tabs-list");
+    expect(await list.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
+    await list.evaluate((el) => (el.scrollTop = el.scrollHeight));
+    await expect(panel.getByTestId("toc-entry").filter({ hasText: "Section 30" })).toBeInViewport();
+    await page.screenshot({ path: `/workspace/fipen-sidebar-local-${label}.png` });
+    if (label === "desktop") {
+      // Typing still lands where the caret is, with the sidebar open.
+      await page.locator("#pages .page").first().click({ position: { x: 200, y: 150 } });
+      await page.keyboard.press("Control+End");
+      await page.keyboard.type("caret ok");
+      expect(await page.evaluate(() => (window as unknown as { __editor: Ed }).__editor.getText())).toContain("caret ok");
+      // Closing the sidebar brings the bottom tab bar back.
+      await page.locator("#outline-close").click();
+      await expect(panel).toBeHidden();
+    }
+    await ctx.close();
+  });
+}

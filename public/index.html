@@ -309,6 +309,19 @@
       <button type="button" id="trash-restore">Restore</button>
       <button type="button" id="trash-delete">Delete forever</button>
     </div>
+    <div id="workarea">
+    <aside id="outline" hidden aria-label="Document tabs">
+      <header>
+        <h2>Document tabs</h2>
+        <span class="tabs-head-actions">
+          <button type="button" id="tab-add" class="icon" title="Add tab"><span class="material-symbols-outlined">add</span></button>
+          <button type="button" id="outline-close" class="icon" title="Hide tabs &amp; outlines"><span class="material-symbols-outlined">arrow_back</span></button>
+        </span>
+      </header>
+      <ul id="tabs-list" role="tree"></ul>
+      <div id="tab-menu" class="tab-menu" role="menu" hidden></div>
+      <div id="tab-undo" class="tab-undo" role="status" hidden><span></span><button type="button">Undo</button></div>
+    </aside>
     <main id="scroll">
       <div id="stack">
         <canvas id="vruler" width="28" height="1056" aria-hidden="true"></canvas>
@@ -326,6 +339,7 @@
         </div>
       </div>
     </main>
+    </div>
     <div id="image-pop" hidden>
       <input id="image-url" aria-label="Image URL" placeholder="Image URL">
       <button type="button" id="image-insert">Insert</button>
@@ -340,18 +354,6 @@
     </div>
     <div id="input" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Document body" spellcheck="true"></div>
     <button type="button" id="tabs-toggle" class="icon" title="Show tabs &amp; outlines" aria-label="Show tabs and outlines" hidden><span class="material-symbols-outlined">toc</span></button>
-    <aside id="outline" hidden aria-label="Document tabs">
-      <header>
-        <h2>Document tabs</h2>
-        <span class="tabs-head-actions">
-          <button type="button" id="tab-add" class="icon" title="Add tab"><span class="material-symbols-outlined">add</span></button>
-          <button type="button" id="outline-close" class="icon" title="Hide tabs &amp; outlines"><span class="material-symbols-outlined">arrow_back</span></button>
-        </span>
-      </header>
-      <ul id="tabs-list" role="tree"></ul>
-      <div id="tab-menu" class="tab-menu" role="menu" hidden></div>
-      <div id="tab-undo" class="tab-undo" role="status" hidden><span></span><button type="button">Undo</button></div>
-    </aside>
     <div id="context" hidden role="menu"></div>
     <aside id="history" hidden>
       <header>
