@@ -364,6 +364,11 @@ test("columns, capitalization, print preview, and tabs", async ({ browser, reque
   await expect(pa.locator("#print-preview")).toBeVisible();
   await expect(pa.locator("#print-pages")).toContainText("pages");
   await pa.locator("#print-close").click();
+  // The bottom tab bar is hidden while the tabs sidebar is open; it comes back when the sidebar is closed.
+  if (await pa.locator("#outline").isVisible()) {
+    await expect(pa.locator("#tabs")).toBeHidden();
+    await pa.locator("#outline-close").click();
+  }
   await expect(pa.locator("#tabs")).toBeVisible();
   const added = await request.post("/api/docs/" + id + "/tabs", { data: { title: "Sources" } });
   expect(added.ok()).toBeTruthy();
