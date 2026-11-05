@@ -87,3 +87,16 @@ describe("filecoin folders", () => {
     assert.deepEqual(await volumeHistory(volume), []);
   });
 });
+
+describe("Filecoin Drive names", () => {
+  it("FiPen and FiGrid saves carry Drive file name, folder and version metadata", async () => {
+    const { storage, registry } = memoryVolumeParts(OWNER);
+    const enc = new TextEncoder();
+    const doc = await saveSnapshot({ kind: "felarumi", title: "Notes", bytes: enc.encode("x".repeat(200)), owner: OWNER, storage, registry });
+    const sheet = await saveSnapshot({ kind: "felanumio", title: "Budget", bytes: enc.encode("y".repeat(200)), owner: OWNER, storage, registry });
+    const meta = (storage as unknown as { metadata: Map<string, Record<string, string>> }).metadata;
+    assert.deepEqual({ ...meta.get(doc.rootCid), ipfsRootCID: undefined }, { label: "Notes.fipen", path: FIPEN_DIR.replace(/^\//, ""), version: "1", ipfsRootCID: undefined });
+    assert.equal(meta.get(sheet.rootCid)?.label, "Budget.figrid");
+    assert.equal(meta.get(sheet.rootCid)?.version, "2");
+  });
+});
