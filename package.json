@@ -17,7 +17,7 @@
     "p2p": "node scripts/install-fil-folders.mjs && node --disable-warning=ExperimentalWarning --experimental-strip-types p2p/serve.ts"
   },
   "externalGitDependencies": {
-    "fil-folders": "git+https://github.com/snadrus/filecoin-folders.git#cc590b5ce4450c4f891d2374c87534b5940660a2"
+    "fil-folders": "git+https://github.com/snadrus/filecoin-folders.git#224a73878d89a6a290c959a313eafd44f94f8d70"
   },
   "dependencies": {
     "@filoz/synapse-sdk": "^2.0.2",
